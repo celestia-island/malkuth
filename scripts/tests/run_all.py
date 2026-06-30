@@ -1,11 +1,11 @@
 """Run every malkuth integration test_* module and report a summary."""
 import importlib, sys, pathlib, time, traceback
 
-sys.path.insert(0, str(pathlib.Path(__file__).parent))
+HERE = pathlib.Path(__file__).resolve()
+sys.path.insert(0, str(HERE.parent))          # scripts/tests/  (_harness)
+sys.path.insert(0, str(HERE.parents[1]))      # scripts/        (utils)
 from _harness import ensure_built  # noqa: E402
-from utils import logger  # noqa: E402  (scripts/ on path via parent's parent)
-
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))  # scripts/
+from utils import logger  # noqa: E402
 
 MODULES = [
     "test_cli_proxy_basic",
