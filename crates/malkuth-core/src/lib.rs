@@ -28,7 +28,7 @@ pub use hooks::{
     DrainHook, ExitReason, ExitSource, Heartbeat, HeartbeatReport, ProbeSink,
 };
 pub use lifecycle::{DrainController, ShutdownKind};
-pub use transport::{FramedConn, Transport, WireConn, WireListener, take_frame};
+pub use transport::{Transport, WireConn, WireListener};
 pub use traits::{CoordinationLock, InstanceRegistry, LeaderElector, LockError, LockGuard};
 #[cfg(feature = "lease")]
 pub use lease::LeaseLock;

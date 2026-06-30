@@ -30,10 +30,8 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 
-# Runtime-agnostic async primitives — none of these pin a specific runtime.
+# Runtime-neutral sync primitive (no executor pinned).
 event-listener = { workspace = true }
-futures-io = { workspace = true }
-futures-util = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
