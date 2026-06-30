@@ -61,6 +61,7 @@ impl CoordinationLock for FileLock {
     async fn acquire(&self, key: &str, _lease: Duration) -> Result<Box<dyn LockGuard>, LockError> {
         let root = self.root.clone();
         let path = root.join(sanitize(key));
+        let key_owned = key.to_owned();
         // Offload the blocking mkdir + flock to a background thread so we stay
         // runtime-agnostic (works under tokio, async-std, smol).
         let result = blocking_call(move || -> Result<FileGuard, LockError> {
@@ -79,7 +80,7 @@ impl CoordinationLock for FileLock {
                 // EAGAIN / EWOULDBLOCK ⇒ contended; anything else ⇒ io error.
                 if matches!(err.raw_os_error(), Some(libc::EAGAIN) | Some(libc::EWOULDBLOCK)) {
                     return Err(LockError::Contended(format!(
-                        "flock on '{key}' is held by another live process"
+                        "flock on '{key_owned}' is held by another live process"
                     )));
                 }
                 return Err(LockError::Io(err));

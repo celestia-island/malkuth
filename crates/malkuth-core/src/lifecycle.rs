@@ -208,9 +208,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
             c2.begin_drain(ShutdownKind::Immediate);
         });
-        // event_listener supports a blocking wait via `wait()`.
-        if !c.is_draining() {
-            c.inner.drain_event.listen().wait();
+        // Spin until the background thread flips the drain bit.
+        while !c.is_draining() {
+            std::thread::sleep(Duration::from_millis(5));
         }
         let k = c.kind().unwrap_or(ShutdownKind::Graceful);
         assert_eq!(k, ShutdownKind::Immediate);
