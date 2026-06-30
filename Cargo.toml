@@ -1,48 +1,48 @@
-[package]
-name = "malkuth"
-version = "0.1.0"
+[workspace]
+resolver = "2"
+members = ["crates/malkuth-core", "crates/malkuth", "crates/malkuth-cli"]
+
+[workspace.package]
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["langyo <langyo.china@gmail.com>"]
-license = "BUSL-1.1"
-description = "Generic Rust toolkit for service supervision: uniform signal/drain semantics, split /healthz + /readyz probes, supervised child-process workers, systemd socket-activation listener handoff, and a pluggable coordination-lock abstraction."
+license-file = "LICENSE"
 repository = "https://github.com/celestia-island/malkuth"
-keywords = ["supervisor", "graceful-shutdown", "rolling-update", "socket-activation", "high-availability"]
-categories = ["asynchronous", "network-programming", "development-tools"]
-publish = true
 
-[features]
-default = []
-
-# ── CoordinationLock backends (Layer 2) ───────────────────────
-# POSIX advisory file lock (flock) — for file-based state (e.g. JSONL / config).
-file-lock = []
-# Lease-based file lock with TTL auto-expiry on crash.
-lease = ["file-lock"]
-# PostgreSQL advisory lock.
-pg-lock = []
-
-# ── Zero-downtime listener handoff (Layer 3) ──────────────────
-# systemd socket activation (pure-Rust: reads LISTEN_FDS / LISTEN_PID).
-socket-activation = []
-
-# ── Fault-tolerance strategies (Layer 2 / Layer 4) ────────────
-# Subsystem A: peer replicas (load-balancing, of which rolling update is a sub-op).
-replica = []
-# Subsystem B: leader/follower (active-passive HA).
-leader-follower = ["dep:uuid"]
-
-[dependencies]
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "signal", "sync", "time", "process", "io-util", "fs"] }
-axum = "0.8"
+[workspace.dependencies]
+# ── shared across workspace members ────────────────────────────
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tracing = "0.1"
+schemars = { version = "1", features = ["derive"] }
 thiserror = "2"
 async-trait = "0.1"
-schemars = { version = "1", features = ["derive"] }
+tracing = "0.1"
 
-uuid = { version = "1", features = ["v4"], optional = true }
+# runtime-agnostic async I/O family (works under tokio / async-std / smol)
+futures-io = "0.3"
+futures-util = "0.3"
+futures-core = "0.3"
+event-listener = "5"
+async-net = "2"
+async-process = "2"
+async-signal = "0.2"
 
-[target.'cfg(unix)'.dependencies]
+# jsonrpc transports
+async-tungstenite = "0.34"
+interprocess = "2"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+notify = "8"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "signal", "sync", "time", "process", "io-util", "fs"] }
+tokio-util = { version = "0.7", features = ["compat", "io"] }
+
 libc = "0.2"
+
+# internal crates
+malkuth-core = { path = "crates/malkuth-core", version = "0.2.0" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"

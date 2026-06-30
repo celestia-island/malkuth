@@ -1,0 +1,36 @@
+[package]
+name = "malkuth-cli"
+description = "Watchdog-style supervisor binary: `malkuth -- <cmd>` wraps any program with file watching, a pod pool and an L4 sticky reverse proxy for rolling updates / gray release."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "malkuth"
+path = "src/main.rs"
+
+[features]
+default = ["full"]
+full = ["malkuth/tcp", "malkuth/signals", "malkuth/worker"]
+
+[dependencies]
+malkuth = { path = "../malkuth", version = "0.2.0" }
+malkuth-core = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+notify = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-net = { workspace = true }
+futures-util = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }

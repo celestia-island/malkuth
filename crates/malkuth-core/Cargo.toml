@@ -1,0 +1,37 @@
+[package]
+name = "malkuth-core"
+description = "Runtime-agnostic protocol types & trait contracts for malkuth: lifecycle, supervision, coordination-lock, JSON-RPC transport, and pluggable lifecycle/exit/heartbeat hooks. Zero runtime / framework dependency."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["supervisor", "graceful-shutdown", "rolling-update", "jsonrpc", "socket-activation"]
+categories = ["asynchronous", "network-programming", "development-tools"]
+publish = true
+
+[features]
+default = []
+
+# Derive `JsonSchema` on every wire type (for OpenAPI / type generation).
+schema = ["dep:schemars"]
+
+# CoordinationLock backend: POSIX advisory flock (unix only).
+file-lock = []
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true, optional = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+
+# Runtime-agnostic async primitives — none of these pin a specific runtime.
+event-listener = { workspace = true }
+futures-io = { workspace = true }
+futures-util = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }

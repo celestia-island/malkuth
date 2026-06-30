@@ -1,0 +1,73 @@
+[package]
+name = "malkuth"
+description = "Runtime-agnostic service-supervision toolkit: JSON-RPC over pluggable transports (TCP / WebSocket / IPC), supervised workers, split health probes, and coordination locks. Built on malkuth-core; runs under tokio, async-std or smol."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["supervisor", "graceful-shutdown", "rolling-update", "jsonrpc", "socket-activation"]
+categories = ["asynchronous", "network-programming", "development-tools"]
+publish = true
+
+[features]
+default = ["tcp"]
+
+# ── JSON-RPC transports ────────────────────────────────────────
+# Local TCP loopback (or remote) via async-net.
+tcp = ["dep:async-net"]
+# WebSocket (ws:// / wss://) via async-tungstenite over an async stream.
+ws = ["dep:async-tungstenite"]
+# Local IPC via the `interprocess` crate (Unix domain sockets / Windows named pipes).
+ipc = ["dep:interprocess"]
+
+# ── Default exit/heartbeat facilities ──────────────────────────
+# OS-signal-based ExitSource (SIGTERM/SIGINT/SIGHUP/SIGQUIT).
+signals = ["dep:async-signal"]
+
+# ── Worker supervision ─────────────────────────────────────────
+# Supervised child-process workers via async-process.
+worker = ["dep:async-process"]
+
+# ── HTTP probes (optional; the JSON-RPC path needs no framework) ──
+# axum-based /healthz + /readyz router.
+axum-probe = ["dep:axum"]
+
+# ── CoordinationLock backends (forwarded from core) ────────────
+file-lock = ["malkuth-core/file-lock"]
+
+# ── Listener handoff ───────────────────────────────────────────
+socket-activation = []
+
+# ── Fault-tolerance strategies ─────────────────────────────────
+replica = ["dep:uuid"]
+leader-follower = ["dep:uuid"]
+
+[dependencies]
+malkuth-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+futures-io = { workspace = true }
+futures-util = { workspace = true }
+futures-core = { workspace = true }
+
+# transports
+async-net = { workspace = true, optional = true }
+async-tungstenite = { workspace = true, optional = true }
+interprocess = { workspace = true, optional = true }
+
+# default facilities
+async-signal = { workspace = true, optional = true }
+async-process = { workspace = true, optional = true }
+
+# optional HTTP probes
+axum = { version = "0.8", optional = true }
+
+uuid = { version = "1", features = ["v4"], optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
