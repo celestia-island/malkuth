@@ -2,12 +2,11 @@
 <!-- markdownlint-disable MD033 MD041 MD036 -->
 <div align="center">
 
-<img src="../logo.webp" alt="Malkuth" width="200"/>
+<img src="docs/logo.webp" alt="Malkuth" width="200"/>
 
+**Composable service-supervision toolkit for Rust — runtime-agnostic, framework-light, with a watchdog CLI.**
 
-**Infrastructure for long-running programs to self-upgrade and balance load**
-
-[![License](https://img.shields.io/badge/license-BSL--1.1-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth)
 
@@ -19,85 +18,104 @@
 **[한국어](docs/ko/README.md)** &bull; **[Français](docs/fr/README.md)** &bull;
 **[Español](docs/es/README.md)** &bull; **[Русский](docs/ru/README.md)**
 
-> **Version 0.1.0** — Early development. Independent and self-contained;
-> depends only on tokio + axum.
+> **Version 0.2.0** — Workspace of three crates. The library runs under
+> **tokio, async-std or smol** and binds to no server framework; the CLI is a
+> standalone watchdog that wraps *any* program.
 
-Malkuth helps automated, long-running programs — daemons, agents, servers — do
-two hard things safely:
+Malkuth helps automated, long-running programs do four hard things:
 
-- **Self-upgrade** — roll out a new version (or a freshly compiled build)
-  without dropping in-flight work or connections: zero-downtime rolling updates.
-- **Load balancing** — run multiple instances that share work and coordinate
-  state, where one can retire gracefully while another takes over.
+1. **Pluggable transport** — JSON-RPC over local TCP loopback, remote
+   **WebSocket**, or local **IPC** (Unix sockets / named pipes via
+   [`interprocess`](https://crates.io/crates/interprocess)). Nothing is forced.
+2. **Runtime-agnostic core** — built on the `futures_io` traits, so the very
+   *same* library code runs under tokio, async-std or smol. Pick the executor
+   your app already uses.
+3. **Optional, hookable facilities** — exit probes, heartbeats, probes and
+   drain hooks are *traits*. Use the defaults (OS-signal exit, HTTP probes,
+   cadenced heartbeats) or supply your own (e.g. trigger drain from an in-band
+   "stop" command your server receives, or a parent supervisor over IPC).
+4. **A watchdog CLI** — `malkuth -- <cmd>` wraps a program that does *not* use
+   the library with file watching, a pod pool, and an L4 sticky reverse proxy.
 
-## Building blocks
+## Workspace layout
 
-- **Lifecycle** — uniform signal semantics (`SIGTERM` / `SIGINT` = drain,
-  `SIGHUP` = reload, `SIGQUIT` = immediate) via `DrainController`.
-- **Probes** — split `/healthz` (liveness) + `/readyz` (readiness, with a drain
-  bit) so load balancers and orchestrators can route and retire nodes.
-- **Workers** — supervised child-process resources, each a failure-isolation
-  boundary, with OTP-style restart policy and sliding-window rate limiting.
-- **Listener handoff** — socket-activation listener inheritance with a
-  plain-bind fallback, for zero-downtime restarts.
-- **Coordination locks** — a pluggable `CoordinationLock` trait
-  (`file-lock` / `pg-lock` / `lease`) for coordinating concurrent writes or
-  leader election.
+| Crate | What it is |
+| --- | --- |
+| **`malkuth-core`** | Runtime-free **contracts**: wire types + traits (`Transport`, `WireConn`, `CoordinationLock`, `ExitSource`, `ProbeSink`, `Heartbeat`, `DrainHook`, …). Depends only on `serde`/`futures-io`/`event-listener`. |
+| **`malkuth`** | Runtime **implementations**: JSON-RPC codec, server/client, transports (tcp/ws/ipc), supervised workers, probes, signals. Built on the async-* family. |
+| **`malkuth-cli`** | The `malkuth` binary — pod pool + file watcher + sticky reverse proxy. Pins tokio (it's an end-user binary, not a linked library). |
 
-## Quick Start
+## The CLI (wraps anything)
+
+```
+malkuth [--watch PATH]... [--proxy PUBLIC:LO-HI] [--pod-count N] -- <cmd> [args...]
+```
+
+Example — run 5 parallel copies of your server, have each listen on the `PORT`
+env var (they self-assign 3001–3005), and front them with a sticky proxy on 3000:
+
+```bash
+malkuth --watch ./src --watch ./res \
+        --proxy 3000:3000-3999 --pod-count 5 \
+        -- cargo run
+```
+
+The proxy routes each **client IP** to a fixed backend via consistent hashing,
+so a client keeps hitting the same pod until that pod restarts or scales down —
+the basis for gray release / rolling restart. On a file change it drains and
+restarts one pod at a time.
+
+## The library (embed in your own service)
 
 ```toml
 [dependencies]
 malkuth = { git = "https://github.com/celestia-island/malkuth.git", branch = "dev" }
-# features: socket-activation, file-lock, lease, pg-lock, replica, leader-follower
+# features: tcp (default) | ws | ipc | signals | worker | axum-probe | replica | file-lock
 ```
 
 ```rust
-use malkuth::{acquire_listener, probe_router, ProbeState, DrainController};
+use std::sync::Arc;
+use malkuth::{Client, Router, Server};
+use malkuth::transport::TcpTransport;
+use malkuth_core::Transport;
+use serde_json::json;
 
-#[tokio::main]
-async fn main() -> std::io::Result<()> {
-    // Listener handoff: socket activation, falls back to a plain bind.
-    let listener = acquire_listener("0.0.0.0:8080").await?;
-
-    // Probes + signal-aware drain.
-    let probe = ProbeState::new(env!("CARGO_PKG_VERSION"));
-    let ctrl = DrainController::install();
-
-    let app = axum::Router::new()
-        .merge(probe_router(probe)) // GET /healthz, GET /readyz
-        .with_state(());
-
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            // Resolves on SIGINT / SIGTERM (drain) or SIGQUIT (immediate),
-            // but NOT on SIGHUP (reload — the server keeps serving).
-            ctrl.wait_for_drain().await;
-        })
-        .await?;
-    Ok(())
-}
+# async fn run() -> std::io::Result<()> {
+let lis = TcpTransport.listen("tcp://127.0.0.1:0").await?;
+let handler = Arc::new(
+    Router::new().route("ping", |_p| Box::pin(async { Ok(json!("pong")) }))
+);
+Server::serve_listener(lis, handler).await
+# }
 ```
 
-## Feature flags
+Want the same server under async-std? Nothing changes but `#[tokio::main]` →
+`#[async_std::main]`. Want drain triggered by your own logic instead of signals?
+Implement `malkuth_core::ExitSource` and hand it to the supervisor.
+
+## Feature flags (`malkuth`)
 
 | Feature | Enables |
 | --- | --- |
-| `socket-activation` | inherit a listener fd (socket activation) |
+| `tcp` *(default)* | JSON-RPC over local/remote TCP (`async-net`) |
+| `ws` | JSON-RPC over WebSocket (`async-tungstenite`) |
+| `ipc` | JSON-RPC over local IPC (`interprocess`; tokio runtime) |
+| `signals` | Default OS-signal `ExitSource` (`async-signal`) |
+| `worker` | Supervised child-process workers (`async-process`) |
+| `axum-probe` | axum `/healthz` + `/readyz` router |
+| `replica` | In-memory `InstanceRegistry` |
 | `file-lock` | POSIX `flock` `CoordinationLock` backend |
-| `lease` | lease-based file lock with TTL auto-expiry |
-| `pg-lock` | PostgreSQL `pg_advisory_lock` backend (staged) |
-| `replica` | `InstanceRegistry` trait (load-balancing / rolling update) |
-| `leader-follower` | `LeaderElector` trait (active-passive HA) |
 
 ## Status
 
-Lifecycle + probes, supervised workers, listener handoff and the
-coordination-lock trait with the `file-lock` backend are implemented. The
-`replica` / `leader-follower` strategy backends are trait contracts with full
+Layers 1–3 (lifecycle/drain, probes, listener handoff, coordination lock) and
+the JSON-RPC core (codec + runtime-agnostic server/client + tcp/ws/ipc
+transports) are implemented and tested end-to-end across runtimes. The CLI pod
+pool + sticky proxy is working (e2e-verified). The `leader-follower` /
+`pg-lock` / `lease` strategy backends remain trait contracts with full
 implementations staged. See [docs/design/](docs/en/design/) for the design.
 
 ## License
 
-Business Source License 1.1 (BSL-1.1); automatically converts to your choice
-of Apache-2.0 or MIT on 2030-01-01. See [LICENSE](LICENSE).
+[Synthetic Source License 1.0 (SySL)](LICENSE) — an AI-era license that operates
+as a binding contract independent of copyright status.

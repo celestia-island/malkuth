@@ -25,7 +25,6 @@ macro_rules! wire {
         $($t)*
     };
 }
-pub(crate) use wire;
 
 // ═══════════════════════════════════════════════════════════════
 // JSON-RPC method names
