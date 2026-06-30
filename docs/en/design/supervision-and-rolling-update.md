@@ -1,10 +1,3 @@
-+++
-title = "Unified Supervision, Rolling Update & Replication Architecture"
-description = """A cross-project design for a single supervision-tree backbone shared by entelecheia, shittim-chest and evernight. It provides uniform signal/drain semantics, zero-downtime listener handoff via systemd socket activation, a pluggable coordination-lock abstraction, and two fault-tolerance strategies built on the same Worker + Supervisor primitives: Replica (load-balancing ⊃ rolling update) for the server-side, and Leader/Follower (active-passive HA) for the evernight device edge."""
-lang = "en"
-category = "design"
-subcategory = "platform"
-+++
 
 # Unified Supervision, Rolling Update & Replication Architecture
 

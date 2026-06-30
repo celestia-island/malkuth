@@ -1,9 +1,9 @@
+# Malkuth
 <!-- markdownlint-disable MD033 MD041 MD036 -->
 <div align="center">
 
 <img src="../logo.webp" alt="Malkuth" width="200"/>
 
-# Malkuth
 
 **用于长驻程序自我升级与负载均衡的基础设施**
 

@@ -1,10 +1,3 @@
-+++
-title = "Arquitectura Unificada de Supervisión, Rolling Update y Replicación"
-description = """Un diseño entre proyectos para una única columna vertebral de árbol de supervisión compartida por entelecheia, shittim-chest y evernight. Proporciona semántica uniforme de señales y drain, traspaso de listener sin tiempo de inactividad mediante systemd socket activation, una abstracción enchufable de coordination-lock, y dos estrategias de tolerancia a fallos construidas sobre las mismas primitivas Worker + Supervisor: Réplica (balanceo de carga ⊃ rolling update) para el lado servidor, y Leader/Follower (HA activo-pasivo) para el borde de dispositivos evernight."""
-lang = "es"
-category = "design"
-subcategory = "platform"
-+++
 
 # Arquitectura Unificada de Supervisión, Rolling Update y Replicación
 

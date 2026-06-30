@@ -1,10 +1,3 @@
-+++
-title = "統一監督、滾動更新與副本架構"
-description = """一份跨專案設計,為 entelecheia、shittim-chest、evernight 三者提供同一套監督樹骨架。它統一了訊號與排空(drain)語義、基於 systemd socket activation 的零停機監聽交接、可插拔的協調鎖抽象,並在同一套 Worker + Supervisor 原語之上構建兩種容錯策略:用於服務端的副本(負載平衡 ⊃ 滾動更新),以及用於 evernight 裝置邊緣的主備(主動-被動 HA)。"""
-lang = "zht"
-category = "design"
-subcategory = "platform"
-+++
 
 # 統一監督、滾動更新與副本架構
 

@@ -1,10 +1,3 @@
-+++
-title = "統合スーパビジョン・ローリングアップデート・レプリケーションアーキテクチャ"
-description = """entelecheia、shittim-chest、evernight の三者で共有する単一のスーパビジョンツリーバックボーンに関するクロスプロジェクト設計。統一されたシグナル/ドレインセマンティクス、systemd の socket activation によるゼロダウンタイムのリスナ引き継ぎ、差し替え可能な coordination lock 抽象、そして同じ Worker + Supervisor プリミティブの上に構築された二つのフォールトトレランス戦略（サーバサイド用の Replica = ロードバランシング ⊃ ローリングアップデート、および evernight デバイスエッジ用の Leader/Follower = アクティブ-パッシブ HA）を提供する。"""
-lang = "ja"
-category = "design"
-subcategory = "platform"
-+++
 
 # 統合スーパビジョン・ローリングアップデート・レプリケーションアーキテクチャ
 

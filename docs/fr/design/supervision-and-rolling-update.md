@@ -1,10 +1,3 @@
-+++
-title = "Architecture unifiée de supervision, de mise à jour progressive et de réplication"
-description = """Un design transversal pour une ossature d'arbre de supervision unique, partagée par entelecheia, shittim-chest et evernight. Elle fournit une sémantique uniforme de signaux et de vidange (drain), une passation de listener sans interruption via l'activation de socket systemd, une abstraction de verrou de coordination enfichable, et deux stratégies de tolérance aux pannes construites sur les mêmes primitives Worker + Supervisor : la stratégie Replica (équilibrage de charge ⊃ mise à jour progressive) côté serveur, et la stratégie Leader/Follower (HA actif-passif) pour la périphérie des appareils evernight."""
-lang = "fr"
-category = "design"
-subcategory = "platform"
-+++
 
 # Architecture unifiée de supervision, de mise à jour progressive et de réplication
 

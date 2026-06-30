@@ -1,10 +1,3 @@
-+++
-title = "통합 감독, 롤링 업데이트 및 복제 아키텍처"
-description = """entelecheia, shittim-chest, evernight 세 프로젝트가 공유하는 단일 감독 트리(supervision tree) 골격에 대한 크로스 프로젝트 설계. 이 골격은 통일된 시그널/드레인(drain) 시맨틱, systemd socket activation을 통한 무정지 리스너 인계, 플러그 가능한 조정 잠금(coordination-lock) 추상화, 그리고 동일한 Worker + Supervisor 원시 타입 위에 구축된 두 가지 내결함성 전략을 제공한다. 서버 측을 위한 Replica(로드 밸런싱 ⊃ 롤링 업데이트), 그리고 evernight 기기 엣지를 위한 Leader/Follower(능동-수동 HA)."""
-lang = "ko"
-category = "design"
-subcategory = "platform"
-+++
 
 # 통합 감독, 롤링 업데이트 및 복제 아키텍처
 

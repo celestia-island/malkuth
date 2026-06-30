@@ -1,9 +1,9 @@
+# Malkuth
 <!-- markdownlint-disable MD033 MD041 MD036 -->
 <div align="center">
 
 <img src="../logo.webp" alt="Malkuth" width="200"/>
 
-# Malkuth
 
 **Infrastructure for long-running programs to self-upgrade and balance load**
 

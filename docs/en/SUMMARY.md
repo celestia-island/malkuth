@@ -1,6 +1,6 @@
 # Summary
 
-[Introduction](./README.md)
+[Malkuth](./README.md)
 
 ---
 
@@ -17,4 +17,4 @@
 
 # Design
 
-- [Supervision & Rolling Update](./design/supervision-and-rolling-update.md)
+- [Unified Supervision, Rolling Update & Replication Architecture](./design/supervision-and-rolling-update.md)
