@@ -1,7 +1,7 @@
 """CLI: same client IP sticks to one backend; crashing it re-routes."""
 import sys, time, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _harness import Proc, bin_path, free_port, line_request, parse_kv, wait_port  # noqa: E402
+from _harness import Proc, bin_path, free_port, line_request, line_request_retry, parse_kv, wait_port  # noqa: E402
 
 
 def test_cli_proxy_sticky_and_crash() -> None:
