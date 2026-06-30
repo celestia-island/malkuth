@@ -20,7 +20,7 @@ tcp = ["dep:async-net"]
 # WebSocket (ws:// / wss://) via async-tungstenite over an async stream.
 ws = ["dep:async-tungstenite"]
 # Local IPC via the `interprocess` crate (Unix domain sockets / Windows named pipes).
-ipc = ["dep:interprocess"]
+ipc = ["dep:interprocess", "dep:tokio", "dep:tokio-util"]
 
 # ── Default exit/heartbeat facilities ──────────────────────────
 # OS-signal-based ExitSource (SIGTERM/SIGINT/SIGHUP/SIGQUIT).
