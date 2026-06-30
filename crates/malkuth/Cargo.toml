@@ -28,7 +28,7 @@ signals = ["dep:async-signal"]
 
 # ── Worker supervision ─────────────────────────────────────────
 # Supervised child-process workers via async-process.
-worker = ["dep:async-process"]
+worker = ["dep:async-process", "dep:async-io"]
 
 # ── HTTP probes (optional; the JSON-RPC path needs no framework) ──
 # axum-based /healthz + /readyz router.
@@ -63,6 +63,7 @@ interprocess = { workspace = true, optional = true }
 # default facilities
 async-signal = { workspace = true, optional = true }
 async-process = { workspace = true, optional = true }
+async-io = { workspace = true, optional = true }
 
 # optional HTTP probes
 axum = { version = "0.8", optional = true }
