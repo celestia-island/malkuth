@@ -1,0 +1,17 @@
+[book]
+title = "Malkuth 문서"
+description = "범용 Rust 서비스 감시 툴킷: 우아한 종료, 헬스 프로브, 워커 감독, 소켓 활성화, 조정 잠금"
+authors = ["celestia-island"]
+language = "ko"
+src = "."
+
+[build]
+build-dir = "../../target/docs/ko"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "ayu"
+git-repository-url = "https://github.com/celestia-island/malkuth"
+edit-url-template = "https://github.com/celestia-island/malkuth/edit/dev/docs/ko/{path}"
+additional-js = ["../theme/lang-switcher.js"]
+additional-css = ["../theme/lang-switcher.css"]

@@ -1,0 +1,17 @@
+[book]
+title = "Documentation Malkuth"
+description = "Boîte à outils Rust générique pour la supervision de services"
+authors = ["celestia-island"]
+language = "fr"
+src = "."
+
+[build]
+build-dir = "../../target/docs/fr"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "ayu"
+git-repository-url = "https://github.com/celestia-island/malkuth"
+edit-url-template = "https://github.com/celestia-island/malkuth/edit/dev/docs/fr/{path}"
+additional-js = ["../theme/lang-switcher.js"]
+additional-css = ["../theme/lang-switcher.css"]

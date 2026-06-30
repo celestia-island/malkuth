@@ -1,0 +1,17 @@
+[book]
+title = "Malkuth 文檔"
+description = "通用 Rust 服務監督工具包：優雅關閉、健康探針、Worker 監督、Socket 啟動與協調鎖"
+authors = ["celestia-island"]
+language = "zh-TW"
+src = "."
+
+[build]
+build-dir = "../../target/docs/zht"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "ayu"
+git-repository-url = "https://github.com/celestia-island/malkuth"
+edit-url-template = "https://github.com/celestia-island/malkuth/edit/dev/docs/zht/{path}"
+additional-js = ["../theme/lang-switcher.js"]
+additional-css = ["../theme/lang-switcher.css"]

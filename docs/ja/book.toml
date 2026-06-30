@@ -1,0 +1,17 @@
+[book]
+title = "Malkuth ドキュメント"
+description = "汎用 Rust サービス監視ツールキット：グレースフルシャットダウン、ヘルスプローブ、ワーカー監督、ソケットアクティベーション、協調ロック"
+authors = ["celestia-island"]
+language = "ja"
+src = "."
+
+[build]
+build-dir = "../../target/docs/ja"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "ayu"
+git-repository-url = "https://github.com/celestia-island/malkuth"
+edit-url-template = "https://github.com/celestia-island/malkuth/edit/dev/docs/ja/{path}"
+additional-js = ["../theme/lang-switcher.js"]
+additional-css = ["../theme/lang-switcher.css"]
