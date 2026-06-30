@@ -23,6 +23,7 @@ futures-util = { version = "0.3", features = ["io"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "signal", "sync", "time", "process", "io-util", "fs"] }
 tokio-tungstenite = "0.29"
 interprocess = "2"
+tokio-postgres = "0.7"
 clap = { version = "4", features = ["derive"] }
 notify = "8"
 libc = "0.2"

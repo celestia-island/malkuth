@@ -20,6 +20,8 @@ pub mod probes;
 pub mod signals;
 #[cfg(feature = "replica")]
 pub mod registry;
+#[cfg(feature = "pg-lock")]
+pub mod pg_lock;
 #[cfg(feature = "leader-follower")]
 pub mod leader;
 
@@ -29,5 +31,7 @@ pub use server::Server;
 pub use service::Supervised;
 #[cfg(feature = "leader-follower")]
 pub use leader::LeaseLeaderElector;
+#[cfg(feature = "pg-lock")]
+pub use pg_lock::PgLock;
 
 pub use malkuth_core;
