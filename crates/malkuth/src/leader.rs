@@ -29,7 +29,7 @@ impl LeaseLeaderElector {
     /// Create an elector. `lock_root` is the directory holding lease files.
     #[must_use]
     pub fn new(
-        lock_root: impl Into<std::path::PathBuf>
+        lock_root: impl Into<std::path::PathBuf>,
         node_id: impl Into<String>,
         instance_id: impl Into<String>,
         key: impl Into<String>,
