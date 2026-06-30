@@ -1,23 +1,23 @@
 <!-- markdownlint-disable MD033 MD041 MD036 -->
 <div align="center">
 
-<img src="res/logo.webp" alt="Plana logo" width="200"/>
+<img src="../res/logo.webp" alt="Plana logo" width="200"/>
 
 # Plana
 
 **Infrastructure for long-running programs to upgrade themselves and balance load**
 
-[![License](https://img.shields.io/badge/license-BSL--1.1-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-BSL--1.1-blue.svg)](../LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fplana-blue.svg)](https://github.com/celestia-island/plana)
 
 </div>
 <!-- markdownlint-enable MD033 MD041 MD036 -->
 
-**[English]** &bull; **[简体中文](docs/zhs/README.md)** &bull;
-**[繁體中文](docs/zht/README.md)** &bull; **[日本語](docs/ja/README.md)** &bull;
-**[한국어](docs/ko/README.md)** &bull; **[Français](docs/fr/README.md)** &bull;
-**[Español](docs/es/README.md)** &bull; **[Русский](docs/ru/README.md)**
+**[English](../../README.md)** &bull; **[简体中文](../zhs/README.md)** &bull;
+**[繁體中文](../zht/README.md)** &bull; **[日本語](../ja/README.md)** &bull;
+**[한국어](../ko/README.md)** &bull; **[Français](../fr/README.md)** &bull;
+**[Español](../es/README.md)** &bull; **[Русский](../ru/README.md)**
 
 > **Version 0.1.0** — Early development. Independent and self-contained;
 > depends only on tokio + axum.
@@ -100,4 +100,4 @@ implementations staged.
 ## License
 
 Business Source License 1.1 (BSL-1.1); automatically converts to your choice
-of Apache-2.0 or MIT on 2030-01-01. See [LICENSE](LICENSE).
+of Apache-2.0 or MIT on 2030-01-01. See [LICENSE](../LICENSE).

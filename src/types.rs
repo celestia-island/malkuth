@@ -7,7 +7,6 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 // ═══════════════════════════════════════════════════════════════
 // JSON-RPC method names
@@ -39,8 +38,7 @@ pub mod methods {
 // ═══════════════════════════════════════════════════════════════
 
 /// High-level lifecycle state of an instance, observable over the wire.
-#[derive(JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "ws/lifecycle.ts")]
+#[derive(JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DrainState {
     /// Serving normally; accepts new work.
@@ -57,8 +55,7 @@ pub enum DrainState {
 // ═══════════════════════════════════════════════════════════════
 
 /// Result of one dependency check reported by `/readyz`.
-#[derive(JsonSchema, Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "ws/lifecycle.ts")]
+#[derive(JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct DependencyCheck {
     /// Human-readable dependency name, e.g. `database`, `scepter_socket`,
     /// `first_station_poll`.
@@ -67,7 +64,6 @@ pub struct DependencyCheck {
     pub ok: bool,
     /// Optional detail / error message when `ok` is false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub detail: Option<String>,
 }
 
@@ -75,8 +71,7 @@ pub struct DependencyCheck {
 ///
 /// The `draining` flag is the central rolling-update signal: a load balancer
 /// or orchestrator routes new traffic only to instances whose `ready && !draining`.
-#[derive(JsonSchema, Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "ws/lifecycle.ts")]
+#[derive(JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct ReadyStatus {
     /// Overall readiness: true only when not draining AND every dependency ok.
     pub ready: bool,
@@ -87,15 +82,13 @@ pub struct ReadyStatus {
     pub dependencies: Vec<DependencyCheck>,
     /// Deployment generation this instance belongs to (rolling-update bookkeeping).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub generation: Option<u64>,
 }
 
 /// Liveness probe payload — the body of `GET /healthz`.
 ///
 /// Intentionally minimal: if the process can answer at all, it is alive.
-#[derive(JsonSchema, Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "ws/lifecycle.ts")]
+#[derive(JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct HealthStatus {
     /// Always true when the endpoint answers (else the probe fails).
     pub alive: bool,
@@ -116,8 +109,7 @@ pub struct HealthStatus {
 /// - For Subsystem A (Replica): peers are `Active`; the one being retired is
 ///   `Draining`.
 /// - For Subsystem B (Leader/Follower): encoded separately via [`LeaderRole`].
-#[derive(JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "ws/lifecycle.ts")]
+#[derive(JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InstanceRole {
     /// Accepting new work.
@@ -127,8 +119,7 @@ pub enum InstanceRole {
 }
 
 /// One entry in the shared instance registry.
-#[derive(JsonSchema, Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "ws/lifecycle.ts")]
+#[derive(JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct InstanceInfo {
     /// Stable unique id of this instance (uuid recommended).
     pub instance_id: String,
@@ -142,7 +133,6 @@ pub struct InstanceInfo {
     pub started_at: String,
     /// Optional endpoint (host:port or socket path) clients can reach it at.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub endpoint: Option<String>,
 }
 
@@ -151,8 +141,7 @@ pub struct InstanceInfo {
 // ═══════════════════════════════════════════════════════════════
 
 /// Leader/follower role for Subsystem B (active-passive HA).
-#[derive(JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "ws/lifecycle.ts")]
+#[derive(JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LeaderRole {
     /// Currently holds the lease and owns the exclusive resources.
@@ -162,8 +151,7 @@ pub enum LeaderRole {
 }
 
 /// Announcement of a lease acquisition or transfer (method `LEADER_ANNOUNCE`).
-#[derive(JsonSchema, Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "ws/lifecycle.ts")]
+#[derive(JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct LeaderAnnounce {
     /// Group/device identity this leadership applies to (shared by leader & follower).
     pub node_id: String,
@@ -182,8 +170,7 @@ pub struct LeaderAnnounce {
 // ═══════════════════════════════════════════════════════════════
 
 /// Lifecycle state of one supervised worker process (the FSM in the design).
-#[derive(JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "ws/lifecycle.ts")]
+#[derive(JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerStatus {
     /// Process spawned, not yet confirmed healthy.
@@ -197,8 +184,7 @@ pub enum WorkerStatus {
 }
 
 /// When to restart a worker after it exits (OTP vocabulary).
-#[derive(JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "ws/lifecycle.ts")]
+#[derive(JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RestartPolicy {
     /// Always restart, even on clean exit (default for resource workers).
@@ -211,8 +197,7 @@ pub enum RestartPolicy {
 }
 
 /// Snapshot of one worker, reported over `Worker.Status`.
-#[derive(JsonSchema, Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "ws/lifecycle.ts")]
+#[derive(JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerInfo {
     /// Worker identifier (unique within its supervisor).
     pub id: String,
@@ -227,7 +212,6 @@ pub struct WorkerInfo {
     pub restart_count: u32,
     /// Last error detail, if the worker is `Failed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub last_error: Option<String>,
 }
 
@@ -236,22 +220,18 @@ pub struct WorkerInfo {
 // ═══════════════════════════════════════════════════════════════
 
 /// Body of `Lifecycle.Drain` — ask an instance to enter graceful shutdown.
-#[derive(JsonSchema, Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "ws/lifecycle.ts")]
+#[derive(JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct DrainRequest {
     /// Override the default drain timeout (seconds). `None` = use instance default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub timeout_secs: Option<u32>,
     /// Free-form reason (e.g. `rolling_update`, `manual`, `leader_demote`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub reason: Option<String>,
 }
 
 /// Reply to `Lifecycle.Drain`.
-#[derive(JsonSchema, Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "ws/lifecycle.ts")]
+#[derive(JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct DrainResponse {
     /// Whether the instance accepted the drain request.
     pub accepted: bool,
