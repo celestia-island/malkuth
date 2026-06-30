@@ -200,12 +200,12 @@ S7comm worker を汚染することはない。
 ```
          start                      health ok
   Starting ──────► Running ─────────────────► Running
-      │              │  ▲                          
-      │              │  │ health ok (自己修復)     
-      │              ▼  │                          
+      │              │  ▲
+      │              │  │ health ok (自己修復)
+      │              ▼  │
       └──────► Failed ◄┘        クラッシュ / 不健康
-                   │                              
-                   │ restart policy = permanent    
+                   │
+                   │ restart policy = permanent
                    └────────► Starting (速率制限付き)
 ```
 

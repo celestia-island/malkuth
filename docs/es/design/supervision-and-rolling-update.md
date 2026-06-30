@@ -221,11 +221,11 @@ Máquina de estados del ciclo de vida (tomada de
 ```
         inicio                     salud ok
  Starting ──────► Running ─────────────────► Running
-     │              │  ▲                          
-     │              │  │ salud ok (self-heal)     
-     │              ▼  │                          
+     │              │  ▲
+     │              │  │ salud ok (self-heal)
+     │              ▼  │
      └──────► Failed ◄┘        fallo / no saludable
-                  │                              
+                  │
                   │ política de reinicio = permanent
                   └────────► Starting (rate-limitado)
 ```

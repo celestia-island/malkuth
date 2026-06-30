@@ -217,12 +217,12 @@ FSM de cycle de vie (tiré de `evernight/src/model_server.rs:128-139`) :
 ```
         démarrage                  santé ok
   Starting ──────► Running ─────────────────► Running
-      │              │  ▲                          
-      │              │  │ santé ok (auto-réparation)    
-      │              ▼  │                          
+      │              │  ▲
+      │              │  │ santé ok (auto-réparation)
+      │              ▼  │
       └──────► Failed ◄┘        plantage / mauvaise santé
-                   │                              
-                   │ politique de redémarrage = permanent    
+                   │
+                   │ politique de redémarrage = permanent
                    └────────► Starting (limité en débit)
 ```
 

@@ -214,12 +214,12 @@ FSM жизненного цикла (взят из `evernight/src/model_server.r
 ```
         запуск                     health ok
  Starting ──────► Running ─────────────────► Running
-     │              │  ▲                          
-     │              │  │ health ok (самовосстановление)    
-     │              ▼  │                          
+     │              │  ▲
+     │              │  │ health ok (самовосстановление)
+     │              ▼  │
      └──────► Failed ◄┘        крах / нездоров
-                  │                              
-                  │ политика перезапуска = permanent    
+                  │
+                  │ политика перезапуска = permanent
                   └────────► Starting (rate-limited)
 ```
 

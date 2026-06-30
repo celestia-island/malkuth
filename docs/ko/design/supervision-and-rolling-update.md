@@ -196,12 +196,12 @@ S7comm worker를 오염시키지 않습니다.
 ```
         시작                       health ok(정상)
  Starting ──────► Running ─────────────────► Running
-     │              │  ▲                          
-     │              │  │ health ok(자가 치유)      
-     │              ▼  │                          
+     │              │  ▲
+     │              │  │ health ok(자가 치유)
+     │              ▼  │
      └──────► Failed ◄┘        크래시 / 비정상
-                  │                              
-                  │ 재시작 정책 = permanent       
+                  │
+                  │ 재시작 정책 = permanent
                   └────────► Starting(속도 제한)
 ```
 

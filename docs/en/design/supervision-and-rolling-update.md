@@ -207,12 +207,12 @@ Lifecycle FSM (lifted from `evernight/src/model_server.rs:128-139`):
 ```
         start                      health ok
  Starting ──────► Running ─────────────────► Running
-     │              │  ▲                          
-     │              │  │ health ok (self-heal)    
-     │              ▼  │                          
+     │              │  ▲
+     │              │  │ health ok (self-heal)
+     │              ▼  │
      └──────► Failed ◄┘        crash / unhealthy
-                  │                              
-                  │ restart policy = permanent    
+                  │
+                  │ restart policy = permanent
                   └────────► Starting (rate-limited)
 ```
 
