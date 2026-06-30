@@ -107,49 +107,43 @@ impl CoordinationLock for LeaseLock {
         let key_msg = key.to_string();
         let path = root.join(sanitize(key));
         let ttl = lease;
-        // Offload the (sleeping) acquire loop to a thread — stays runtime-agnostic.
+        // Best-effort, NON-blocking acquire: try once. (A retry loop on a
+        // detached thread would outlive a dropped `acquire` future and could
+        // spuriously win the lease later — so we don't.) `lease` is the TTL
+        // written into the lease record, not a wait duration.
         let result = blocking_call(move || -> Result<LeaseGuard, LockError> {
             std::fs::create_dir_all(&root)?;
             let owner = next_owner();
-            let deadline = Instant::now() + ttl;
-            loop {
-                if try_take(&path, &owner, ttl)? {
-                    // Acquired — start the renew thread.
-                    let stop = Arc::new(AtomicBool::new(false));
-                    let stop_c = Arc::clone(&stop);
-                    let renew_path = path.clone();
-                    let renew_owner = owner.clone();
-                    let renew_ttl = ttl;
-                    let handle = std::thread::spawn(move || {
-                        let step = renew_ttl.max(Duration::from_secs(1)) / 3;
-                        while !stop_c.load(Ordering::Acquire) {
-                            // Sleep `step`, but check stop frequently.
-                            let mut waited = Duration::ZERO;
-                            while waited < step {
-                                if stop_c.load(Ordering::Acquire) {
-                                    return;
-                                }
-                                std::thread::sleep(Duration::from_millis(50));
-                                waited += Duration::from_millis(50);
+            if try_take(&path, &owner, ttl)? {
+                let stop = Arc::new(AtomicBool::new(false));
+                let stop_c = Arc::clone(&stop);
+                let renew_path = path.clone();
+                let renew_owner = owner.clone();
+                let renew_ttl = ttl;
+                let handle = std::thread::spawn(move || {
+                    let step = renew_ttl.max(Duration::from_secs(1)) / 3;
+                    while !stop_c.load(Ordering::Acquire) {
+                        let mut waited = Duration::ZERO;
+                        while waited < step {
+                            if stop_c.load(Ordering::Acquire) {
+                                return;
                             }
-                            let rec = LeaseRecord { owner: renew_owner.clone(), expires_at_ms: now_ms() + renew_ttl.as_millis() as u64 };
-                            let _ = write_atomic(&renew_path, &rec);
+                            std::thread::sleep(Duration::from_millis(50));
+                            waited += Duration::from_millis(50);
                         }
-                    });
-                    return Ok(LeaseGuard { path, owner, stop, handle: Some(handle) });
-                }
-                if Instant::now() >= deadline {
-                    return Err(LockError::Contended(format!(
-                        "lease on '{}' not acquired within {:?}",
-                        key_msg, ttl
-                    )));
-                }
-                let mut waited = Duration::ZERO;
-                while waited < Duration::from_millis(100) {
-                    std::thread::sleep(Duration::from_millis(10));
-                    waited += Duration::from_millis(10);
-                }
+                        let rec = LeaseRecord {
+                            owner: renew_owner.clone(),
+                            expires_at_ms: now_ms() + renew_ttl.as_millis() as u64,
+                        };
+                        let _ = write_atomic(&renew_path, &rec);
+                    }
+                });
+                return Ok(LeaseGuard { path, owner, stop, handle: Some(handle) });
             }
+            Err(LockError::Contended(format!(
+                "lease on '{}' held by another live owner",
+                key_msg
+            )))
         })
         .await;
         match result {
