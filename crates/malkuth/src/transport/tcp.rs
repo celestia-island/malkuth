@@ -35,7 +35,9 @@ pub struct TcpWireListener {
 impl WireListener for TcpWireListener {
     async fn accept(&self) -> std::io::Result<Box<dyn WireConn>> {
         let (stream, _peer) = self.listener.accept().await?;
-        // keep the read-ext import in scope / used
         Ok(Box::new(FramedConn::new(stream)))
+    }
+    fn local_addr(&self) -> std::io::Result<String> {
+        Ok(format!("{}", self.listener.local_addr()?))
     }
 }

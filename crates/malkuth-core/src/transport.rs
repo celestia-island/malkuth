@@ -30,6 +30,8 @@ pub trait WireConn: Send {
 pub trait WireListener: Send + Sync {
     /// Accept the next inbound framed connection.
     async fn accept(&self) -> io::Result<Box<dyn WireConn>>;
+    /// The locally-bound address (e.g. `127.0.0.1:54321`), for port-0 binds.
+    fn local_addr(&self) -> io::Result<String>;
 }
 
 /// A connection factory + listener factory addressed by string.
