@@ -93,10 +93,13 @@ impl WireConn for WsConn {
                     if msg.is_ping() || msg.is_pong() {
                         continue;
                     }
-                    if let Ok(txt) = msg.into_text() {
+                    if msg.is_text() {
+                        let txt = msg.into_text()
+                            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("ws text: {e}")))?;
                         return Ok(Some(serde_json::from_str(&txt)?));
                     }
-                    if let Ok(bytes) = msg.into_data() {
+                    if msg.is_binary() {
+                        let bytes = msg.into_data();
                         return Ok(Some(serde_json::from_slice(&bytes)?));
                     }
                 }
