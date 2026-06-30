@@ -21,7 +21,7 @@ tracing = "0.1"
 
 # runtime-agnostic async I/O family (works under tokio / async-std / smol)
 futures-io = "0.3"
-futures-util = "0.3"
+futures-util = { version = "0.3", features = ["io"] }
 futures-core = "0.3"
 event-listener = "5"
 async-net = "2"

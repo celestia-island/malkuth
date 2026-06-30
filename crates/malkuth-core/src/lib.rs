@@ -26,6 +26,6 @@ pub use hooks::{
     DrainHook, ExitReason, ExitSource, Heartbeat, HeartbeatReport, ProbeSink,
 };
 pub use lifecycle::{DrainController, ShutdownKind};
-pub use transport::{Transport, WireListener, WireStream};
+pub use transport::{FramedConn, Transport, WireConn, WireListener, take_frame};
 pub use traits::{CoordinationLock, InstanceRegistry, LeaderElector, LockError, LockGuard};
 pub use types::*;

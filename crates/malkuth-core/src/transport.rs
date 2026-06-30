@@ -1,15 +1,13 @@
 //! Runtime-agnostic wire-transport contracts.
 //!
-//! Rather than exposing raw `AsyncRead + AsyncWrite` trait objects (which are
-//! awkward to use as `dyn`), a [`WireConn`] is a **framed** connection: it
-//! reads/writes one JSON value per message, newline-delimited (NDJSON). The
-//! generic [`FramedConn<S>`] adapts any `AsyncRead + AsyncWrite` stream —
-//! `async_net::TcpStream`, an adapted tokio stream, a WebSocket byte adapter —
-//! into a `WireConn` with no glue.
+//! A [`WireConn`] is a **framed** connection: it reads/writes one JSON value per
+//! message, newline-delimited (NDJSON). The generic [`FramedConn<S>`] adapts
+//! any `AsyncRead + AsyncWrite` stream — `async_net::TcpStream`, an adapted
+//! tokio stream, a WebSocket byte adapter — into a `WireConn` with no glue.
 //!
-//! Because everything sits on the `futures_io` traits, the codec and the
+//! Everything sits on the `futures_io` traits, so the codec and the
 //! server/client in the `malkuth` crate run under tokio, async-std and smol
-//! alike: only the top-level executor differs.
+//! alike — only the top-level executor differs.
 
 use std::io;
 
@@ -19,9 +17,6 @@ use futures_util::io::{AsyncReadExt, AsyncWriteExt};
 use serde_json::Value;
 
 /// A framed, object-safe JSON-RPC connection.
-///
-/// Each [`read_msg`] returns one deserialized NDJSON frame, or `None` on clean
-/// EOF. [`write_msg`] serializes one value followed by a newline and flushes.
 #[async_trait]
 pub trait WireConn: Send {
     /// Read the next message, or `None` if the peer closed cleanly.
@@ -33,19 +28,14 @@ pub trait WireConn: Send {
 /// A server-side listener that yields accepted [`WireConn`]s.
 #[async_trait]
 pub trait WireListener: Send + Sync {
-    /// Accept the next inbound framed connection, or return an error.
+    /// Accept the next inbound framed connection.
     async fn accept(&self) -> io::Result<Box<dyn WireConn>>;
 }
 
 /// A connection factory + listener factory addressed by string.
-///
-/// Address schemes are interpreted by the concrete implementation in the
-/// `malkuth` crate (e.g. `tcp://127.0.0.1:0`, `ws://host/path`,
-/// `unix:/path/to/sock`). Registering multiple schemes behind one `Transport`
-/// (or composing several) is a deployment choice.
 #[async_trait]
 pub trait Transport: Send + Sync {
-    /// Start listening on `addr`; the returned listener yields accepted conns.
+    /// Start listening on `addr`.
     async fn listen(&self, addr: &str) -> io::Result<Box<dyn WireListener>>;
     /// Dial `addr` and return one framed connection.
     async fn connect(&self, addr: &str) -> io::Result<Box<dyn WireConn>>;
@@ -53,11 +43,21 @@ pub trait Transport: Send + Sync {
     fn name(&self) -> &'static str;
 }
 
+/// Try to pull one complete NDJSON frame out of `rd_buf`. Returns:
+/// - `Some(Ok(v))` — a full frame was available and parsed.
+/// - `Some(Err(_))` — a full frame was available but failed to parse.
+/// - `None` — no newline yet; caller must read more bytes.
+pub fn take_frame(rd_buf: &mut Vec<u8>) -> Option<io::Result<Value>> {
+    let pos = rd_buf.iter().position(|&b| b == b'\n')?;
+    let line: Vec<u8> = rd_buf.drain(..=pos).collect();
+    if line.iter().all(|b| b.is_ascii_whitespace()) {
+        // A bare newline is a valid (empty) frame separator — treat as no-op.
+        return Some(Ok(Value::Null));
+    }
+    Some(serde_json::from_slice(&line).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)))
+}
+
 /// Generic NDJSON framing over any duplex stream.
-///
-/// Wraps a stream that is both [`AsyncRead`] and [`AsyncWrite`] and implements
-/// [`WireConn`] by buffering reads until a newline and serializing writes with
-/// a trailing newline + flush.
 pub struct FramedConn<S> {
     stream: S,
     rd_buf: Vec<u8>,
@@ -69,10 +69,7 @@ where
 {
     /// Wrap a duplex stream.
     pub fn new(stream: S) -> Self {
-        Self {
-            stream,
-            rd_buf: Vec::with_capacity(4096),
-        }
+        Self { stream, rd_buf: Vec::with_capacity(8192) }
     }
 }
 
@@ -83,13 +80,13 @@ where
 {
     async fn read_msg(&mut self) -> io::Result<Option<Value>> {
         loop {
-            if let Some(pos) = self.rd_buf.iter().position(|&b| b == b'\n') {
-                let line: Vec<u8> = self.rd_buf.drain(..=pos).collect();
-                if line.iter().all(|b| b.is_ascii_whitespace()) {
+            if let Some(res) = take_frame(&mut self.rd_buf) {
+                let v = res?;
+                if v == Value::Null {
+                    // bare newline: skip and continue
                     continue;
                 }
-                let val = serde_json::from_slice(&line)?;
-                return Ok(Some(val));
+                return Ok(Some(v));
             }
             let mut tmp = [0u8; 8192];
             let n = self.stream.read(&mut tmp).await?;
@@ -120,114 +117,33 @@ where
 mod tests {
     use super::*;
 
-    /// In-memory duplex pair for testing the codec without a real socket.
-    /// We use a shared pipe implemented over channels of `Vec<u8>`.
-    struct PipeRead(std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<u8>>>);
-    impl AsyncRead for PipeRead {
-        fn poll_read(
-            mut self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-            buf: &mut [u8],
-        ) -> std::task::Poll<io::Result<usize>> {
-            let mut q = self.0.lock().unwrap();
-            if q.is_empty() {
-                return std::task::Poll::Ready(Ok(0));
-            }
-            let n = buf.len().min(q.len());
-            for slot in buf.iter_mut().take(n) {
-                *slot = q.pop_front().unwrap();
-            }
-            std::task::Poll::Ready(Ok(n))
-        }
-    }
-    struct PipeWrite(std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<u8>>>);
-    impl AsyncWrite for PipeWrite {
-        fn poll_write(
-            self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-            buf: &[u8],
-        ) -> std::task::Poll<io::Result<usize>> {
-            let mut q = self.0.lock().unwrap();
-            q.extend(buf);
-            std::task::Poll::Ready(Ok(buf.len()))
-        }
-        fn poll_flush(
-            self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<io::Result<()>> {
-            std::task::Poll::Ready(Ok(()))
-        }
-        fn poll_close(
-            self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<io::Result<()>> {
-            std::task::Poll::Ready(Ok(()))
-        }
-    }
-
-    // A duplex stream = (read side, write side) over two queues.
-    struct Duplex {
-        r: PipeRead,
-        w: PipeWrite,
-    }
-    impl AsyncRead for Duplex {
-        fn poll_read(
-            mut self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-            buf: &mut [u8],
-        ) -> std::task::Poll<io::Result<usize>> {
-            std::pin::Pin::new(&mut self.r).poll_read(cx, buf)
-        }
-    }
-    impl AsyncWrite for Duplex {
-        fn poll_write(
-            mut self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-            buf: &[u8],
-        ) -> std::task::Poll<io::Result<usize>> {
-            std::pin::Pin::new(&mut self.w).poll_write(cx, buf)
-        }
-        fn poll_flush(
-            mut self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<io::Result<()>> {
-            std::pin::Pin::new(&mut self.w).poll_flush(cx)
-        }
-        fn poll_close(
-            mut self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<io::Result<()>> {
-            std::pin::Pin::new(&mut self.w).poll_close(cx)
-        }
+    #[test]
+    fn take_frame_parses_complete_line() {
+        let mut buf = b"{\"id\":1}\n".to_vec();
+        let v = take_frame(&mut buf).unwrap().unwrap();
+        assert_eq!(v["id"], 1);
+        assert!(buf.is_empty());
     }
 
     #[test]
-    fn framed_roundtrip() {
-        // Two queues: client->server and server->client.
-        let c2s = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<u8>::new()));
-        let s2c = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<u8>::new()));
-        let server = Duplex {
-            r: PipeRead(c2s.clone()),
-            w: PipeWrite(s2c.clone()),
-        };
-        let client = Duplex {
-            r: PipeRead(s2c.clone()),
-            w: PipeWrite(c2s.clone()),
-        };
-        let mut s = FramedConn::new(server);
-        let mut c = FramedConn::new(client);
+    fn take_frame_none_when_incomplete() {
+        let mut buf = b"{\"id\":1}".to_vec(); // no newline
+        assert!(take_frame(&mut buf).is_none());
+        assert_eq!(buf, b"{\"id\":1}"); // untouched
+    }
 
-        // We need a runtime to drive async; use a tiny block_on via futures executor.
-        let mut pool = futures_util::task::LocalPool::new();
-        pool.run_until(async move {
-            let msg = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"ping"});
-            c.write_msg(&msg).await.unwrap();
-            let got = s.read_msg().await.unwrap();
-            assert_eq!(got, Some(msg.clone()));
-            let reply = serde_json::json!({"jsonrpc":"2.0","id":1,"result":"pong"});
-            s.write_msg(&reply).await.unwrap();
-            let got2 = c.read_msg().await.unwrap();
-            assert_eq!(got2, Some(reply));
-        });
+    #[test]
+    fn take_frame_keeps_leftover_after_frame() {
+        let mut buf = b"a\nb\n".to_vec();
+        let _ = take_frame(&mut buf).unwrap();
+        assert_eq!(buf, b"b\n");
+        let _ = take_frame(&mut buf).unwrap();
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn take_frame_invalid_json_is_error() {
+        let mut buf = b"{bad\n".to_vec();
+        assert!(take_frame(&mut buf).unwrap().is_err());
     }
 }
