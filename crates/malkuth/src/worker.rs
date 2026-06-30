@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use malkuth_core::{DrainController, RestartPolicy, WorkerInfo, WorkerStatus};
-use tokio::process::{Child, Command, Stdio};
+use std::process::Stdio;
+use tokio::process::{Child, Command};
 use tracing::{info, warn};
 
 /// Default sliding window for restart rate-limiting.
