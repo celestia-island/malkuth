@@ -17,16 +17,17 @@ use interprocess::local_socket::{
 use malkuth_core::{FramedConn, Transport, WireConn, WireListener};
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
+fn name_err<E: std::fmt::Display>(e: E) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, format!("invalid local-socket name: {e}"))
+}
+
 /// Build an interprocess [`Name`] from an `ipc:` address.
 fn to_name(addr: &str) -> io::Result<Name<'_>> {
     let s = addr.strip_prefix("ipc:").unwrap_or(addr);
-    let map = |e: impl std::fmt::Display| {
-        io::Error::new(io::ErrorKind::InvalidInput, format!("invalid local-socket name: {e}"))
-    };
     if s.starts_with('/') {
-        s.to_fs_name::<GenericFilePath>().map_err(map)
+        s.to_fs_name::<GenericFilePath>().map_err(name_err)
     } else {
-        s.to_ns_name::<GenericNamespaced>().map_err(map)
+        s.to_ns_name::<GenericNamespaced>().map_err(name_err)
     }
 }
 
