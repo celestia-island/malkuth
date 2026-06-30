@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 
 use async_process::{Child, Command, Stdio};
 use async_trait::async_trait;
-use futures_util::future::FusedFuture;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use futures_util::{select, FutureExt};
 use malkuth_core::{DrainController, RestartPolicy, WorkerInfo, WorkerStatus};
@@ -152,8 +151,6 @@ async fn supervise_one(
                 break;
             }
         }
-        // Suppress unused-warning on the FusedFuture import path.
-        let _ = FusedFuture::is_terminated;
     }
 
     WorkerInfo {
@@ -197,10 +194,10 @@ async fn rate_limited(
     if restart_times.len() as u32 > max_restarts {
         warn!(restarts = restart_times.len(), "restart rate limit tripped, entering cooldown");
         // Sleep `cooldown`, but wake early if drain begins.
-        let timer = async_io::Timer::after(cooldown);
+        let mut timer = futures_util::FutureExt::fuse(async_io::Timer::after(cooldown));
         futures_util::pin_mut!(timer);
         select! {
-            _ = timer.fuse() => {}
+            _ = timer => {}
             _ = drain.wait_for_drain().fuse() => {}
         }
         restart_times.clear();
