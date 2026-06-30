@@ -107,7 +107,7 @@ fn iso_now() -> String {
 mod tests {
     use super::*;
 
-    fn elector(node: &str) -> LeaseLeaderElector {
+    fn shared_dir() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "malkuth-leader-{}-{}",
             std::process::id(),
@@ -116,13 +116,15 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        LeaseLeaderElector::new(dir, "device-a", node, "device-a")
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     #[tokio::test]
     async fn one_leader_at_a_time() {
-        let a = elector("leader-A");
-        let b = elector("leader-B");
+        let dir = shared_dir();
+        let a = LeaseLeaderElector::new(dir.clone(), "device-a", "leader-A", "device-a");
+        let b = LeaseLeaderElector::new(dir, "device-a", "leader-B", "device-a");
         assert!(a.try_acquire(Duration::from_secs(2)).await.unwrap());
         // B is contended while A holds the lease.
         let r = tokio::time::timeout(Duration::from_millis(300), b.try_acquire(Duration::from_secs(2))).await;
