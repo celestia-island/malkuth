@@ -1,7 +1,7 @@
 <!-- markdownlint-disable MD033 MD041 MD036 -->
 <div align="center">
 
-<img src="res/logo.webp" alt="Plana" width="200"/>
+<img src="res/logo/plana.webp" alt="Plana" width="200"/>
 
 # Plana
 
