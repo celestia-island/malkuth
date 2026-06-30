@@ -11,38 +11,21 @@ license-file = "LICENSE"
 repository = "https://github.com/celestia-island/malkuth"
 
 [workspace.dependencies]
-# ── shared across workspace members ────────────────────────────
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = { version = "1", features = ["derive"] }
 thiserror = "2"
 async-trait = "0.1"
 tracing = "0.1"
-
-# runtime-agnostic async I/O family (works under tokio / async-std / smol)
-futures-io = "0.3"
-futures-util = { version = "0.3", features = ["io"] }
-futures-core = "0.3"
 event-listener = "5"
-async-net = "2"
-async-process = "2"
-async-io = "2"
-async-signal = "0.2"
-
-# jsonrpc transports
-async-tungstenite = "0.34"
+# futures-util is used only for Stream/Sink extension traits on WS frames.
+futures-util = { version = "0.3", features = ["io"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "signal", "sync", "time", "process", "io-util", "fs"] }
+tokio-tungstenite = "0.29"
 interprocess = "2"
-
-# CLI
 clap = { version = "4", features = ["derive"] }
 notify = "8"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "signal", "sync", "time", "process", "io-util", "fs"] }
-tokio-util = { version = "0.7", features = ["compat", "io"] }
-
 libc = "0.2"
-
-# internal crates
-malkuth = { path = "crates/malkuth", version = "0.2.0" }
 malkuth-core = { path = "crates/malkuth-core", version = "0.2.0" }
 
 [profile.release]
