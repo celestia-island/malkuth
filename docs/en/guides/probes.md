@@ -65,6 +65,8 @@ status is `503 Service Unavailable`.
 During graceful shutdown, set the draining flag so `/readyz` starts returning 503:
 
 ```rust
+use malkuth::DrainController;
+
 let probe = ProbeState::new(env!("CARGO_PKG_VERSION"));
 let ctrl = DrainController::install();
 

@@ -48,17 +48,13 @@ One lock file per `key`, created under the root directory. Uses `flock(LOCK_EX |
 for non-blocking exclusive locks. If another process holds the lock, returns
 `LockError::Contended`.
 
+> **Unix-only.** `FileLock` uses POSIX `flock` and is only available on Unix
+> targets (Linux, macOS, BSD). It is not available on Windows.
+
 ### `lease` (file lock with TTL)
 
-Enable the `lease` feature (implies `file-lock`):
-
-```toml
-malkuth = { features = ["lease"] }
-```
-
-Same API as `file-lock`, but if the lock holder crashes, the lease expires
-after the TTL and another process can acquire it. Useful for single-host
-deployments where the lock holder might die without releasing.
+Staged — not yet implemented. Will provide crash-resilient file locks with
+automatic TTL expiry, building on `file-lock`.
 
 ### `pg-lock` (PostgreSQL advisory lock)
 
@@ -70,6 +66,6 @@ coordination across multiple hosts sharing a Postgres instance.
 | Scenario | Backend |
 | --- | --- |
 | Single host, lock holder won't crash | `file-lock` |
-| Single host, lock holder might crash | `lease` |
+| Single host, lock holder might crash | `lease` (staged) |
 | Multiple hosts, shared Postgres | `pg-lock` (staged) |
 | Multiple hosts, no shared DB | External (etcd, Consul) |

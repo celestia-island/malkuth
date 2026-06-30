@@ -8,7 +8,8 @@ malkuth = { git = "https://github.com/celestia-island/malkuth.git", branch = "de
 # Optional features:
 #   socket-activation  — inherit a listener fd from systemd
 #   file-lock          — POSIX flock coordination-lock backend
-#   lease              — lease-based file lock with TTL auto-expiry
+#   lease              — lease-based file lock with TTL auto-expiry (staged)
+#   pg-lock            — PostgreSQL advisory lock (staged)
 #   replica            — InstanceRegistry trait (load-balancing)
 #   leader-follower    — LeaderElector trait (active-passive HA)
 ```
@@ -63,8 +64,9 @@ async fn main() -> std::io::Result<()> {
 | Feature | What it enables |
 | --- | --- |
 | `socket-activation` | Inherit a listener fd from systemd (zero-downtime restart) |
-| `file-lock` | POSIX `flock`-based `CoordinationLock` backend |
-| `lease` | Lease-based file lock with TTL auto-expiry on crash |
+| `file-lock` | POSIX `flock`-based `CoordinationLock` backend (Unix only) |
+| `lease` | Lease-based file lock with TTL auto-expiry on crash (staged) |
+| `pg-lock` | PostgreSQL advisory lock backend (staged) |
 | `replica` | `InstanceRegistry` trait for load-balanced replicas |
 | `leader-follower` | `LeaderElector` trait for active-passive HA |
 

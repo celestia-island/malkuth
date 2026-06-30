@@ -141,9 +141,9 @@ Split:
   JSON-RPC methods and types: `DrainState`, `ReadyStatus`,
   `Lifecycle.Drain`, `Lifecycle.Status`, `Worker.Status`, etc. Satisfies
   arona's "paired on both sides" rule.
-- **`malkuth` (new crate, runtime).** Depends on `arona`
-  protocol types + `tokio` + a `libsystemd`-binding (socket activation)
-  + backend traits. Feature-gated:
+- **`malkuth` (standalone crate, runtime).** Depends on `tokio`
+  (pure Rust — no `libsystemd`). Protocol types are self-contained
+  within `malkuth`. Feature-gated:
   - `replica` — Subsystem A coordination + orchestration.
   - `leader-follower` — Subsystem B lease election + failover.
   - `socket-activation` — systemd fd acquisition.
@@ -242,7 +242,7 @@ concurrently read/write shared resources. DB transactions are naturally
 safe; files (evernight JSONL, configs) need "notify-before-write + lock".
 ```rust
 pub trait CoordinationLock: Send + Sync {
-    async fn acquire(&self, key: &str, lease: Duration) -> Result<LockGuard>;
+    async fn acquire(&self, key: &str, lease: Duration) -> Result<Box<dyn LockGuard>, LockError>;
 }
 // Backends:
 //   FileLock  — flock/fcntl,       for evernight (JSONL / config)
@@ -390,6 +390,6 @@ Feature selection per project (`malkuth`):
   agreed yes (unify into one worker abstraction across all three
   projects).
 ---
-*Translation: `docs/zhs/design/platform/supervision-and-rolling-update.md`
+*Translation: `docs/zhs/design/supervision-and-rolling-update.md`
 is the Simplified Chinese counterpart. Other languages (zht/ja/ko/fr/es/ru)
-are pending i18n.*
+have been translated as well (see `docs/<lang>/design/`).*
