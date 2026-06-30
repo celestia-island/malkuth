@@ -2,7 +2,7 @@
 title = "Malkuth 文档"
 description = "通用 Rust 服务监督工具包：优雅关闭、健康探针、Worker 监督、Socket 激活与协调锁"
 authors = ["celestia-island"]
-language = "zh"
+language = "zh-CN"
 src = "."
 
 [build]

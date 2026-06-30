@@ -1,6 +1,6 @@
 [book]
 title = "Documentation Malkuth"
-description = "Boîte à outils Rust générique pour la supervision de services"
+description = "Boîte à outils Rust générique pour la supervision de services : arrêt gracieux, sondes de santé, supervision de workers, activation de socket et verrous de coordination"
 authors = ["celestia-island"]
 language = "fr"
 src = "."

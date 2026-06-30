@@ -1,6 +1,6 @@
 [book]
 title = "Documentación de Malkuth"
-description = "Kit de herramientas Rust genérico para supervisión de servicios"
+description = "Kit de herramientas Rust genérico para supervisión de servicios: apagado graceful, sondas de salud, supervisión de workers, activación de socket y cerraduras de coordinación"
 authors = ["celestia-island"]
 language = "es"
 src = "."
