@@ -1,0 +1,198 @@
+Business Source License 1.1
+
+License text copyright (c) 2017 MariaDB Corporation Ab, All Rights Reserved.
+"Business Source License" is a trademark of MariaDB Corporation Ab.
+
+-----------------------------------------------------------------------------
+
+Parameters
+
+Licensor:             Celestia Island
+
+Licensed Work:        Plana — Generic Rust Toolkit for Service Supervision
+The Licensed Work is (c) 2025 langyo <contact@celestia.world>
+
+Additional Use Grant: The Licensor grants the following additional rights alongside
+the base rights in the Terms section below. These rights are
+perpetual and apply immediately — they are not contingent on
+any future date or event. Permitted Uses (a) through (e) below
+are also covered by the Free Use License.
+
+— Permitted Uses (no separate commercial license required) —
+
+(a) Internal Operations. You may make production use of the
+Licensed Work for your own internal operations, regardless
+of organizational size or revenue. "Internal" means the
+Licensed Work is deployed and operated exclusively for the
+benefit of your own organization and its authorized
+personnel, and is not made available to any third party as
+a service, product, or hosted offering. This includes
+internal operations of government agencies, public
+institutions, and non-profit organizations.
+
+(b) Non-Commercial Use. You may use the Licensed Work for
+academic research, teaching, personal study, evaluation,
+experimentation, and contribution to the Licensed Work
+itself, without restriction on organizational affiliation
+or funding source.
+
+(c) Government and Public Service. Government agencies, public
+institutions, and non-profit organizations may deploy the
+Licensed Work for public-service purposes including digital
+government initiatives, pilot programs, public-interest
+projects, and internal administrative operations, provided
+that the deployment does not constitute a commercial
+service sold or licensed to third parties.
+
+(d) Educational Use. Accredited educational institutions may
+use the Licensed Work for teaching, academic research,
+campus infrastructure, and student projects.
+
+(e) Modification and Contribution. You may modify the
+Licensed Work and contribute such modifications to the
+upstream project, subject to the terms of this License.
+
+— Uses Requiring a Commercial License —
+
+The following activities are not permitted without a separate
+commercial license obtained from the Licensor:
+
+(i)   Offering the Licensed Work, in whole or in substantial
+part, as a hosted, managed, or cloud-based service to
+third parties, whether for a fee or as part of a
+commercial offering, where the Licensed Work constitutes
+a substantial source of the service's value.
+
+(ii)  Selling, licensing, sublicensing, or otherwise
+distributing the Licensed Work, whether modified or
+unmodified, as a standalone product, or rebranding the
+Licensed Work under a different name or mark for
+commercial distribution.
+
+(iii) Offering deployment, installation, configuration,
+ongoing maintenance, or technical support services for
+the Licensed Work to third parties for a fee, where such
+services constitute a recurring or primary business
+activity.
+
+(iv)  Including the Licensed Work, or a modified version
+thereof, as a core or substantial component in a product
+or service that you sell, license, or otherwise provide
+to third parties for commercial purposes.
+
+(v)   Any use where the Licensed Work constitutes the primary
+or substantial source of value in a commercial offering
+made available to third parties, regardless of the
+delivery mechanism or branding.
+
+Free Use License:     For any Permitted Use described in items (a) through (e)
+above, the rights granted are equivalent in scope to those
+provided under your choice of either:
+
+— the Apache License, Version 2.0
+(https://www.apache.org/licenses/LICENSE-2.0), or
+— the MIT License
+(https://opensource.org/licenses/MIT).
+
+You may treat this License as the Apache License 2.0 or
+the MIT License for any Permitted Use. For any Restricted
+Use described in items (i) through (v) above, the full
+terms of this Business Source License 1.1 apply, and a
+separate commercial license is required.
+
+Change Date:          2030-01-01
+
+Change License:       On and after the Change Date, this License automatically
+converts to a dual license at the recipient's choice:
+— the Apache License, Version 2.0
+(https://www.apache.org/licenses/LICENSE-2.0), or
+— the MIT License
+(https://opensource.org/licenses/MIT)
+for all versions of the Licensed Work released under this
+License, for all users and for all uses, with no
+production-use restriction and no separate commercial
+license required. The Permitted-Use grant above is a floor
+that holds from the effective date of this License and
+continues unaffected by the conversion.
+
+-----------------------------------------------------------------------------
+
+Terms
+
+The Licensor hereby grants you the right to copy, modify, create derivative
+works, redistribute, and make non-production use of the Licensed Work. The
+Licensor makes an Additional Use Grant, above, permitting limited production
+use as specified in that Grant.
+
+If your use of the Licensed Work does not comply with the requirements
+currently in effect as described in this License, you must purchase a
+commercial license from the Licensor, its affiliated entities, or authorized
+resellers, or you must refrain from using the Licensed Work.
+
+All copies of the original and modified Licensed Work, and derivative works
+of the Licensed Work, are subject to this License. This License applies
+separately for each version of the Licensed Work released by Licensor.
+
+You must conspicuously display this License on each original or modified copy
+of the Licensed Work. If you receive the Licensed Work in original or
+modified form from a third party, the terms and conditions set forth in this
+License apply to your use of that work.
+
+Any use of the Licensed Work in violation of this License will automatically
+terminate your rights under this License for the current and all other
+versions of the Licensed Work.
+
+This License does not grant you any right in any trademark or logo of
+Licensor or its affiliates (provided that you may use a trademark or logo of
+Licensor as expressly required by this License).
+
+TO THE EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSED WORK IS PROVIDED ON
+AN "AS IS" BASIS. LICENSOR HEREBY DISCLAIMS ALL WARRANTIES AND CONDITIONS,
+EXPRESS OR IMPLIED, INCLUDING (WITHOUT LIMITATION) WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, AND
+TITLE.
+
+-----------------------------------------------------------------------------
+
+Notice
+
+Plana
+Copyright (c) 2025 langyo <contact@celestia.world>
+
+This product is licensed under the Business Source License 1.1.
+You may not use this product except in compliance with the License.
+
+This software is protected by registered software copyright and
+applicable patent rights held by the Licensor. Unauthorized commercial use,
+resale, redistribution, or any activity prohibited under this License may
+result in legal action under applicable intellectual property, contract,
+and unfair competition laws.
+
+For commercial licensing inquiries, please contact the Licensor.
+
+-----------------------------------------------------------------------------
+
+Rationale — Why this license
+
+Plana is developed in the open: the full source is publicly readable, and the
+Additional Use Grant above already grants Apache-2.0 / MIT equivalent rights
+for all internal, academic, government, educational, and non-commercial use.
+The Business Source License 1.1 is used here for a specific, narrow purpose —
+not to extract rent, but to protect the work and its community until it fully
+opens up.
+
+1. Prevent parasitic re-packaging. The valuable part of this project — a
+small, carefully factored supervision runtime (signal/drain semantics,
+health probes, supervised workers, socket-activation handoff, coordination
+locks) — is difficult to design well but trivial to re-brand. The BSL
+production-use restriction stops a third party from taking the work,
+wrapping it under a new name, and selling it as their own hosted service
+without contributing anything back.
+
+2. A hard, time-boxed commitment to openness. The Change Date above is binding:
+on 2030-01-01 the entire Licensed Work — every version released under this
+License — automatically converts to the recipient's choice of Apache-2.0 or
+MIT, for everyone and every use, with no restrictions and no commercial
+license required. This balances today's defensibility with a guaranteed
+return to the commons and lowers the incentive for a competing fork during
+the restricted period.

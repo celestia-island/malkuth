@@ -1,0 +1,49 @@
+[package]
+name = "plana"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["langyo <langyo.china@gmail.com>"]
+license = "BUSL-1.1"
+description = "Generic Rust toolkit for service supervision: uniform signal/drain semantics, split /healthz + /readyz probes, supervised child-process workers, systemd socket-activation listener handoff, and a pluggable coordination-lock abstraction."
+repository = "https://github.com/celestia-island/plana"
+keywords = ["supervisor", "graceful-shutdown", "rolling-update", "socket-activation", "high-availability"]
+categories = ["asynchronous", "network-programming", "development-tools"]
+publish = true
+
+[features]
+default = []
+
+# ── CoordinationLock backends (Layer 2) ───────────────────────
+# POSIX advisory file lock (flock) — for file-based state (e.g. JSONL / config).
+file-lock = []
+# Lease-based file lock with TTL auto-expiry on crash.
+lease = ["file-lock"]
+# PostgreSQL advisory lock.
+pg-lock = []
+
+# ── Zero-downtime listener handoff (Layer 3) ──────────────────
+# systemd socket activation (pure-Rust: reads LISTEN_FDS / LISTEN_PID).
+socket-activation = []
+
+# ── Fault-tolerance strategies (Layer 2 / Layer 4) ────────────
+# Subsystem A: peer replicas (load-balancing, of which rolling update is a sub-op).
+replica = []
+# Subsystem B: leader/follower (active-passive HA).
+leader-follower = ["dep:uuid"]
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "signal", "sync", "time", "process", "io-util", "fs"] }
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+thiserror = "2"
+async-trait = "0.1"
+schemars = { version = "1", features = ["derive"] }
+ts-rs = { version = "^12", features = ["serde-compat"] }
+
+uuid = { version = "1", features = ["v4"], optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
