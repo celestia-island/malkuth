@@ -1,16 +1,16 @@
-//! Supervised child-process workers (tokio::process).
+//! Supervised child-process workers (tokio).
 //!
-//! Each [`WorkerSpec`] is one independently-killable child holding one
+//! Each [`WorkerSpec`] is one independently-killable child process holding one
 //! resource. [`Supervisor`] spawns them and restarts per their
 //! [`RestartPolicy`] (`permanent` / `transient` / `temporary`), with a
-//! sliding-window rate limit to prevent crash storms. Each worker runs in its
-//! own tokio task.
+//! sliding-window rate limit to prevent crash storms. Workers are supervised
+//! concurrently via a `FuturesUnordered`.
 
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use malkuth_core::{DrainController, RestartPolicy, WorkerInfo, WorkerStatus};
-use std::process::Stdio;
 use tokio::process::{Child, Command};
 use tracing::{info, warn};
 
@@ -28,7 +28,6 @@ pub struct WorkerSpec {
     pub kind: String,
     pub program: String,
     pub args: Vec<String>,
-    /// Extra environment variables handed to the child process.
     pub env: Vec<(String, String)>,
     pub restart_policy: RestartPolicy,
 }
@@ -55,12 +54,12 @@ impl WorkerSpec {
         self
     }
     #[must_use]
-    pub fn env<K, V>(mut self, k: K, v: V) -> Self
+    pub fn env<K, V>(mut self, key: K, value: V) -> Self
     where
         K: Into<String>,
         V: Into<String>,
     {
-        self.env.push((k.into(), v.into()));
+        self.env.push((key.into(), value.into()));
         self
     }
     #[must_use]
@@ -102,20 +101,19 @@ impl Supervisor {
 
     /// Run the supervision loop until `drain` begins, then return final snapshots.
     pub async fn run(self, drain: DrainController) -> Vec<WorkerInfo> {
-        let mut handles = FuturesUnordered::new();
+        let mut handles: FuturesUnordered<std::pin::Pin<Box<dyn std::future::Future<Output = WorkerInfo> + Send>>> =
+            FuturesUnordered::new();
         for spec in self.specs {
             let drain = drain.clone();
             let (max_restarts, window, cooldown) = (self.max_restarts, self.window, self.cooldown);
-            handles.push(tokio::spawn(async move {
+            handles.push(Box::pin(async move {
                 supervise_one(spec, max_restarts, window, cooldown, drain).await
-            }));
+            })
+                as std::pin::Pin<Box<dyn std::future::Future<Output = WorkerInfo> + Send>>);
         }
         let mut results = Vec::new();
-        while let Some(joined) = handles.next().await {
-            match joined {
-                Ok(info) => results.push(info),
-                Err(e) => warn!(error = %e, "supervision task panicked"),
-            }
+        while let Some(info) = handles.next().await {
+            results.push(info);
         }
         results
     }
@@ -172,6 +170,7 @@ async fn supervise_one(
                 }
             }
             _ = drain.wait_for_drain() => {
+                // Best-effort kill on drain.
                 let _ = child.kill().await;
                 break;
             }
@@ -209,6 +208,7 @@ fn should_restart(policy: RestartPolicy, clean_exit: bool) -> bool {
     }
 }
 
+/// Returns true if the rate limit tripped (after sleeping the cooldown).
 async fn rate_limited(
     restart_times: &mut Vec<Instant>,
     max_restarts: u32,
@@ -220,10 +220,7 @@ async fn rate_limited(
     restart_times.retain(|t| now.duration_since(*t) < window);
     restart_times.push(now);
     if restart_times.len() as u32 > max_restarts {
-        warn!(
-            restarts = restart_times.len(),
-            "restart rate limit tripped, entering cooldown"
-        );
+        warn!(restarts = restart_times.len(), "restart rate limit tripped, entering cooldown");
         tokio::select! {
             _ = tokio::time::sleep(cooldown) => {}
             _ = drain.wait_for_drain() => {}

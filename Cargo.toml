@@ -17,8 +17,6 @@ schemars = { version = "1", features = ["derive"] }
 thiserror = "2"
 async-trait = "0.1"
 tracing = "0.1"
-event-listener = "5"
-# futures-util is used only for Stream/Sink extension traits on WS frames.
 futures-util = { version = "0.3", features = ["io"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "signal", "sync", "time", "process", "io-util", "fs"] }
 tokio-tungstenite = "0.29"

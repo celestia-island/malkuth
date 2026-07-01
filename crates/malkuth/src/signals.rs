@@ -1,13 +1,16 @@
-//! Default [`ExitSource`] driven by OS signals (tokio::signal).
+//! Default [`ExitSource`] driven by OS signals (tokio).
 //!
 //! Canonical convention:
 //! - `SIGINT` / `SIGTERM` → graceful drain (exit)
 //! - `SIGQUIT`           → immediate exit
 //! - `SIGHUP`            → hot reload (do **not** exit; keep serving)
+//!
+//! Swap in your own `ExitSource` if you want drain triggered by something else
+//! (e.g. an in-band "stop" RPC, or a parent supervisor signal over IPC).
 
 use async_trait::async_trait;
 use malkuth_core::{DrainController, ExitReason, ExitSource, ShutdownKind};
-use tracing::info;
+use tracing::{info, warn};
 
 /// OS-signal-driven exit source.
 pub struct SignalExitSource;
@@ -17,40 +20,57 @@ pub struct SignalExitSource;
 impl ExitSource for SignalExitSource {
     async fn wait(&self, ctrl: DrainController) -> ExitReason {
         use tokio::signal::unix::{SignalKind, signal};
-        let mut sigint = match signal(SignalKind::interrupt()) {
+
+        let mut sig_int = match signal(SignalKind::interrupt()) {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!(error = %e, "install SIGINT failed");
+                warn!(error = %e, "failed to install SIGINT handler");
                 return ExitReason::graceful();
             }
         };
-        let mut sigterm = match signal(SignalKind::terminate()) {
+        let mut sig_term = match signal(SignalKind::terminate()) {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!(error = %e, "install SIGTERM failed");
+                warn!(error = %e, "failed to install SIGTERM handler");
                 return ExitReason::graceful();
             }
         };
-        let mut sighup = match signal(SignalKind::hangup()) {
+        let mut sig_hup = match signal(SignalKind::hangup()) {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!(error = %e, "install SIGHUP failed");
+                warn!(error = %e, "failed to install SIGHUP handler");
                 return ExitReason::graceful();
             }
         };
-        let mut sigquit = match signal(SignalKind::quit()) {
+        let mut sig_quit = match signal(SignalKind::quit()) {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!(error = %e, "install SIGQUIT failed");
+                warn!(error = %e, "failed to install SIGQUIT handler");
                 return ExitReason::graceful();
             }
         };
+
         loop {
             tokio::select! {
-                _ = sigint.recv() => { info!("SIGINT → graceful drain"); ctrl.begin_drain(ShutdownKind::Graceful); return ExitReason::graceful(); }
-                _ = sigterm.recv() => { info!("SIGTERM → graceful drain"); ctrl.begin_drain(ShutdownKind::Graceful); return ExitReason::graceful(); }
-                _ = sigquit.recv() => { tracing::warn!("SIGQUIT → immediate exit"); ctrl.begin_drain(ShutdownKind::Immediate); return ExitReason::immediate(); }
-                _ = sighup.recv() => { info!("SIGHUP → reload (no exit)"); ctrl.begin_drain(ShutdownKind::Reload); /* keep serving */ }
+                _ = sig_int.recv() => {
+                    info!("SIGINT → graceful drain");
+                    ctrl.begin_drain(ShutdownKind::Graceful);
+                    return ExitReason::graceful();
+                }
+                _ = sig_term.recv() => {
+                    info!("SIGTERM → graceful drain");
+                    ctrl.begin_drain(ShutdownKind::Graceful);
+                    return ExitReason::graceful();
+                }
+                _ = sig_quit.recv() => {
+                    warn!("SIGQUIT → immediate exit");
+                    ctrl.begin_drain(ShutdownKind::Immediate);
+                    return ExitReason::immediate();
+                }
+                _ = sig_hup.recv() => {
+                    info!("SIGHUP → reload (no exit)");
+                    ctrl.begin_drain(ShutdownKind::Reload);
+                }
             }
         }
     }
@@ -63,6 +83,7 @@ impl ExitSource for SignalExitSource {
         if tokio::signal::ctrl_c().await.is_ok() {
             info!("ctrl_c → graceful drain");
             ctrl.begin_drain(ShutdownKind::Graceful);
+            return ExitReason::graceful();
         }
         ExitReason::graceful()
     }

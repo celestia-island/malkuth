@@ -1,9 +1,7 @@
-//! Layer 1 — uniform drain semantics, **runtime-agnostic**.
+//! Layer 1 — uniform drain semantics.
 //!
 //! [`DrainController`] holds the single shared drain/shutdown flag and lets
-//! any task wait for it. It is built on [`event_listener`] + atomics only, so
-//! it works identically under tokio, async-std and smol — no runtime crate is
-//! pulled in here.
+//! any task wait for it. It is built on [`tokio::sync::Notify`] + atomics.
 //!
 //! Canonical convention (nginx/Go), still honoured by the signal installer in
 //! the `malkuth` crate:
@@ -19,7 +17,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use event_listener::Event;
+use tokio::sync::Notify;
 
 /// Why the process is stopping (or reloading).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,9 +63,9 @@ struct Inner {
     draining: AtomicBool,
     kind: AtomicU8,
     /// Notified whenever drain begins (graceful / immediate).
-    drain_event: Event,
+    drain_notify: Notify,
     /// Notified whenever the kind changes (incl. reload).
-    kind_event: Event,
+    kind_notify: Notify,
 }
 
 /// Shared drain/shutdown controller. Cheap to clone (a single `Arc`).
@@ -95,8 +93,8 @@ impl DrainController {
             inner: Arc::new(Inner {
                 draining: AtomicBool::new(false),
                 kind: AtomicU8::new(ShutdownKind::NONE),
-                drain_event: Event::new(),
-                kind_event: Event::new(),
+                drain_notify: Notify::new(),
+                kind_notify: Notify::new(),
             }),
         }
     }
@@ -121,11 +119,11 @@ impl DrainController {
             if let Some(k) = self.kind() {
                 return k;
             }
-            let listener = self.inner.kind_event.listen();
+            let notified = self.inner.kind_notify.notified();
             if let Some(k) = self.kind() {
                 return k;
             }
-            listener.await;
+            notified.await;
         }
     }
 
@@ -140,11 +138,11 @@ impl DrainController {
             if self.is_draining() {
                 return self.kind().unwrap_or(ShutdownKind::Graceful);
             }
-            let listener = self.inner.drain_event.listen();
+            let notified = self.inner.drain_notify.notified();
             if self.is_draining() {
                 return self.kind().unwrap_or(ShutdownKind::Graceful);
             }
-            listener.await;
+            notified.await;
         }
     }
 
@@ -154,10 +152,10 @@ impl DrainController {
     /// A `Reload` kind does NOT set the drain bit (the server keeps serving).
     pub fn begin_drain(&self, kind: ShutdownKind) {
         self.inner.kind.store(kind.to_u8(), Ordering::Release);
-        self.inner.kind_event.notify(usize::MAX);
+        self.inner.kind_notify.notify_waiters();
         if kind.causes_drain() {
             self.inner.draining.store(true, Ordering::Release);
-            self.inner.drain_event.notify(usize::MAX);
+            self.inner.drain_notify.notify_waiters();
         }
     }
 
@@ -171,7 +169,6 @@ impl DrainController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[test]
     fn controller_starts_inactive() {
@@ -198,22 +195,28 @@ mod tests {
         assert_eq!(c.kind(), None);
     }
 
-    // Driven by the executor the test harness picks; works under tokio (and
-    // would equally work under async-std/smol — event_listener is runtime-free).
-    #[test]
-    fn wait_for_drain_unblocks_after_begin_across_thread() {
+    #[tokio::test]
+    async fn wait_for_drain_unblocks_after_begin() {
         let c = DrainController::new();
         let c2 = c.clone();
-        let handle = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(20));
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             c2.begin_drain(ShutdownKind::Immediate);
         });
-        // Spin until the background thread flips the drain bit.
-        while !c.is_draining() {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        let k = c.kind().unwrap_or(ShutdownKind::Graceful);
+        let k = c.wait_for_drain().await;
         assert_eq!(k, ShutdownKind::Immediate);
-        handle.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_for_signal_returns_reload() {
+        let c = DrainController::new();
+        let c2 = c.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            c2.begin_drain(ShutdownKind::Reload);
+        });
+        let k = c.wait_for_signal().await;
+        assert_eq!(k, ShutdownKind::Reload);
+        assert!(!c.is_draining());
     }
 }

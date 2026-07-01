@@ -1,6 +1,6 @@
 [package]
 name = "malkuth-core"
-description = "Runtime-agnostic protocol types & trait contracts for malkuth: lifecycle, supervision, coordination-lock, JSON-RPC transport, and pluggable lifecycle/exit/heartbeat hooks. Zero runtime / framework dependency."
+description = "Protocol types & trait contracts for malkuth: lifecycle, supervision, coordination-lock, JSON-RPC transport, and pluggable lifecycle/exit/heartbeat hooks."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -30,8 +30,8 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 
-# Runtime-neutral sync primitive (no executor pinned).
-event-listener = { workspace = true }
+# Tokio sync primitives for DrainController.
+tokio = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

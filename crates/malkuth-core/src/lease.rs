@@ -6,8 +6,7 @@
 //! and another owner may acquire it. This is the primitive Subsystem B
 //! (leader/follower) uses as its election lease.
 //!
-//! The renew loop runs on a plain `std::thread` so the backend stays
-//! runtime-agnostic (no async timer needed).
+//! The renew loop runs on a [`tokio::task::spawn_blocking`] thread.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -111,7 +110,7 @@ impl CoordinationLock for LeaseLock {
         // detached thread would outlive a dropped `acquire` future and could
         // spuriously win the lease later — so we don't.) `lease` is the TTL
         // written into the lease record, not a wait duration.
-        let result = blocking_call(move || -> Result<LeaseGuard, LockError> {
+        let result = tokio::task::spawn_blocking(move || -> Result<LeaseGuard, LockError> {
             std::fs::create_dir_all(&root)?;
             let owner = next_owner();
             if try_take(&path, &owner, ttl)? {
@@ -150,7 +149,8 @@ impl CoordinationLock for LeaseLock {
                 key_msg
             )))
         })
-        .await;
+        .await
+        .map_err(|e| LockError::Io(io::Error::other(format!("blocking task failed: {e}"))))?;
         match result {
             Ok(g) => Ok(Box::new(g)),
             Err(e) => Err(e),
@@ -208,24 +208,6 @@ fn sanitize(key: &str) -> String {
     }
     out.push_str(".lease");
     out
-}
-
-/// Run `f` on a background thread and await the result (runtime-agnostic).
-fn blocking_call<F, T>(f: F) -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>
-where
-    F: FnOnce() -> T + Send + 'static,
-    T: Send + 'static,
-{
-    use std::sync::mpsc;
-    let (tx, rx) = mpsc::channel::<T>();
-    std::thread::spawn(move || {
-        let v = f();
-        let _ = tx.send(v);
-    });
-    Box::pin(async move {
-        rx.recv()
-            .unwrap_or_else(|_| panic!("lease worker thread panicked"))
-    })
 }
 
 #[cfg(test)]

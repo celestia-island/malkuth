@@ -1,8 +1,7 @@
 //! Filesystem-backed [`CoordinationLock`] (POSIX advisory `flock`, unix).
 //!
 //! One lock file per `key` under `root`. The flock call is blocking, so it is
-//! offloaded via a worker thread — this keeps the backend runtime-agnostic
-//! (no `tokio::fs` / `async_std::fs` dependency).
+//! offloaded via [`tokio::task::spawn_blocking`].
 
 use std::fs::OpenOptions;
 use std::io;
@@ -62,9 +61,7 @@ impl CoordinationLock for FileLock {
         let root = self.root.clone();
         let path = root.join(sanitize(key));
         let key_owned = key.to_owned();
-        // Offload the blocking mkdir + flock to a background thread so we stay
-        // runtime-agnostic (works under tokio, async-std, smol).
-        let result = blocking_call(move || -> Result<FileGuard, LockError> {
+        let result = tokio::task::spawn_blocking(move || -> Result<FileGuard, LockError> {
             std::fs::create_dir_all(&root)?;
             let file = OpenOptions::new()
                 .create(true)
@@ -90,7 +87,8 @@ impl CoordinationLock for FileLock {
                 path,
             })
         })
-        .await;
+        .await
+        .map_err(|e| LockError::Io(io::Error::other(format!("blocking task failed: {e}"))))?;
         match result {
             Ok(g) => Ok(Box::new(g)),
             Err(e) => Err(e),
@@ -114,30 +112,6 @@ fn sanitize(key: &str) -> String {
     out.push_str(".lock");
     let _ = key_short;
     out
-}
-
-/// Run `f` on a dedicated blocking thread and await its result.
-///
-/// Implemented with `std::thread::spawn` + a oneshot so the backend needs no
-/// runtime dependency. (For hot paths a runtime-native blocking pool would be
-/// preferable, but lock acquisition is rare.)
-fn blocking_call<F, T>(f: F) -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>
-where
-    F: FnOnce() -> T + Send + 'static,
-    T: Send + 'static,
-{
-    use std::sync::mpsc;
-    let (tx, rx) = mpsc::channel::<T>();
-    std::thread::spawn(move || {
-        let v = f();
-        let _ = tx.send(v);
-    });
-    Box::pin(async move {
-        match rx.recv() {
-            Ok(v) => v,
-            Err(_) => panic!("blocking_call worker thread panicked"),
-        }
-    })
 }
 
 #[cfg(test)]
