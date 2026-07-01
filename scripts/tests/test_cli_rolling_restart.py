@@ -16,7 +16,7 @@ def test_cli_rolling_restart() -> None:
         "--watch", watched,
         "--pod-count", "2",
         "--proxy", f"{pub}:{pub}-{pub + 10}",
-        "--", bin_path("malkuth-test-app"), "worker",
+        "--", bin_path("test_app"), "worker",
     ])
     try:
         assert wait_port(pub, timeout=25), "proxy did not come up"

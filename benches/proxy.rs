@@ -3,10 +3,7 @@
 //! Measures: L4 TCP proxy overhead (malkuth CLI proxy vs direct connection),
 //! and consistent-hash ring routing speed.
 
-use criterion::{Criterion, criterion_group, criterion_main, black_box, Throughput};
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Runtime;

@@ -7,7 +7,7 @@ from _harness import Proc, bin_path, free_port, line_request, parse_kv, wait_por
 def test_app_rolling_update() -> None:
     base = free_port()
     app = Proc([
-        bin_path("malkuth-test-app"), "rolling",
+        bin_path("test_app"), "rolling",
         "--pods", "2", "--port-base", str(base),
     ])
     try:

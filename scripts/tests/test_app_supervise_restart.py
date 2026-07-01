@@ -7,7 +7,7 @@ from _harness import Proc, bin_path, free_port, line_request, parse_kv, wait_por
 def test_app_supervise_restart() -> None:
     base = free_port()
     app = Proc([
-        bin_path("malkuth-test-app"), "supervise",
+        bin_path("test_app"), "supervise",
         "--pods", "3", "--port-base", str(base),
     ])
     try:

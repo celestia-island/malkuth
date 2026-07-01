@@ -10,7 +10,7 @@ def test_cli_proxy_basic() -> None:
         bin_path("malkuth"),
         "--pod-count", "1",
         "--proxy", f"{pub}:{pub}-{pub + 10}",
-        "--", bin_path("malkuth-test-app"), "worker",
+        "--", bin_path("test_app"), "worker",
     ])
     try:
         assert wait_port(pub, timeout=25), "proxy did not come up" + ("\n" + cli.output())

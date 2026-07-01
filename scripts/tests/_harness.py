@@ -1,6 +1,6 @@
 """Shared harness for the malkuth Python integration tests.
 
-The wrapped program in CLI tests is `malkuth-test-app worker`, which reads the
+The wrapped program in CLI tests is `test_app worker`, which reads the
 `PORT` env the CLI assigns it and speaks a tiny line protocol:
   ping   -> pong
   health -> port=<P>;gen=<G>;pid=<PID>
@@ -19,17 +19,25 @@ from typing import Optional
 
 ROOT = Path(__file__).resolve().parents[2]  # .../malkuth
 TARGET = ROOT / "target" / "debug"
+EXAMPLES = TARGET / "examples"
 
 
 def ensure_built() -> None:
-    missing = [b for b in ("malkuth", "malkuth-test-app") if not (TARGET / b).exists()]
+    missing = []
+    if not (TARGET / "malkuth").exists():
+        missing.append("malkuth")
+    if not (EXAMPLES / "test_app").exists():
+        missing.append("test_app")
     if missing:
         raise SystemExit(
-            f"binaries not built: {missing} — run `cargo build -p malkuth-cli -p malkuth-test-app` first"
+            f"binaries not built: {missing} — run `just build-bins` first"
         )
 
 
 def bin_path(name: str) -> Path:
+    # Example binaries land under target/debug/examples/
+    if name == "test_app":
+        return EXAMPLES / name
     return TARGET / name
 
 

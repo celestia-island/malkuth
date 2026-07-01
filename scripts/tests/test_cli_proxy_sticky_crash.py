@@ -11,7 +11,7 @@ def test_cli_proxy_sticky_and_crash() -> None:
         bin_path("malkuth"),
         "--pod-count", "3",
         "--proxy", f"{pub}:{pub}-{pub + 10}",
-        "--", bin_path("malkuth-test-app"), "worker",
+        "--", bin_path("test_app"), "worker",
     ])
     try:
         assert wait_port(pub, timeout=25), "proxy did not come up"

@@ -112,11 +112,7 @@ pub struct ClientPool {
 
 impl ClientPool {
     /// Create a pool of `size` connections to `addr` over `transport`.
-    pub async fn new(
-        transport: &dyn Transport,
-        addr: &str,
-        size: usize,
-    ) -> std::io::Result<Self> {
+    pub async fn new(transport: &dyn Transport, addr: &str, size: usize) -> std::io::Result<Self> {
         let mut senders = Vec::with_capacity(size);
         let mut next_id = 1u64;
 

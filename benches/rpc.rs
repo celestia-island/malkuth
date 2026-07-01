@@ -1,22 +1,20 @@
 //! JSON-RPC throughput benchmarks — short-lived, long-lived, and pooled.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, BatchSize, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 
-use malkuth::codec::take_frame;
-use malkuth::{Client, ClientPool, Router, Server};
-use malkuth::transport::TcpTransport;
 use malkuth::Transport;
+use malkuth::codec::take_frame;
+use malkuth::transport::TcpTransport;
+use malkuth::{Client, ClientPool, Router, Server};
 use serde_json::json;
 
 async fn setup_server() -> String {
     let lis = TcpTransport.listen("tcp://127.0.0.1:0").await.unwrap();
     let addr = lis.local_addr().unwrap();
     let dial = format!("tcp://{addr}");
-    let handler = Arc::new(
-        Router::new().route("ping", |_| Box::pin(async { Ok(json!("pong")) })),
-    );
+    let handler = Arc::new(Router::new().route("ping", |_| Box::pin(async { Ok(json!("pong")) })));
     tokio::spawn(async move {
         let _ = Server::serve_listener(lis, handler).await;
     });
@@ -129,10 +127,9 @@ fn bench_codec(c: &mut Criterion) {
     });
 
     let large_data = "X".repeat(4000);
-    let large = format!(
-        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"params\":{{\"data\":\"{large_data}\"}}}}\n"
-    )
-    .into_bytes();
+    let large =
+        format!("{{\"jsonrpc\":\"2.0\",\"id\":1,\"params\":{{\"data\":\"{large_data}\"}}}}\n")
+            .into_bytes();
     group.throughput(Throughput::Bytes(large.len() as u64));
     group.bench_function("4KB", |b| {
         b.iter(|| {
@@ -144,5 +141,11 @@ fn bench_codec(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_short_lived, bench_long_lived, bench_pooled, bench_codec);
+criterion_group!(
+    benches,
+    bench_short_lived,
+    bench_long_lived,
+    bench_pooled,
+    bench_codec
+);
 criterion_main!(benches);

@@ -881,14 +881,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "malkuth-test-app"
-version = "0.2.0"
-dependencies = [
- "malkuth",
- "tokio",
-]
-
-[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1846,9 +1838,9 @@ dependencies = [
 
 [[package]]
 name = "wasip2"
-version = "1.0.4+wasi-0.2.12"
+version = "1.0.1+wasi-0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b67efb37e106e55ce722a510d6b5f9c17f083e5fc79afc2badeb12cc313d9487"
+checksum = "0562428422c63773dad2c345a1882263bbf4d65cf3f42e90921f787ef5ad58e7"
 dependencies = [
  "wit-bindgen",
 ]
@@ -2036,9 +2028,9 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 
 [[package]]
 name = "wit-bindgen"
-version = "0.57.1"
+version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+checksum = "f17a85883d4e6d00e8a97c586de764dabcc06133f7f1d55dce5cdc070ad7fe59"
 
 [[package]]
 name = "zerocopy"
@@ -2067,14 +2059,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[patch.unused]]
-name = "arona"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "hifumi"
-version = "0.1.1"
-
-[[patch.unused]]
 name = "aoba"
 version = "0.2.0"
 
@@ -2085,6 +2069,14 @@ version = "0.5.0"
 [[patch.unused]]
 name = "libnoa"
 version = "0.3.1"
+
+[[patch.unused]]
+name = "hifumi"
+version = "0.1.1"
+
+[[patch.unused]]
+name = "arona"
+version = "0.1.0"
 
 [[patch.unused]]
 name = "hikari-animation"
