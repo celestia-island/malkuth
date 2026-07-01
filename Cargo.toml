@@ -86,6 +86,10 @@ name = "test_app"
 required-features = ["tcp", "worker", "signals"]
 
 [[example]]
+name = "minimal_server"
+required-features = ["tcp", "signals"]
+
+[[example]]
 name = "supervised_workers"
 required-features = ["worker"]
 

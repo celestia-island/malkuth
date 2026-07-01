@@ -10,6 +10,8 @@
 //! - `rolling --pods N --port-base B` — runs gen-0 pods, then performs a
 //!   *gradual* gray update to gen-1 (one pod at a time: bring up new, drain old)
 //!   using a per-pod `DrainController` + `Supervisor`.
+//!
+//! Run: `cargo run --example test_app --features tcp,worker,signals -- <mode> [args]`
 
 use std::env;
 use std::time::{Duration, Instant};

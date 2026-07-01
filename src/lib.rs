@@ -41,7 +41,7 @@ pub mod jsonrpc;
 pub mod server;
 pub mod service;
 
-#[cfg(feature = "tcp")]
+#[cfg(any(feature = "tcp", feature = "ws", feature = "ipc"))]
 pub mod transport;
 
 // ── Layer 4: runtime facilities ────────────────────────────────
