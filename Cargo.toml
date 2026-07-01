@@ -85,6 +85,14 @@ required-features = ["tcp"]
 name = "test_app"
 required-features = ["tcp", "worker", "signals"]
 
+[[example]]
+name = "supervised_workers"
+required-features = ["worker"]
+
+[[example]]
+name = "coordination_lock"
+required-features = ["file-lock", "lease"]
+
 [profile.release]
 opt-level = 3
 lto = "thin"
