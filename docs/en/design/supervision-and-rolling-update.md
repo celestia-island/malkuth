@@ -391,7 +391,7 @@ Feature selection per project (`malkuth`):
   projects).
 ---
 *Translation: `docs/zhs/design/supervision-and-rolling-update.md`
-is the Simplified Chinese counterpart. Other languages (zht/ja/ko/fr/es/ru)
+is the Simplified Chinese counterpart. Other languages (zht/ja/ko/fr/es/ru/ar)
 have been translated as well (see `docs/<lang>/design/`).*
 
 ---

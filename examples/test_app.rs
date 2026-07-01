@@ -149,15 +149,16 @@ async fn supervise(pods_n: usize, port_base: u16) {
     eprintln!("SUPERVISE_START pods={pods_n} port_base={port_base}");
     let drain = DrainController::new();
     let sup = Supervisor::new(specs);
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            eprintln!("SUPERVISE_STOP signal; draining");
-            drain.begin_drain(ShutdownKind::Graceful);
-        }
-        infos = sup.run(drain.clone()) => {
-            for info in infos { eprintln!("SUPERVISE_FINAL {info:?}"); }
-            return;
-        }
+    // Spawn the supervisor so it isn't dropped by select! (kill_on_drop would
+    // kill every child instantly). Signal triggers drain, then we await the
+    // supervisor to let it finish draining.
+    let sup_handle = tokio::spawn(async move { sup.run(drain.clone()).await });
+    tokio::signal::ctrl_c().await.ok();
+    eprintln!("SUPERVISE_STOP signal; draining");
+    drain.begin_drain(ShutdownKind::Graceful);
+    let infos = sup_handle.await.expect("supervisor task panicked");
+    for info in infos {
+        eprintln!("SUPERVISE_FINAL {info:?}");
     }
     eprintln!("SUPERVISE_EXIT");
 }
