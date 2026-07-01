@@ -55,7 +55,7 @@ let r = c.call("ping", json!({})).await?;       // ← "pong"
 // طرق دورة الحياة القياسية (التي يسجّلها Router::lifecycle):
 c.notify("Lifecycle.Drain", json!({})).await?;  // ← يبدأ الخادم التصريف السلس
 let health = c.call("Lifecycle.Health", json!({})).await?;
-// ← { "alive": true, "pid": 12345, "uptime_secs": 360, "version": "0.2.0" }
+// ← { "alive": true, "pid": 12345, "uptime_secs": 360, "version": "0.1.0" }
 let status = c.call("Lifecycle.Status", json!({})).await?;
 // ← { "ready": true, "draining": false, "dependencies": [], "generation": null }
 ```

@@ -49,7 +49,7 @@ use malkuth::Transport;
 
 let supervised = Supervised::new().signals();
 let ctrl = supervised.drain_controller();
-let probe = Arc::new(ProbeState::new("0.2.0"));
+let probe = Arc::new(ProbeState::new("0.1.0"));
 
 let handler = Arc::new(
     Router::new()
@@ -65,7 +65,7 @@ supervised.serve_rpc(&TcpTransport, "tcp://0.0.0.0:8080", handler).await?;
 ```json
 // Request: { "jsonrpc": "2.0", "id": 1, "method": "Lifecycle.Health", "params": {} }
 // Response:
-{ "alive": true, "pid": 12345, "uptime_secs": 360, "version": "0.2.0" }
+{ "alive": true, "pid": 12345, "uptime_secs": 360, "version": "0.1.0" }
 ```
 
 ### `Lifecycle.Status` → `ReadyStatus`
@@ -117,7 +117,7 @@ Pendant l'arrêt gracieux, définissez l'état de vidange pour que
 use malkuth::{DrainController, DrainState, ShutdownKind};
 
 let ctrl = DrainController::new();
-let probe = ProbeState::new("0.2.0");
+let probe = ProbeState::new("0.1.0");
 
 tokio::spawn({
     let probe = probe.clone();

@@ -16,9 +16,10 @@
 **[English](docs/en/README.md)** &bull; **[简体中文](docs/zhs/README.md)** &bull;
 **[繁體中文](docs/zht/README.md)** &bull; **[日本語](docs/ja/README.md)** &bull;
 **[한국어](docs/ko/README.md)** &bull; **[Français](docs/fr/README.md)** &bull;
-**[Español](docs/es/README.md)** &bull; **[Русский](docs/ru/README.md)**
+**[Español](docs/es/README.md)** &bull; **[Русский](docs/ru/README.md)** &bull;
+**[العربية](docs/ar/README.md)**
 
-> **Version 0.2.0** — Workspace of three crates, **tokio-based**. The CLI wraps
+> **Version 0.1.0** — Workspace of three crates, **tokio-based**. The CLI wraps
 > *any* program (even one that does not use the library) with a pod pool and a
 > sticky reverse proxy.
 

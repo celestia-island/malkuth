@@ -15,7 +15,7 @@
 
 <!-- language switcher is available in the bottom-right corner -->
 
-> **Version 0.2.0** — Single crate, **tokio-based**. The CLI wraps
+> **Version 0.1.0** — Single crate, **tokio-based**. The CLI wraps
 > *any* program (even one that does not use the library) with a pod pool and a
 > sticky reverse proxy.
 

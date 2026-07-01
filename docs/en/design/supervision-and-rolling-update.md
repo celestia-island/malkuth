@@ -396,9 +396,9 @@ have been translated as well (see `docs/<lang>/design/`).*
 
 ---
 
-## Appendix: 0.2 implementation consolidation (SySL)
+## Appendix: 0.1 implementation consolidation (SySL)
 
-The 0.2 implementation made two consolidations relative to the original design
+The 0.1 implementation made two consolidations relative to the original design
 above, both decisions taken for simplicity without changing the architecture's
 trait boundaries:
 
