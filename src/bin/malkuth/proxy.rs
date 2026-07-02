@@ -45,11 +45,6 @@ impl Ring {
         Self { points, backends }
     }
 
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.backends.is_empty()
-    }
-
     pub fn backends(&self) -> &[Backend] {
         &self.backends
     }

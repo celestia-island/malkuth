@@ -2,7 +2,6 @@
 //! changes. The pod manager consumes it to perform a rolling restart.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -66,7 +65,5 @@ pub fn spawn(paths: Vec<PathBuf>) -> mpsc::Receiver<()> {
             }
         }
     });
-    let _ = tx; // keep original tx alive is unnecessary; channel stays open via tx_signal
-    let _ = Arc::new(());
     rx
 }

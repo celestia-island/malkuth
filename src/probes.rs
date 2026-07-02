@@ -71,29 +71,46 @@ impl ProbeState {
 #[async_trait]
 impl ProbeSink for ProbeState {
     async fn ready(&self) -> ReadyStatus {
-        let drain_state = *self.inner.drain_state.lock().unwrap();
-        let generation = *self.inner.generation.lock().unwrap();
+        let drain_state = self
+            .inner
+            .drain_state
+            .lock()
+            .ok()
+            .map_or(DrainState::Draining, |g| *g);
+        let generation = self.inner.generation.lock().ok().and_then(|g| *g);
         let draining = matches!(drain_state, DrainState::Draining | DrainState::Reloading);
-        let deps = self.inner.deps.lock().unwrap();
-        let mut dependencies = Vec::with_capacity(deps.len());
-        let mut all_ok = true;
-        for (name, check) in deps.iter() {
-            let ok = check();
-            if !ok {
-                all_ok = false;
+        if let Ok(deps) = self.inner.deps.lock() {
+            let mut dependencies = Vec::with_capacity(deps.len());
+            let mut all_ok = true;
+            for (name, check) in deps.iter() {
+                let ok = check();
+                if !ok {
+                    all_ok = false;
+                }
+                dependencies.push(DependencyCheck {
+                    name: name.clone(),
+                    ok,
+                    detail: if ok { None } else { Some("unhealthy".into()) },
+                });
             }
-            dependencies.push(DependencyCheck {
-                name: name.clone(),
-                ok,
-                detail: if ok { None } else { Some("unhealthy".into()) },
-            });
-        }
-        let ready = !draining && all_ok;
-        ReadyStatus {
-            ready,
-            draining,
-            dependencies,
-            generation,
+            let ready = !draining && all_ok;
+            ReadyStatus {
+                ready,
+                draining,
+                dependencies,
+                generation,
+            }
+        } else {
+            ReadyStatus {
+                ready: false,
+                draining: true,
+                dependencies: vec![DependencyCheck {
+                    name: "internal_lock".into(),
+                    ok: false,
+                    detail: Some("registry mutex poisoned".into()),
+                }],
+                generation: None,
+            }
         }
     }
 

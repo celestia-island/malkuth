@@ -55,7 +55,10 @@ impl LeaderElector for LeaseLeaderElector {
             .await
             .map_err(|e| ElectionError::Contended(e.to_string()))?;
         let term = {
-            let mut t = self.term.lock().expect("term mutex");
+            let mut t = self
+                .term
+                .lock()
+                .map_err(|_| ElectionError::Store("term mutex poisoned".into()))?;
             *t += 1;
             *t
         };
@@ -66,28 +69,40 @@ impl LeaderElector for LeaseLeaderElector {
             acquired_at: iso_now(),
             lease_ttl_secs: ttl.as_secs().try_into().unwrap_or(u32::MAX),
         };
-        *self.held.lock().expect("held mutex") = Some((guard, announce));
+        *self
+            .held
+            .lock()
+            .map_err(|_| ElectionError::Store("held mutex poisoned".into()))? =
+            Some((guard, announce));
         Ok(true)
     }
 
     async fn renew(&self) -> Result<bool, ElectionError> {
         // The LeaseLock guard renews itself in the background; we are leader as
         // long as we still hold it.
-        Ok(self.held.lock().expect("held mutex").is_some())
+        Ok(self
+            .held
+            .lock()
+            .map_err(|_| ElectionError::Store("held mutex poisoned".into()))?
+            .is_some())
     }
 
     async fn current(&self) -> Result<Option<LeaderAnnounce>, ElectionError> {
         Ok(self
             .held
             .lock()
-            .expect("held mutex")
+            .map_err(|_| ElectionError::Store("held mutex poisoned".into()))?
             .as_ref()
             .map(|(_, a)| a.clone()))
     }
 
     async fn resign(&self) -> Result<(), ElectionError> {
         // Drop the mutex guard before awaiting release().
-        let taken = self.held.lock().expect("held mutex").take();
+        let taken = self
+            .held
+            .lock()
+            .map_err(|_| ElectionError::Store("held mutex poisoned".into()))?
+            .take();
         if let Some((mut guard, _)) = taken {
             guard.release().await;
         }
