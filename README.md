@@ -112,5 +112,4 @@ end-to-end. The CLI pod pool + sticky proxy is working (e2e-verified). All three
 
 ## License
 
-[Synthetic Source License 1.0 (SySL)](LICENSE) — an AI-era license that operates
-as a binding contract independent of copyright status.
+SySL-1.0 (Synthetic Source License). See [LICENSE](./LICENSE).

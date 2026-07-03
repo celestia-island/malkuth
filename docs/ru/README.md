@@ -119,5 +119,4 @@ e2e). Все три бэкенда `CoordinationLock` (`file-lock`, `lease`, `pg
 
 ## Лицензия
 
-[Synthetic Source License 1.0 (SySL)](../../LICENSE) — лицензия эпохи ИИ,
-действующая как обязывающий договор независимо от статуса авторского права.
+SySL-1.0（Synthetic Source License）。См. [LICENSE](../../LICENSE)。

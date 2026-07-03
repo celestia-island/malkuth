@@ -113,5 +113,4 @@ CLI 的 pod 池 + 粘性代理已可用（经端到端验证）。所有三个
 
 ## 许可证
 
-[Synthetic Source License 1.0 (SySL)](../../LICENSE) —— 一份面向 AI 时代的许可证，
-作为独立于版权状态的约束性合同运作。
+SySL-1.0（Synthetic Source License）。详见 [LICENSE](../../LICENSE)。

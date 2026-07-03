@@ -114,5 +114,4 @@ async fn main() -> std::io::Result<()> {
 
 ## الترخيص
 
-[رخصة المصدر التركيبي 1.0 (SySL)](../../LICENSE) — رخصة لعصر الذكاء الاصطناعي
-تعمل كعقد مُلزِم مستقل عن حالة حقوق النشر.
+[SySL-1.0（Synthetic Source License）](../../LICENSE)。

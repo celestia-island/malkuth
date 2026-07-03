@@ -115,5 +115,4 @@ backends `CoordinationLock` (`file-lock`, `lease`, `pg-lock`) et le
 
 ## Licence
 
-[Synthetic Source License 1.0 (SySL)](../../LICENSE) — une licence de l'ère de l'IA qui opère
-comme un contrat contraignant indépendant du statut de droit d'auteur.
+SySL-1.0 (Synthetic Source License). Voir [LICENSE](../../LICENSE).

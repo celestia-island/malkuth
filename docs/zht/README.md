@@ -107,4 +107,4 @@ async fn main() -> std::io::Result<()> {
 
 ## 授權條款
 
-[Synthetic Source License 1.0 (SySL)](../../LICENSE) —— 一份 AI 時代的授權條款，作為獨立於著作權狀態的具有約束力的合約運作。
+SySL-1.0（Synthetic Source License）。詳見 [LICENSE](../../LICENSE)。

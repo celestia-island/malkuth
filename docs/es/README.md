@@ -103,4 +103,4 @@ de extremo a extremo. El pool de pods del CLI + proxy persistente está funciona
 
 ## Licencia
 
-[Synthetic Source License 1.0 (SySL)](../../LICENSE) — una licencia para la era de la IA que opera como un contrato vinculante independiente del estatus de copyright.
+SySL-1.0 (Synthetic Source License). Consulte [LICENSE](../../LICENSE).

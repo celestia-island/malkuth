@@ -115,5 +115,4 @@ async fn main() -> std::io::Result<()> {
 
 ## 라이선스
 
-[Synthetic Source License 1.0 (SySL)](../../LICENSE) — AI 시대를 위한
-라이선스로, 저작권 상태와 무관하게 구속력 있는 계약으로 작동합니다.
+SySL-1.0（Synthetic Source License）。[LICENSE](../../LICENSE)를 참조하세요。

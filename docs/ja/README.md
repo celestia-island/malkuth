@@ -114,5 +114,4 @@ Postgres バックエンドの協調機構が必要ですか？ `pg-lock` フィ
 
 ## ライセンス
 
-[Synthetic Source License 1.0 (SySL)](../../LICENSE) — AI 時代のライセンスで、
-著作権の状態に関わらず拘束力のある契約として機能します。
+SySL-1.0（Synthetic Source License）。[LICENSE](../../LICENSE) を参照してください。
