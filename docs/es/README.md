@@ -25,7 +25,7 @@ Malkuth ayuda a los programas automatizados y de larga duración a hacer cuatro 
 1. **Transporte conectable** — JSON-RPC sobre bucle de retorno TCP local, **WebSocket** remoto o **IPC** local (sockets Unix / tuberías con nombre vía
    [`interprocess`](https://crates.io/crates/interprocess)). Un único trait
    `Transport`, despachado según el esquema de URL.
-2. **Basado en tokio, ligero de framework** — construido sobre `tokio`; la ruta JSON-RPC no necesita ningún framework HTTP (axum es opcional, solo para sondas HTTP).
+2. **Trabajadores supervisados** — lanzar un proceso, monitorizar su salud, reiniciarlo en caso de fallo, drenar conexiones antes de apagar.
 3. **Facilidades opcionales y conectables mediante hooks** — la fuente de salida, las sondas, los hooks de latido y de drenaje son *traits*. Usa los predeterminados (señal de salida del SO, sondas axum, workers supervisados) o proporciona los tuyos (p. ej. activar el drenaje desde un comando "stop" en banda que reciba tu servidor). Un orquestador `Supervised` «con pilas incluidas» los conecta entre sí.
 4. **Un CLI watchdog** — `malkuth -- <cmd>` envuelve un programa con observación de archivos, un pool de pods y un proxy inverso persistente de capa 4.
 

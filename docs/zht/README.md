@@ -25,8 +25,7 @@ Malkuth 幫助自動化、長期執行的程式完成四件難事：
    **WebSocket**，或本地 **IPC**（經由
    [`interprocess`](https://crates.io/crates/interprocess) 實作的 Unix socket / 具名管道）進行 JSON-RPC 通訊。只需一個 `Transport`
    trait，依 URL scheme 分派。
-2. **基於 tokio、框架精簡** —— 建構於 `tokio` 之上；JSON-RPC 路徑不需要任何 HTTP 框架
-   （axum 為選用，僅用於 HTTP 探針）。
+2. **受監管的 worker** — 啟動處理程序、監控其健康狀態、故障時重新啟動、關閉前排空連線。
 3. **選用、可掛鉤的設施** —— 退出來源、探針、心跳與排空鉤子皆為
    *trait*。使用預設實作（OS 訊號退出、axum 探針、受監管的
    worker），或提供你自己的實作（例如從你的伺服器收到的頻內「stop」命令觸發排空）。一個開箱即用的

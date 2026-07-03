@@ -25,8 +25,7 @@ Malkuth 帮助自动化、长期运行的程序完成四件难事：
    **WebSocket**，或本地 **IPC**（通过
    [`interprocess`](https://crates.io/crates/interprocess) 实现的 Unix 套接字 / 命名管道）。只需一个 `Transport`
    trait，按 URL scheme 分发。
-2. **基于 tokio、框架轻量** —— 构建在 `tokio` 之上；JSON-RPC 路径
-   不需要任何 HTTP 框架（axum 是可选的，仅用于 HTTP 探针）。
+2. **受监管 worker** — 启动进程、监控其健康状态、故障时重启、关闭前排空连接。
 3. **可选、可挂钩的设施** —— 退出源、探针、心跳和排空钩子是
    *trait*。使用默认实现（操作系统信号退出、axum 探针、受监管
    worker），或提供你自己的实现（例如，从你的服务器接收的带内"停止"命令触发排空）。

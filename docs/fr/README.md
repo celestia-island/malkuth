@@ -26,8 +26,7 @@ Malkuth aide les programmes automatisés et de longue durée à accomplir quatre
    **WebSocket** distant ou **IPC** local (sockets Unix / tubes nommés via
    [`interprocess`](https://crates.io/crates/interprocess)). Un seul trait
    `Transport`, distribué selon le schéma d'URL.
-2. **Basé sur tokio, léger en frameworks** — construit sur `tokio` ; le chemin JSON-RPC ne nécessite
-   aucun framework HTTP (axum est optionnel, pour les sondes HTTP uniquement).
+2. **Workers supervisés** — lancer un processus, surveiller sa santé, le redémarrer en cas d'échec, drainer les connexions avant l'arrêt.
 3. **Fonctionnalités optionnelles et raccordables** — source de sortie, sondes, hooks de pulsation et de drainage
    sont des *traits*. Utilisez les valeurs par défaut (sortie par signal OS, sondes axum, workers
    supervisés) ou fournissez les vôtres (par ex. déclencher le drainage depuis une commande « stop » in-band
