@@ -1,0 +1,123 @@
+<p align="center"><img src="../logo.webp" alt="Malkuth" width="240" /></p>
+
+<h1 align="center">Malkuth</h1>
+
+<p align="center"><strong>Rust 向けのコンポーザブルなサービス監視ツールキット</strong></p>
+
+<div align="center">
+
+[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](../../LICENSE) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/) [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth) [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml) [![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
+
+</div>
+
+<div align="center">
+
+[English](../en/README.md) · [简体中文](../zhs/README.md) · [繁體中文](../zht/README.md) · **日本語** · [한국어](../ko/README.md) · [Français](../fr/README.md) · [Español](../es/README.md) · [Русский](../ru/README.md) · [العربية](../ar/README.md)
+
+</div>
+
+> **バージョン 0.1.0** — 単一クレート、**tokio ベース**。CLI は *任意の*
+> プログラム（ライブラリを使用しないものでも）を、pod プールと
+> スティッキーリバースプロキシで包み込みます。
+
+Malkuth は、自動化された長時間実行されるプログラムが四つの難しいことを行えるよう支援します。
+
+1. **プラグ可能なトランスポート** — ローカル TCP ループバック、リモート
+   **WebSocket**、またはローカル **IPC**（[`interprocess`](https://crates.io/crates/interprocess) による
+   Unix ソケット / 名前付きパイプ）上の JSON-RPC。単一の `Transport`
+   trait を URL スキームでディスパッチします。
+2. **tokio ベース、フレームワーク軽量** — `tokio` 上に構築。JSON-RPC パスは
+   HTTP フレームワークを必要としません（axum はオプションで、HTTP プローブ専用です）。
+3. **オプションのフック可能な機能** — 終了ソース、プローブ、ハートビートとドレインの
+   フックは *trait* です。デフォルト（OS シグナル終了、axum プローブ、監視付きワーカー）を使うか、
+   独自のものを提供してください（例：サーバーが受け取るインバンドの「stop」コマンドからドレインをトリガーする）。
+   バッテリー同梱の `Supervised` オーケストレータがそれらをまとめて配線します。
+4. **watchdog CLI** — `malkuth -- <cmd>` はプログラムをファイル監視、
+   pod プール、L4 スティッキーリバースプロキシで包み込みます。
+
+## CLI として使用
+
+```
+malkuth [--watch PATH]... [--proxy PUBLIC:LO-HI] [--pod-count N] -- <cmd> [args...]
+```
+
+サーバーの並列コピーを 5 つ実行し（各コピーは `PORT` 環境変数で待ち受け → 3001〜3005 を自動割り当て）、
+ポート 3000 のスティッキープロキシでフロントします。
+
+```bash
+malkuth --watch ./src --watch ./res \
+        --proxy 3000:3000-3999 --pod-count 5 \
+        -- cargo run
+```
+
+プロキシはコンシステントハッシュ法により各**クライアント IP** を固定のバックエンドにルーティングするため、
+クライアントは pod が再起動またはスケールダウンするまで同じ pod にアクセスし続けます — これはグレーリリース
+/ ローリング再起動の基盤となります。ファイル変更時には、一度に一つの pod をドレインして再起動します。
+
+## ライブラリとして使用
+
+```toml
+[dependencies]
+malkuth = "0.1"
+# features: tcp (default) | ws | ipc | signals (default) | worker | probes |
+#           file-lock | lease | pg-lock | replica | leader-follower | schema | cli
+```
+
+```rust
+use std::sync::Arc;
+use malkuth::{Client, Router, Server, Supervised, Transport};
+use malkuth::transport::TcpTransport;
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    // Bind once; build a router with the standard lifecycle RPC + your methods.
+    let lis = TcpTransport.listen("tcp://127.0.0.1:0").await?;
+    let supervised = Supervised::new().signals();           // OS-signal exit source
+    let ctrl = supervised.drain_controller();
+    let handler = Arc::new(
+        Router::new()
+            .lifecycle(ctrl, None)                          // Lifecycle.Drain/Status/...
+            .route("ping", |_| Box::pin(async { Ok(json!("pong")) })),
+    );
+    // Race the server against the exit source, then run drain hooks.
+    supervised.serve_rpc_listener(lis, handler).await
+}
+```
+
+シグナルの代わりに独自のロジックでドレインをトリガーしたい場合は、
+`malkuth::ExitSource` を実装して `.exit(...)` 経由で渡してください。
+Postgres バックエンドの協調機構が必要ですか？ `pg-lock` フィーチャーが
+`CoordinationLock` バックエンドを提供します。
+
+## フィーチャーフラグ
+
+| フィーチャー | 有効化する機能 |
+| --- | --- |
+| `tcp` *(デフォルト)* | ローカル／リモート TCP 上の JSON-RPC（`tokio::net`） |
+| `ws` | WebSocket 上の JSON-RPC（`tokio-tungstenite`） |
+| `ipc` | ローカル IPC 上の JSON-RPC（`interprocess`） |
+| `signals` *(デフォルト)* | デフォルト OS シグナル `ExitSource`（`tokio::signal`） |
+| `worker` | 監視付き子プロセスワーカー（`tokio::process`） |
+| `probes` | axum `/healthz` + `/readyz` ルーター |
+| `file-lock` | POSIX `flock` `CoordinationLock` バックエンド（unix） |
+| `lease` | TTL 自動期限切れ付きファイルリース `CoordinationLock`（クラッシュセーフ） |
+| `pg-lock` | PostgreSQL `pg_advisory_lock` バックエンド（`tokio-postgres`） |
+| `replica` | インメモリ `InstanceRegistry` |
+| `leader-follower` | `LeaseLeaderElector`（リースバックエンド上） |
+| `schema` | ワイヤ型向け `schemars::JsonSchema` derive |
+| `cli` | `malkuth` watchdog バイナリ（pod プール + スティッキープロキシ） |
+
+## 状況
+
+レイヤー 1〜3（ライフサイクル／ドレイン、プローブ、リスナーハンドオフ）および JSON-RPC コア
+（コーデック + サーバー／クライアント + tcp/ws/ipc トランスポート）は実装済みで、
+エンドツーエンドでテストされています。CLI の pod プール + スティッキープロキシは動作しています
+（E2E 検証済み）。3 つの `CoordinationLock` バックエンド（`file-lock`、`lease`、
+`pg-lock`）と `leader-follower` `LeaseLeaderElector` もすべて実装されています。
+設計については [docs/design/](../en/design/) を参照してください。
+
+## ライセンス
+
+[Synthetic Source License 1.0 (SySL)](../../LICENSE) — AI 時代のライセンスで、
+著作権の状態に関わらず拘束力のある契約として機能します。

@@ -1,0 +1,1 @@
+# malkuth scripts/ tests use the Python standard library only — no pip deps.

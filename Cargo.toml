@@ -1,0 +1,103 @@
+[package]
+name = "malkuth"
+description = "A composable service-supervision toolkit for Rust"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["langyo <langyo.china@gmail.com>"]
+license-file = "LICENSE"
+repository = "https://github.com/celestia-island/malkuth"
+readme = "README.md"
+keywords = ["supervisor", "graceful-shutdown", "rolling-update", "jsonrpc", "socket-activation"]
+categories = ["asynchronous", "network-programming", "development-tools"]
+publish = true
+exclude = ["docs/", "scripts/", ".github/", "justfile", "rust-toolchain.toml"]
+
+[features]
+default = ["tcp", "signals"]
+
+# ── JSON-RPC transports ────────────────────────────────────────
+tcp = []
+ws = ["dep:tokio-tungstenite"]
+ipc = ["dep:interprocess"]
+
+# ── default facilities ─────────────────────────────────────────
+signals = []
+worker = []
+probes = ["dep:axum"]
+
+# ── CoordinationLock backends ──────────────────────────────────
+file-lock = []
+lease = []
+pg-lock = ["dep:tokio-postgres"]
+
+# ── fault-tolerance strategy ───────────────────────────────────
+replica = []
+leader-follower = ["lease"]
+
+# ── schema generation ──────────────────────────────────────────
+schema = ["dep:schemars"]
+
+# ── CLI binary ─────────────────────────────────────────────────
+cli = ["dep:clap", "dep:notify", "dep:tracing-subscriber"]
+
+[[bin]]
+name = "malkuth"
+required-features = ["cli"]
+
+[dependencies]
+serde = { version = "^1", features = ["derive"] }
+serde_json = "^1"
+schemars = { version = "^1", features = ["derive"], optional = true }
+thiserror = "^2"
+async-trait = "^0.1"
+tracing = "^0.1"
+futures-util = { version = "^0.3", features = ["io"] }
+tokio = { version = "^1", features = ["rt", "rt-multi-thread", "macros", "net", "signal", "sync", "time", "process", "io-util", "fs"] }
+
+tokio-tungstenite = { version = "^0.29", optional = true }
+interprocess = { version = "^2", optional = true, features = ["tokio"] }
+axum = { version = "^0.8", optional = true }
+tokio-postgres = { version = "^0.7", optional = true }
+
+# CLI-only deps
+clap = { version = "^4", features = ["derive"], optional = true }
+notify = { version = "^8", optional = true }
+tracing-subscriber = { version = "^0.3", optional = true, features = ["env-filter"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "^0.2"
+
+[dev-dependencies]
+tokio = { version = "^1", features = ["rt", "rt-multi-thread", "macros", "net", "signal", "sync", "time", "process", "io-util", "fs"] }
+criterion = { version = "^0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "rpc"
+harness = false
+required-features = ["tcp"]
+
+[[bench]]
+name = "proxy"
+harness = false
+required-features = ["tcp"]
+
+[[example]]
+name = "test_app"
+required-features = ["tcp", "worker", "signals"]
+
+[[example]]
+name = "minimal_server"
+required-features = ["tcp", "signals"]
+
+[[example]]
+name = "supervised_workers"
+required-features = ["worker"]
+
+[[example]]
+name = "coordination_lock"
+required-features = ["file-lock", "lease"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"

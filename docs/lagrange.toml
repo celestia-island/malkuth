@@ -1,0 +1,7 @@
+[site]
+title = "Malkuth"
+description = "Service-supervision toolkit: JSON-RPC over pluggable transports, supervised workers, split health probes, coordination locks and lease-based leader election. Tokio-based."
+
+[languages]
+default = "en"
+order = ["en", "zhs", "zht", "ja", "ko", "fr", "es", "ru", "ar"]
