@@ -16,10 +16,6 @@
 
 </div>
 
-> **Versión 0.1.0** — Un único crate, **basado en tokio**. El CLI envuelve
-> *cualquier* programa (incluso uno que no use la biblioteca) con un pool de pods y un
-> proxy inverso persistente.
-
 Malkuth ayuda a los programas automatizados y de larga duración a hacer cuatro cosas difíciles:
 
 1. **Transporte conectable** — JSON-RPC sobre bucle de retorno TCP local, **WebSocket** remoto o **IPC** local (sockets Unix / tuberías con nombre vía

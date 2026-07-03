@@ -16,10 +16,6 @@
 
 </div>
 
-> **Version 0.1.0** — Crate unique, **basé sur tokio**. Le CLI enveloppe
-> *n'importe quel* programme (même un qui n'utilise pas la bibliothèque) avec un pool de pods et un
-> proxy inverse persistant.
-
 Malkuth aide les programmes automatisés et de longue durée à accomplir quatre choses difficiles :
 
 1. **Transport enfichable** — JSON-RPC sur boucle locale TCP,
