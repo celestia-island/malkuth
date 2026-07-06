@@ -4,17 +4,14 @@
 
 use std::io;
 
-use crate::{Transport, WireConn, WireListener};
 use async_trait::async_trait;
-use interprocess::local_socket::tokio::{
-    Listener as LocalSocketListener, Stream as LocalSocketStream,
-};
-use interprocess::local_socket::traits::tokio::{Listener as _, Stream as _};
 use interprocess::local_socket::{
-    GenericFilePath, GenericNamespaced, ListenerOptions, Name, ToFsName, ToNsName,
+    tokio::{Listener as LocalSocketListener, Stream as LocalSocketStream},
+    traits::tokio::{Listener as _, Stream as _},
+    {GenericFilePath, GenericNamespaced, ListenerOptions, Name, ToFsName, ToNsName},
 };
 
-use crate::codec::FramedConn;
+use crate::{Transport, WireConn, WireListener, codec::FramedConn};
 
 fn name_err<E: std::fmt::Display>(e: E) -> io::Error {
     io::Error::new(

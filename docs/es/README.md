@@ -1,4 +1,4 @@
-<p align="center"><img src="../logo.webp" alt="Malkuth" width="240" /></p>
+<p align="center"><img src="https://raw.githubusercontent.com/celestia-island/malkuth/master/docs/logo.webp" alt="Malkuth" width="240" /></p>
 
 <h1 align="center">Malkuth</h1>
 
@@ -6,7 +6,7 @@
 
 <div align="center">
 
-[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](../../LICENSE) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/) [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth) [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml) [![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
+[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](https://sysl.celestia.world) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/) [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth) [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml) [![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
 
 </div>
 
@@ -16,16 +16,12 @@
 
 </div>
 
-> **Versión 0.1.0** — Un único crate, **basado en tokio**. El CLI envuelve
-> *cualquier* programa (incluso uno que no use la biblioteca) con un pool de pods y un
-> proxy inverso persistente.
-
 Malkuth ayuda a los programas automatizados y de larga duración a hacer cuatro cosas difíciles:
 
 1. **Transporte conectable** — JSON-RPC sobre bucle de retorno TCP local, **WebSocket** remoto o **IPC** local (sockets Unix / tuberías con nombre vía
    [`interprocess`](https://crates.io/crates/interprocess)). Un único trait
    `Transport`, despachado según el esquema de URL.
-2. **Basado en tokio, ligero de framework** — construido sobre `tokio`; la ruta JSON-RPC no necesita ningún framework HTTP (axum es opcional, solo para sondas HTTP).
+2. **Trabajadores supervisados** — lanzar un proceso, monitorizar su salud, reiniciarlo en caso de fallo, drenar conexiones antes de apagar.
 3. **Facilidades opcionales y conectables mediante hooks** — la fuente de salida, las sondas, los hooks de latido y de drenaje son *traits*. Usa los predeterminados (señal de salida del SO, sondas axum, workers supervisados) o proporciona los tuyos (p. ej. activar el drenaje desde un comando "stop" en banda que reciba tu servidor). Un orquestador `Supervised` «con pilas incluidas» los conecta entre sí.
 4. **Un CLI watchdog** — `malkuth -- <cmd>` envuelve un programa con observación de archivos, un pool de pods y un proxy inverso persistente de capa 4.
 
@@ -107,4 +103,4 @@ de extremo a extremo. El pool de pods del CLI + proxy persistente está funciona
 
 ## Licencia
 
-[Synthetic Source License 1.0 (SySL)](../../LICENSE) — una licencia para la era de la IA que opera como un contrato vinculante independiente del estatus de copyright.
+SySL-1.0 (Synthetic Source License). Consulte [LICENSE](https://sysl.celestia.world).

@@ -1,19 +1,18 @@
 //! Pluggable transport backends for JSON-RPC (all tokio-based).
 
-#[cfg(feature = "tcp")]
-pub mod tcp;
-#[cfg(feature = "tcp")]
-pub use tcp::TcpTransport;
-
-#[cfg(feature = "ws")]
-pub mod ws;
-#[cfg(feature = "ws")]
-pub use ws::WsTransport;
-
 #[cfg(feature = "ipc")]
 pub mod ipc;
+#[cfg(feature = "tcp")]
+pub mod tcp;
+#[cfg(feature = "ws")]
+pub mod ws;
+
 #[cfg(feature = "ipc")]
 pub use ipc::IpcTransport;
+#[cfg(feature = "tcp")]
+pub use tcp::TcpTransport;
+#[cfg(feature = "ws")]
+pub use ws::WsTransport;
 
 /// A transport that dispatches by URL scheme to the built-in backends.
 ///

@@ -4,8 +4,10 @@
 
 use std::time::Duration;
 
-use malkuth::worker::{Supervisor, WorkerSpec};
-use malkuth::{DrainController, RestartPolicy, ShutdownKind};
+use malkuth::{
+    DrainController, RestartPolicy, ShutdownKind,
+    worker::{Supervisor, WorkerSpec},
+};
 
 #[tokio::main]
 async fn main() {

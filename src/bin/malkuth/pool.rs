@@ -8,17 +8,20 @@
 //! metadata (port) for the proxy, and is locked only briefly — never across an
 //! `.await` on the child.
 
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::process::Stdio;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    process::Stdio,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use tokio::{
+    net::TcpStream,
+    process::{Child, Command},
+    sync::{Mutex, Notify},
+    time::sleep,
+};
 
-use tokio::net::TcpStream;
-use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
-use tokio::sync::Notify;
-use tokio::time::sleep;
 use tracing::{info, warn};
 
 use crate::proxy::{Backend, ProxyState};

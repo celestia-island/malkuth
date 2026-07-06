@@ -1,4 +1,4 @@
-<p align="center"><img src="../logo.webp" alt="Malkuth" width="240" /></p>
+<p align="center"><img src="https://raw.githubusercontent.com/celestia-island/malkuth/master/docs/logo.webp" alt="Malkuth" width="240" /></p>
 
 <h1 align="center">Malkuth</h1>
 
@@ -6,7 +6,7 @@
 
 <div align="center">
 
-[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](../../LICENSE) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/) [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth) [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml) [![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
+[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](https://sysl.celestia.world) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/) [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth) [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml) [![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
 
 </div>
 
@@ -16,17 +16,13 @@
 
 </div>
 
-> **版本 0.1.0** —— 单个 crate，**基于 tokio**。该命令行工具用一个 pod 池与一个
-> 粘性反向代理封装*任何*程序（即使该程序不使用本库）。
-
 Malkuth 帮助自动化、长期运行的程序完成四件难事：
 
 1. **可插拔传输** —— 基于 JSON-RPC 的本地 TCP 回环、远程
    **WebSocket**，或本地 **IPC**（通过
    [`interprocess`](https://crates.io/crates/interprocess) 实现的 Unix 套接字 / 命名管道）。只需一个 `Transport`
    trait，按 URL scheme 分发。
-2. **基于 tokio、框架轻量** —— 构建在 `tokio` 之上；JSON-RPC 路径
-   不需要任何 HTTP 框架（axum 是可选的，仅用于 HTTP 探针）。
+2. **受监管 worker** — 启动进程、监控其健康状态、故障时重启、关闭前排空连接。
 3. **可选、可挂钩的设施** —— 退出源、探针、心跳和排空钩子是
    *trait*。使用默认实现（操作系统信号退出、axum 探针、受监管
    worker），或提供你自己的实现（例如，从你的服务器接收的带内"停止"命令触发排空）。
@@ -117,5 +113,4 @@ CLI 的 pod 池 + 粘性代理已可用（经端到端验证）。所有三个
 
 ## 许可证
 
-[Synthetic Source License 1.0 (SySL)](../../LICENSE) —— 一份面向 AI 时代的许可证，
-作为独立于版权状态的约束性合同运作。
+SySL-1.0（Synthetic Source License）。详见 [LICENSE](https://sysl.celestia.world)。

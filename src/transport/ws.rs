@@ -1,16 +1,16 @@
 //! WebSocket transport via [`tokio_tungstenite`]. One JSON value per WS text
 //! message (WS frames are already delimited — no NDJSON framing needed here).
 
+use serde_json::Value;
 use std::io;
+use tokio::net::{TcpListener, TcpStream};
 
-use crate::{Transport, WireConn, WireListener};
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
-use serde_json::Value;
-use tokio::net::{TcpListener, TcpStream};
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{WebSocketStream, accept_async, client_async};
+use tokio_tungstenite::{WebSocketStream, accept_async, client_async, tungstenite::Message};
 use tracing::debug;
+
+use crate::{Transport, WireConn, WireListener};
 
 fn strip_scheme(addr: &str) -> &str {
     addr.strip_prefix("ws://")

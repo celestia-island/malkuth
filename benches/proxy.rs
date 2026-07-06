@@ -3,10 +3,13 @@
 //! Measures: L4 TCP proxy overhead (malkuth CLI proxy vs direct connection),
 //! and consistent-hash ring routing speed.
 
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    runtime::Runtime,
+};
+
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::runtime::Runtime;
 
 // ── Ring routing micro-bench (no I/O) ──────────────────────────
 

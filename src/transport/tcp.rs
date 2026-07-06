@@ -1,12 +1,11 @@
 //! TCP transport via [`tokio::net`] (loopback or remote).
 
 use std::io;
-
-use crate::{Transport, WireConn, WireListener};
-use async_trait::async_trait;
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::codec::FramedConn;
+use async_trait::async_trait;
+
+use crate::{Transport, WireConn, WireListener, codec::FramedConn};
 
 fn strip(addr: &str) -> &str {
     addr.strip_prefix("tcp://").unwrap_or(addr)

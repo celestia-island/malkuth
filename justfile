@@ -9,6 +9,8 @@ python_cmd := if os_family() == "windows" {
     "python"
 }
 
+import "./celestia-devtools.just"
+
 default:
     @just --list
 

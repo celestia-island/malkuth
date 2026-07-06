@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/logo.webp" alt="Malkuth" width="240" /></p>
+<p align="center"><img src="https://raw.githubusercontent.com/celestia-island/malkuth/master/docs/logo.webp" alt="Malkuth" width="240" /></p>
 
 <h1 align="center">Malkuth</h1>
 
@@ -6,13 +6,13 @@
 
 <div align="center">
 
-[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](./LICENSE) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/) [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth) [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml) [![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
+[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](https://sysl.celestia.world) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/) [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth) [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml) [![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
 
 </div>
 
 <div align="center">
 
-[English](./docs/en/README.md) · [简体中文](./docs/zhs/README.md) · [繁體中文](./docs/zht/README.md) · [日本語](./docs/ja/README.md) · [한국어](./docs/ko/README.md) · [Français](./docs/fr/README.md) · [Español](./docs/es/README.md) · [Русский](./docs/ru/README.md) · [العربية](./docs/ar/README.md)
+**English** · [简体中文](./docs/zhs/README.md) · [繁體中文](./docs/zht/README.md) · [日本語](./docs/ja/README.md) · [한국어](./docs/ko/README.md) · [Français](./docs/fr/README.md) · [Español](./docs/es/README.md) · [Русский](./docs/ru/README.md) · [العربية](./docs/ar/README.md)
 
 </div>
 
@@ -112,5 +112,4 @@ end-to-end. The CLI pod pool + sticky proxy is working (e2e-verified). All three
 
 ## License
 
-[Synthetic Source License 1.0 (SySL)](LICENSE) — an AI-era license that operates
-as a binding contract independent of copyright status.
+SySL-1.0 (Synthetic Source License). See [LICENSE](https://sysl.celestia.world).

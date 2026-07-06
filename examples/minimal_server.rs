@@ -2,12 +2,10 @@
 //!
 //! Run: `cargo run --example minimal_server --features tcp,signals`
 
+use serde_json::json;
 use std::sync::Arc;
 
-use malkuth::Transport;
-use malkuth::transport::TcpTransport;
-use malkuth::{Client, Router, Supervised};
-use serde_json::json;
+use malkuth::{Client, Router, Supervised, Transport, transport::TcpTransport};
 
 #[tokio::main]
 async fn main() {

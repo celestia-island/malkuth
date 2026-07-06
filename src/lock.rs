@@ -3,11 +3,7 @@
 //! One lock file per `key` under `root`. The flock call is blocking, so it is
 //! offloaded via [`tokio::task::spawn_blocking`].
 
-use std::fs::OpenOptions;
-use std::io;
-use std::os::fd::AsRawFd;
-use std::path::PathBuf;
-use std::time::Duration;
+use std::{fs::OpenOptions, io, os::fd::AsRawFd, path::PathBuf, time::Duration};
 
 use async_trait::async_trait;
 

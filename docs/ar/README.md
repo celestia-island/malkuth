@@ -1,4 +1,4 @@
-<p align="center"><img src="../logo.webp" alt="Malkuth" width="240" /></p>
+<p align="center"><img src="https://raw.githubusercontent.com/celestia-island/malkuth/master/docs/logo.webp" alt="Malkuth" width="240" /></p>
 
 <h1 align="center">Malkuth</h1>
 
@@ -6,7 +6,7 @@
 
 <div align="center">
 
-[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](../../LICENSE) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/) [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth) [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml) [![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
+[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](https://sysl.celestia.world) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/) [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth) [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml) [![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
 
 </div>
 
@@ -16,17 +16,13 @@
 
 </div>
 
-> **الإصدار 0.1.0** — كريدت واحدة، **مبنية على tokio**. تغلّف واجهة سطر الأوامر
-> *أي* برنامج (حتى لو كان لا يستخدم المكتبة) بمجموعة بودات ووسيط عكسي لاصق.
-
 يساعد Malkuth البرامج الآلية طويلة التشغيل على إنجاز أربع مهام صعبة:
 
 1. **وسائط نقل قابلة للاستبدال** — JSON-RPC عبر حلقة TCP المحلية، أو
    **WebSocket** بعيدة، أو **IPC** محلية (مقابس يونكس / الأنابيب المسماة عبر
    [`interprocess`](https://crates.io/crates/interprocess)). ترايت `Transport`
    واحد، يُوزَّع حسب مخطط URL.
-2. **مبني على tokio وخفيف الإطار** — مبني على `tokio`؛ لا يحتاج مسار JSON-RPC
-   إلى أي إطار HTTP (axum اختياري، لفحوصات HTTP فقط).
+2. **عمال تحت الإشراف** — تشغيل عملية، مراقبة صحتها، إعادة تشغيلها عند الفشل، تصريف الاتصالات قبل الإغلاق.
 3. **مرافق اختيارية وقابلة للربط** — مصدر الخروج، الفحوصات، خطافات نبضة القلب
    والتصريف هي *ترايتات*. استخدم الافتراضيات (خروج بإشارة نظام التشغيل، فحوصات
    axum، عمال تحت الإشراف) أو قدّم ما خاصّك (مثلاً تشغيل التصريف من أمر "إيقاف"
@@ -118,5 +114,4 @@ async fn main() -> std::io::Result<()> {
 
 ## الترخيص
 
-[رخصة المصدر التركيبي 1.0 (SySL)](../../LICENSE) — رخصة لعصر الذكاء الاصطناعي
-تعمل كعقد مُلزِم مستقل عن حالة حقوق النشر.
+[SySL-1.0（Synthetic Source License）](https://sysl.celestia.world)。

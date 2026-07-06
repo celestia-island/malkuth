@@ -6,13 +6,12 @@
 //! Postgres. The connection is supplied by the caller (connected via
 //! `tokio_postgres::connect` in their runtime).
 
-use std::io;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{io, sync::Arc, time::Duration};
 
-use crate::traits::{CoordinationLock, LockError, LockGuard};
 use async_trait::async_trait;
 use tokio_postgres::Client;
+
+use crate::traits::{CoordinationLock, LockError, LockGuard};
 
 /// Postgres-backed coordination lock over a shared connection.
 pub struct PgLock {

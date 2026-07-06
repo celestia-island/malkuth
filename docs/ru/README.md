@@ -1,4 +1,4 @@
-<p align="center"><img src="../logo.webp" alt="Malkuth" width="240" /></p>
+<p align="center"><img src="https://raw.githubusercontent.com/celestia-island/malkuth/master/docs/logo.webp" alt="Malkuth" width="240" /></p>
 
 <h1 align="center">Malkuth</h1>
 
@@ -6,7 +6,7 @@
 
 <div align="center">
 
-[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](../../LICENSE) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/) [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth) [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml) [![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
+[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](https://sysl.celestia.world) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/) [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth) [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml) [![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
 
 </div>
 
@@ -16,10 +16,6 @@
 
 </div>
 
-> **Версия 0.1.0** — Одиночный крейт, **на базе tokio**. CLI оборачивает *любую*
-> программу (даже ту, что не использует библиотеку) пулом подов и закреплённым
-> обратным прокси.
-
 Malkuth помогает автоматизированным долгоживущим программам решать четыре
 сложные задачи:
 
@@ -27,8 +23,7 @@ Malkuth помогает автоматизированным долгоживу
    **WebSocket** или локального **IPC** (Unix-сокеты / именованные каналы через
    [`interprocess`](https://crates.io/crates/interprocess)). Один трейт
    `Transport`, диспетчеризуемый по схеме URL.
-2. **На базе tokio, лёгкий по фреймворкам** — построен на `tokio`; путь JSON-RPC
-   не требует HTTP-фреймворка (axum опционален, только для HTTP-проб).
+2. **Контролируемые воркеры** — порождать процесс, отслеживать его состояние, перезапускать при сбое, сливать соединения перед остановкой.
 3. **Опциональные, перехватываемые возможности** — источник выхода, пробы, хуки
    пульса и слива — это *трейты*. Используйте умолчания (выход по сигналу ОС,
    пробы axum, контролируемые воркеры) или предоставьте свои (например,
@@ -124,5 +119,4 @@ e2e). Все три бэкенда `CoordinationLock` (`file-lock`, `lease`, `pg
 
 ## Лицензия
 
-[Synthetic Source License 1.0 (SySL)](../../LICENSE) — лицензия эпохи ИИ,
-действующая как обязывающий договор независимо от статуса авторского права.
+SySL-1.0（Synthetic Source License）。См. [LICENSE](https://sysl.celestia.world)。

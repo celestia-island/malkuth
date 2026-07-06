@@ -3,12 +3,12 @@
 //! Wire framing (NDJSON) lives in `crate::codec::FramedConn`; this module only
 //! deals with the request/response/error shapes and the handler dispatch.
 
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use thiserror::Error;
 
 // ═══════════════════════════════════════════════════════════════

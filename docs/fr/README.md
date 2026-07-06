@@ -1,4 +1,4 @@
-<p align="center"><img src="../logo.webp" alt="Malkuth" width="240" /></p>
+<p align="center"><img src="https://raw.githubusercontent.com/celestia-island/malkuth/master/docs/logo.webp" alt="Malkuth" width="240" /></p>
 
 <h1 align="center">Malkuth</h1>
 
@@ -6,7 +6,7 @@
 
 <div align="center">
 
-[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](../../LICENSE) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/) [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth) [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml) [![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
+[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](https://sysl.celestia.world) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/) [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth) [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml) [![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
 
 </div>
 
@@ -16,18 +16,13 @@
 
 </div>
 
-> **Version 0.1.0** — Crate unique, **basé sur tokio**. Le CLI enveloppe
-> *n'importe quel* programme (même un qui n'utilise pas la bibliothèque) avec un pool de pods et un
-> proxy inverse persistant.
-
 Malkuth aide les programmes automatisés et de longue durée à accomplir quatre choses difficiles :
 
 1. **Transport enfichable** — JSON-RPC sur boucle locale TCP,
    **WebSocket** distant ou **IPC** local (sockets Unix / tubes nommés via
    [`interprocess`](https://crates.io/crates/interprocess)). Un seul trait
    `Transport`, distribué selon le schéma d'URL.
-2. **Basé sur tokio, léger en frameworks** — construit sur `tokio` ; le chemin JSON-RPC ne nécessite
-   aucun framework HTTP (axum est optionnel, pour les sondes HTTP uniquement).
+2. **Workers supervisés** — lancer un processus, surveiller sa santé, le redémarrer en cas d'échec, drainer les connexions avant l'arrêt.
 3. **Fonctionnalités optionnelles et raccordables** — source de sortie, sondes, hooks de pulsation et de drainage
    sont des *traits*. Utilisez les valeurs par défaut (sortie par signal OS, sondes axum, workers
    supervisés) ou fournissez les vôtres (par ex. déclencher le drainage depuis une commande « stop » in-band
@@ -120,5 +115,4 @@ backends `CoordinationLock` (`file-lock`, `lease`, `pg-lock`) et le
 
 ## Licence
 
-[Synthetic Source License 1.0 (SySL)](../../LICENSE) — une licence de l'ère de l'IA qui opère
-comme un contrat contraignant indépendant du statut de droit d'auteur.
+SySL-1.0 (Synthetic Source License). Voir [LICENSE](https://sysl.celestia.world).

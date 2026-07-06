@@ -1,4 +1,4 @@
-<p align="center"><img src="../logo.webp" alt="Malkuth" width="240" /></p>
+<p align="center"><img src="https://raw.githubusercontent.com/celestia-island/malkuth/master/docs/logo.webp" alt="Malkuth" width="240" /></p>
 
 <h1 align="center">Malkuth</h1>
 
@@ -6,7 +6,7 @@
 
 <div align="center">
 
-[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](../../LICENSE) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/) [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth) [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml) [![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
+[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](https://sysl.celestia.world) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/) [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth) [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml) [![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
 
 </div>
 
@@ -16,18 +16,13 @@
 
 </div>
 
-> **버전 0.1.0** — 단일 크레이트, **tokio 기반**. CLI는 *어떤* 프로그램이든
-> (라이브러리를 사용하지 않는 프로그램도) pod 풀과
-> 스티키 리버스 프록시로 감쌉니다.
-
 Malkuth는 자동화되어 장시간 실행되는 프로그램이 네 가지 어려운 일을 해결하도록 돕습니다.
 
 1. **플러그 가능한 트랜스포트** — 로컬 TCP 루프백, 원격
    **WebSocket** 또는 로컬 **IPC**([`interprocess`](https://crates.io/crates/interprocess) 기반
    유닉스 소켓 / 명명된 파이프) 위의 JSON-RPC. 단일 `Transport`
    트레이트를 URL 스킴으로 디스패치합니다.
-2. **tokio 기반, 프레임워크 경량** — `tokio` 위에 구축됨; JSON-RPC 경로는
-   HTTP 프레임워크가 필요 없습니다(axum은 선택 사항이며 HTTP 프로브 전용입니다).
+2. **감독되는 워커** — 프로세스를 생성하고, 상태를 모니터링하며, 실패 시 재시작하고, 종료 전에 연결을 드레인합니다.
 3. **선택적이고 훅 가능한 기능** — 종료 소스, 프로브, 하트비트와 드레인
    훅은 *트레이트*입니다. 기본값(OS 시그널 종료, axum 프로브, 감독되는
    워커)을 사용하거나 직접 제공하세요(예: 서버가 수신한 대역 내 "stop" 명령으로
@@ -120,5 +115,4 @@ async fn main() -> std::io::Result<()> {
 
 ## 라이선스
 
-[Synthetic Source License 1.0 (SySL)](../../LICENSE) — AI 시대를 위한
-라이선스로, 저작권 상태와 무관하게 구속력 있는 계약으로 작동합니다.
+SySL-1.0（Synthetic Source License）。[LICENSE](https://sysl.celestia.world)를 참조하세요。

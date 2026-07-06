@@ -3,15 +3,16 @@
 //! [`ProbeSink`], so the readiness/liveness can be served identically over
 //! JSON-RPC (`Lifecycle.Status` / `Lifecycle.Health`) with no HTTP framework.
 
-use std::sync::Arc;
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use async_trait::async_trait;
-use axum::Router;
-use axum::extract::State;
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Json, Response};
-use axum::routing::get;
+use axum::{
+    Router,
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Json, Response},
+    routing::get,
+};
 
 use crate::{DependencyCheck, DrainState, HealthStatus, ProbeSink, ReadyStatus};
 

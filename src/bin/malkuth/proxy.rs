@@ -7,13 +7,17 @@
 //!   - adding/removing a backend only moves the keys that backend owned
 //!     (minimal disruption — "won't switch unless the node restarts/scales down").
 
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{Arc, RwLock},
+    time::{Duration, Instant},
+};
+use tokio::{
+    io,
+    net::{TcpListener, TcpStream},
+};
 
-use tokio::io;
-use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, info, warn};
 
 /// Virtual nodes per backend on the ring.

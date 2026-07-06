@@ -1,4 +1,4 @@
-<p align="center"><img src="../logo.webp" alt="Malkuth" width="240" /></p>
+<p align="center"><img src="https://raw.githubusercontent.com/celestia-island/malkuth/master/docs/logo.webp" alt="Malkuth" width="240" /></p>
 
 <h1 align="center">Malkuth</h1>
 
@@ -6,7 +6,7 @@
 
 <div align="center">
 
-[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](../../LICENSE) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/) [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth) [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml) [![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
+[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](https://sysl.celestia.world) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/) [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth) [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml) [![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
 
 </div>
 
@@ -16,17 +16,13 @@
 
 </div>
 
-> **版本 0.1.0** —— 單一 crate，**基於 tokio**。該命令列工具用一個 pod 池與一個
-> 黏性反向代理封裝*任何*程式（即使該程式不使用本函式庫）。
-
 Malkuth 幫助自動化、長期執行的程式完成四件難事：
 
 1. **可插拔傳輸** —— 透過本地 TCP 回環、遠端
    **WebSocket**，或本地 **IPC**（經由
    [`interprocess`](https://crates.io/crates/interprocess) 實作的 Unix socket / 具名管道）進行 JSON-RPC 通訊。只需一個 `Transport`
    trait，依 URL scheme 分派。
-2. **基於 tokio、框架精簡** —— 建構於 `tokio` 之上；JSON-RPC 路徑不需要任何 HTTP 框架
-   （axum 為選用，僅用於 HTTP 探針）。
+2. **受監管的 worker** — 啟動處理程序、監控其健康狀態、故障時重新啟動、關閉前排空連線。
 3. **選用、可掛鉤的設施** —— 退出來源、探針、心跳與排空鉤子皆為
    *trait*。使用預設實作（OS 訊號退出、axum 探針、受監管的
    worker），或提供你自己的實作（例如從你的伺服器收到的頻內「stop」命令觸發排空）。一個開箱即用的
@@ -111,4 +107,4 @@ async fn main() -> std::io::Result<()> {
 
 ## 授權條款
 
-[Synthetic Source License 1.0 (SySL)](../../LICENSE) —— 一份 AI 時代的授權條款，作為獨立於著作權狀態的具有約束力的合約運作。
+SySL-1.0（Synthetic Source License）。詳見 [LICENSE](https://sysl.celestia.world)。

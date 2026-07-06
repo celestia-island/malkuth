@@ -13,14 +13,20 @@
 //!
 //! Run: `cargo run --example test_app --features tcp,worker,signals -- <mode> [args]`
 
-use std::env;
-use std::time::{Duration, Instant};
+use std::{
+    env,
+    time::{Duration, Instant},
+};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    net::{TcpListener, TcpStream},
+    task::JoinHandle,
+};
 
-use malkuth::worker::{Supervisor, WorkerSpec};
-use malkuth::{DrainController, RestartPolicy, ShutdownKind};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::task::JoinHandle;
+use malkuth::{
+    DrainController, RestartPolicy, ShutdownKind,
+    worker::{Supervisor, WorkerSpec},
+};
 
 #[tokio::main]
 async fn main() {

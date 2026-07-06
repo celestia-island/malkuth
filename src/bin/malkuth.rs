@@ -12,17 +12,14 @@ mod proxy;
 #[path = "malkuth/watcher.rs"]
 mod watcher;
 
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{net::SocketAddr, sync::Arc, time::Duration};
+use tokio::signal;
 
 use clap::Parser;
-use tokio::signal;
-use tracing::{error, info};
-
 use cli::{Args, ProxySpec};
 use pool::{PodManager, assign_ports};
 use proxy::{ProxyState, run_proxy};
+use tracing::{error, info};
 
 #[tokio::main]
 async fn main() {

@@ -3,12 +3,14 @@
 //! Useful for single-host deployments and tests. For multi-host rolling
 //! updates, back this with a shared store (Postgres table / shared JSON file).
 
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::{collections::HashMap, sync::Mutex};
 
-use crate::traits::{InstanceRegistry, RegistryError};
-use crate::{InstanceInfo, InstanceRole};
 use async_trait::async_trait;
+
+use crate::{
+    InstanceInfo, InstanceRole,
+    traits::{InstanceRegistry, RegistryError},
+};
 
 /// A simple in-memory registry keyed by `(group, instance_id)`.
 pub struct InMemoryRegistry {

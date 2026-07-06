@@ -2,10 +2,12 @@
 
 use std::sync::Arc;
 
-use crate::{Transport, WireConn, WireListener};
 use tracing::{debug, warn};
 
-use crate::jsonrpc::{Id, Request, Response, RpcHandler};
+use crate::{
+    Transport, WireConn, WireListener,
+    jsonrpc::{Id, Request, Response, RpcHandler},
+};
 
 /// A JSON-RPC server.
 pub struct Server;

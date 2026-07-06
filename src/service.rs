@@ -5,13 +5,11 @@
 //! feature), and [`DrainHook`]s run during shutdown. [`Supervised::serve_rpc`]
 //! races the JSON-RPC server against the exit source, then runs the drain hooks.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-use crate::{DrainController, DrainHook, ExitSource, Transport, WireListener};
-
-use crate::Server;
-use crate::jsonrpc::RpcHandler;
+use crate::{
+    DrainController, DrainHook, ExitSource, Server, Transport, WireListener, jsonrpc::RpcHandler,
+};
 
 /// A composable supervised service: drain controller + exit source + drain hooks.
 pub struct Supervised {

@@ -8,14 +8,18 @@
 //!
 //! The renew loop runs on a [`tokio::task::spawn_blocking`] thread.
 
-use std::io;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use serde::{Deserialize, Serialize};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 
 use crate::traits::{CoordinationLock, LockError, LockGuard};
 

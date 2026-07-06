@@ -14,9 +14,10 @@
 //! [`crate::ExitSource`](crate::hooks::ExitSource), or a plain
 //! [`DrainController::begin_drain`] call.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU8, Ordering},
+};
 use tokio::sync::Notify;
 
 /// Why the process is stopping (or reloading).

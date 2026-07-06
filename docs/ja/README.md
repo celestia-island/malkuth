@@ -1,4 +1,4 @@
-<p align="center"><img src="../logo.webp" alt="Malkuth" width="240" /></p>
+<p align="center"><img src="https://raw.githubusercontent.com/celestia-island/malkuth/master/docs/logo.webp" alt="Malkuth" width="240" /></p>
 
 <h1 align="center">Malkuth</h1>
 
@@ -6,7 +6,7 @@
 
 <div align="center">
 
-[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](../../LICENSE) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/) [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth) [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml) [![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
+[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](https://sysl.celestia.world) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/) [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth) [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml) [![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
 
 </div>
 
@@ -16,18 +16,13 @@
 
 </div>
 
-> **バージョン 0.1.0** — 単一クレート、**tokio ベース**。CLI は *任意の*
-> プログラム（ライブラリを使用しないものでも）を、pod プールと
-> スティッキーリバースプロキシで包み込みます。
-
 Malkuth は、自動化された長時間実行されるプログラムが四つの難しいことを行えるよう支援します。
 
 1. **プラグ可能なトランスポート** — ローカル TCP ループバック、リモート
    **WebSocket**、またはローカル **IPC**（[`interprocess`](https://crates.io/crates/interprocess) による
    Unix ソケット / 名前付きパイプ）上の JSON-RPC。単一の `Transport`
    trait を URL スキームでディスパッチします。
-2. **tokio ベース、フレームワーク軽量** — `tokio` 上に構築。JSON-RPC パスは
-   HTTP フレームワークを必要としません（axum はオプションで、HTTP プローブ専用です）。
+2. **監視付きワーカー** — プロセスを起動し、ヘルスを監視し、障害時に再起動し、シャットダウン前に接続をドレインします。
 3. **オプションのフック可能な機能** — 終了ソース、プローブ、ハートビートとドレインの
    フックは *trait* です。デフォルト（OS シグナル終了、axum プローブ、監視付きワーカー）を使うか、
    独自のものを提供してください（例：サーバーが受け取るインバンドの「stop」コマンドからドレインをトリガーする）。
@@ -119,5 +114,4 @@ Postgres バックエンドの協調機構が必要ですか？ `pg-lock` フィ
 
 ## ライセンス
 
-[Synthetic Source License 1.0 (SySL)](../../LICENSE) — AI 時代のライセンスで、
-著作権の状態に関わらず拘束力のある契約として機能します。
+SySL-1.0（Synthetic Source License）。[LICENSE](https://sysl.celestia.world) を参照してください。

@@ -4,9 +4,10 @@
 //! message. The generic [`FramedConn<S>`] in [`crate::codec`] adapts any
 //! `tokio::io` duplex stream into a `WireConn`.
 
-use async_trait::async_trait;
 use serde_json::Value;
 use std::io;
+
+use async_trait::async_trait;
 
 /// A framed, object-safe JSON-RPC connection.
 #[async_trait]

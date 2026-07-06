@@ -3,10 +3,10 @@
 
 #![cfg(any(feature = "ws", feature = "ipc"))]
 
-use malkuth::Transport;
-use malkuth::{Client, Router, Server};
 use serde_json::json;
 use std::sync::Arc;
+
+use malkuth::{Client, Router, Server, Transport};
 
 fn handler() -> Arc<Router> {
     Arc::new(Router::new().route("ping", |_p| Box::pin(async { Ok(json!("pong")) })))

@@ -6,13 +6,16 @@
 //! sliding-window rate limit to prevent crash storms. Workers are supervised
 //! concurrently via a `FuturesUnordered`.
 
-use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::{
+    process::Stdio,
+    time::{Duration, Instant},
+};
+use tokio::process::{Child, Command};
+
+use futures_util::stream::{FuturesUnordered, StreamExt};
+use tracing::{info, warn};
 
 use crate::{DrainController, RestartPolicy, WorkerInfo, WorkerStatus};
-use futures_util::stream::{FuturesUnordered, StreamExt};
-use tokio::process::{Child, Command};
-use tracing::{info, warn};
 
 /// Default sliding window for restart rate-limiting.
 pub const DEFAULT_WINDOW: Duration = Duration::from_secs(60);

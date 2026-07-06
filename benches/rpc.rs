@@ -1,14 +1,14 @@
 //! JSON-RPC throughput benchmarks — short-lived, long-lived, and pooled.
 
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use serde_json::json;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 
-use malkuth::Transport;
-use malkuth::codec::take_frame;
-use malkuth::transport::TcpTransport;
-use malkuth::{Client, ClientPool, Router, Server};
-use serde_json::json;
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+
+use malkuth::{
+    Client, ClientPool, Router, Server, Transport, codec::take_frame, transport::TcpTransport,
+};
 
 async fn setup_server() -> String {
     let lis = TcpTransport.listen("tcp://127.0.0.1:0").await.unwrap();

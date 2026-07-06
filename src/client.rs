@@ -4,16 +4,19 @@
 //! For concurrent multi-call throughput, use [`ClientPool`] which manages N
 //! long-lived connections and dispatches round-robin.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use serde_json::Value;
+use std::{
+    collections::HashMap,
+    sync::atomic::{AtomicU64, Ordering},
+};
 use tokio::sync::oneshot;
+
 use tracing::debug;
 
-use crate::{Transport, WireConn};
-
-use crate::jsonrpc::{Id, Request, Response, RpcError};
+use crate::{
+    Transport, WireConn,
+    jsonrpc::{Id, Request, Response, RpcError},
+};
 
 // ═══════════════════════════════════════════════════════════════
 // Single-connection sequential client

@@ -1,11 +1,10 @@
 //! File watcher: emits a `Restart` signal (debounced) when any watched path
 //! changes. The pod manager consumes it to perform a rolling restart.
 
-use std::path::PathBuf;
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
+use tokio::sync::mpsc;
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 /// Debounce window: coalesce a burst of editor saves into one restart.
