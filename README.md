@@ -6,13 +6,25 @@
 
 <div align="center">
 
-[![License](https://img.shields.io/badge/license-SySL%201.0-blue)](https://sysl.celestia.world) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/) [![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth) [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml) [![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
+[![License: SySL-1.0](https://img.shields.io/badge/License-SySL--1.0-blue.svg)](https://sysl.celestia.world)
+[![GitHub](https://img.shields.io/badge/github-celestia--island%2Fmalkuth-blue.svg)](https://github.com/celestia-island/malkuth)
+[![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/malkuth/checks.yml)](https://github.com/celestia-island/malkuth/actions/workflows/checks.yml)
+[![Docs](https://img.shields.io/badge/docs-malkuth.docs.celestia.world-blue)](https://malkuth.docs.celestia.world)
+[![docs.rs](https://docs.rs/malkuth/badge.svg)](https://docs.rs/malkuth)
 
 </div>
 
 <div align="center">
 
-**English** · [简体中文](./docs/zhs/README.md) · [繁體中文](./docs/zht/README.md) · [日本語](./docs/ja/README.md) · [한국어](./docs/ko/README.md) · [Français](./docs/fr/README.md) · [Español](./docs/es/README.md) · [Русский](./docs/ru/README.md) · [العربية](./docs/ar/README.md)
+**English** ·
+[简体中文](./docs/zhs/README.md) ·
+[繁體中文](./docs/zht/README.md) ·
+[日本語](./docs/ja/README.md) ·
+[한국어](./docs/ko/README.md) ·
+[Français](./docs/fr/README.md) ·
+[Español](./docs/es/README.md) ·
+[Русский](./docs/ru/README.md) ·
+[العربية](./docs/ar/README.md)
 
 </div>
 

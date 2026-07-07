@@ -13,6 +13,9 @@ categories = ["asynchronous", "network-programming", "development-tools"]
 publish = true
 exclude = ["docs/", "scripts/", ".github/", "justfile", "rust-toolchain.toml"]
 
+[package.metadata.docs.rs]
+all-features = true
+
 [features]
 default = ["tcp", "signals"]
 
