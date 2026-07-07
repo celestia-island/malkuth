@@ -9,7 +9,9 @@
 //! (e.g. an in-band "stop" RPC, or a parent supervisor signal over IPC).
 
 use async_trait::async_trait;
-use tracing::{info, warn};
+use tracing::info;
+#[cfg(unix)]
+use tracing::warn;
 
 use crate::{DrainController, ExitReason, ExitSource, ShutdownKind};
 
