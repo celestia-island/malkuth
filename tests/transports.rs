@@ -33,8 +33,16 @@ async fn ws_roundtrip_under_tokio() {
 async fn ipc_roundtrip_under_tokio() {
     use malkuth::transport::IpcTransport;
     let pid = std::process::id();
-    let sock = format!("/tmp/malkuth_ipc_{pid}.sock");
-    let _ = std::fs::remove_file(&sock);
+    // Unix domain sockets live on the filesystem; Windows named pipes use the
+    // `\\.\pipe\` namespace (no file to clean up afterwards).
+    #[cfg(unix)]
+    let sock = {
+        let s = format!("/tmp/malkuth_ipc_{pid}.sock");
+        let _ = std::fs::remove_file(&s);
+        s
+    };
+    #[cfg(windows)]
+    let sock = format!(r"\\.\pipe\malkuth_ipc_{pid}");
     let addr = format!("ipc:{sock}");
     let lis = IpcTransport.listen(&addr).await.unwrap();
     let h = handler();
@@ -44,5 +52,6 @@ async fn ipc_roundtrip_under_tokio() {
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
     let mut c = Client::connect(&IpcTransport, &addr).await.unwrap();
     assert_eq!(c.call("ping", json!({})).await.unwrap(), json!("pong"));
+    #[cfg(unix)]
     let _ = std::fs::remove_file(&sock);
 }
