@@ -75,7 +75,7 @@ jobs:
 
       # Build with cli (the watchdog binary) + mcp so `malkuth mcp` ships too.
       - name: Build (release)
-        run: cargo build --release --locked --features "cli mcp" --target ${{ matrix.target }}
+        run: cargo build --release --features "cli mcp" --target ${{ matrix.target }}
 
       - name: Stage subpackage
         shell: bash
