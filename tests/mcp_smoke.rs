@@ -60,6 +60,7 @@ fn read_response<R: BufRead>(r: &mut R, want_id: u64, timeout: Duration) -> serd
 }
 
 #[test]
+#[allow(clippy::zombie_processes)] // best-effort teardown: try_wait then kill
 fn mcp_server_lists_supervision_tools() {
     let bin = malkuth_binary();
     let mut child = Command::new(&bin)
@@ -94,7 +95,12 @@ fn mcp_server_lists_supervision_tools() {
         "server did not advertise tools capability: {init}"
     );
 
-    write_msg(&mut stdin, None, "notifications/initialized", serde_json::json!({}));
+    write_msg(
+        &mut stdin,
+        None,
+        "notifications/initialized",
+        serde_json::json!({}),
+    );
 
     write_msg(&mut stdin, Some(2), "tools/list", serde_json::json!({}));
     let list = read_response(&mut stdout, 2, Duration::from_secs(20));

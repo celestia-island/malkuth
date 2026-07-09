@@ -20,8 +20,9 @@ use std::error::Error;
 use std::time::Duration;
 
 use rmcp::{
+    ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
     handler::server::wrapper::Parameters, model::*, service::RequestContext, tool, tool_handler,
-    tool_router, ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
+    tool_router,
 };
 use schemars::JsonSchema;
 
