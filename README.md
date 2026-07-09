@@ -60,6 +60,23 @@ a client keeps hitting the same pod until that pod restarts or scales down — t
 basis for gray release / rolling restart. On a file change it drains and
 restarts one pod at a time.
 
+### npx (no Rust toolchain required)
+
+Prebuilt binaries are published to npm, so you can run `malkuth` with a single
+command — no `cargo build`:
+
+```bash
+npx @celestia-island/malkuth --watch ./src -- cargo run
+npx @celestia-island/malkuth mcp        # the MCP server (needs the mcp build)
+```
+
+The `@celestia-island/malkuth` root package pulls the right platform subpackage
+(`-linux-x64` / `-darwin-arm64` / `-win32-x64`) automatically. To pin a version:
+
+```bash
+npx @celestia-island/malkuth@0.1.0 -- cargo run
+```
+
 ## As a library
 
 ```toml
@@ -121,6 +138,32 @@ end-to-end. The CLI pod pool + sticky proxy is working (e2e-verified). All three
 `CoordinationLock` backends (`file-lock`, `lease`, `pg-lock`) and the
 `leader-follower` `LeaseLeaderElector` are implemented. See
 [docs/design/](docs/en/design/) for the design.
+
+## MCP server
+
+Build malkuth with the `mcp` feature and run the stdio server — it exposes the
+supervision toolkit to AI coding assistants over the Model Context Protocol:
+
+```bash
+malkuth mcp
+```
+
+The server advertises two tools: `malkuth_supervise` (launch a set of workers
+under the supervisor with restart policies + a sliding-window rate limit;
+blocks until they exit or the timeout fires, then returns the final status
+snapshot) and `malkuth_probe` (HTTP healthz / readyz check against a service
+URL). Wire it into an MCP client:
+
+```json
+{
+  "mcpServers": {
+    "malkuth": { "command": "malkuth", "args": ["mcp"] }
+  }
+}
+```
+
+The `mcp` feature implies `worker` + `schema`; it adds `rmcp` and a `reqwest`
+client for the probe tool.
 
 ## License
 

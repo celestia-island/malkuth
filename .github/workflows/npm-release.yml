@@ -1,0 +1,158 @@
+name: npm Release
+
+# Publish the `malkuth` binary to npm as precompiled platform subpackages so
+# users can run it via `npx @celestia-island/malkuth` with no Rust toolchain.
+#
+# This pipeline is the npm counterpart to publish.yml (crates.io). It runs in
+# three phases:
+#
+#   1. `build-subpackage` (matrix, one job per platform) — cross-compile the
+#      binary with the `cli mcp` features (so both the watchdog CLI and
+#      `malkuth mcp` are available), stage it into a platform subpackage via
+#      celestia-devtools `npm-dist`, and publish that single subpackage to npm.
+#   2. `publish-root` (single job, fan-in) — with no binary of its own, re-run
+#      `npm-dist` to (re)assemble the root package listing every subpackage
+#      already on npm, then publish the root launcher.
+#
+# The version is derived from the pushed tag (vX.Y.Z → X.Y.Z) and is shared by
+# the root package and every subpackage so they are released in lockstep.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 0.1.0), without leading v"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-subpackage:
+    name: Build + publish @celestia-island/malkuth${{ matrix.suffix }} to npm
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu,  suffix: -linux-x64 }
+          - { os: macos-latest,   target: aarch64-apple-darwin,      suffix: -darwin-arm64 }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,    suffix: -win32-x64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install celestia-devtools
+        run: pip install git+https://github.com/celestia-island/celestia-devtools.git
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: https://registry.npmjs.org/
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            v="${{ github.event.inputs.version }}"
+          else
+            v="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "publishing $v"
+
+      # Build with cli (the watchdog binary) + mcp so `malkuth mcp` ships too.
+      - name: Build (release)
+        run: cargo build --release --locked --features "cli mcp" --target ${{ matrix.target }}
+
+      - name: Stage subpackage
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/malkuth"
+          [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ] && bin="${bin}.exe"
+          celestia-devtools npm-dist \
+            --name malkuth \
+            --version "${{ steps.ver.outputs.version }}" \
+            --binary "$bin" \
+            --rust-target "${{ matrix.target }}" \
+            --out-dir dist \
+            --description "Composable service-supervision toolkit — watchdog + MCP server (npx launcher)" \
+            --repository "https://github.com/celestia-island/malkuth" \
+            --homepage "https://github.com/celestia-island/malkuth"
+
+      - name: Publish subpackage
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          sub="dist/malkuth${{ matrix.suffix }}"
+          echo "::group::npm pack $sub"
+          (cd "$sub" && npm pack --dry-run)
+          echo "::endgroup::"
+          (cd "$sub" && npm publish --access public)
+
+  publish-root:
+    name: Publish root @celestia-island/malkuth to npm
+    needs: build-subpackage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install celestia-devtools
+        run: pip install git+https://github.com/celestia-island/celestia-devtools.git
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: https://registry.npmjs.org/
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            v="${{ github.event.inputs.version }}"
+          else
+            v="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble root package
+        run: |
+          for sfx in -linux-x64 -darwin-arm64 -win32-x64; do
+            mkdir -p "dist/malkuth${sfx}"
+          done
+          celestia-devtools npm-dist \
+            --name malkuth \
+            --version "${{ steps.ver.outputs.version }}" \
+            --out-dir dist \
+            --description "Composable service-supervision toolkit — watchdog + MCP server (npx launcher)" \
+            --repository "https://github.com/celestia-island/malkuth" \
+            --homepage "https://github.com/celestia-island/malkuth"
+
+      - name: Publish root package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          echo "::group::npm pack (root)"
+          (cd dist && npm pack --dry-run)
+          echo "::endgroup::"
+          (cd dist && npm publish --access public)

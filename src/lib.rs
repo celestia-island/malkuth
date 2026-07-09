@@ -58,6 +58,10 @@ pub mod signals;
 #[cfg(feature = "worker")]
 pub mod worker;
 
+// ── Optional MCP server ───────────────────────────────────────
+#[cfg(feature = "mcp")]
+pub mod mcp;
+
 // ── Convenience re-exports ─────────────────────────────────────
 pub use hooks::{DrainHook, ExitReason, ExitSource, Heartbeat, HeartbeatReport, ProbeSink};
 pub use jsonrpc::{Id, Request, Response, Router, RpcError, RpcHandler};
