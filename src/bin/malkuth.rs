@@ -23,6 +23,22 @@ use tracing::{error, info};
 
 #[tokio::main]
 async fn main() {
+    // Intercept `malkuth mcp` before the watchdog arg parser runs: the
+    // watchdog uses `-- <cmd>` positional args, which a clap subcommand would
+    // conflict with, so we special-case the MCP server here.
+    #[cfg(feature = "mcp")]
+    {
+        let mut args = std::env::args_os();
+        let _ = args.next(); // program name
+        if args.next().is_some_and(|a| a == "mcp") {
+            if let Err(e) = malkuth::mcp::run().await {
+                error!("{e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
