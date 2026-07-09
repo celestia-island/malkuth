@@ -102,7 +102,6 @@ jobs:
 
       - name: Publish subpackage
         shell: bash
-        env:
         run: |
           sub="dist/malkuth${{ matrix.suffix }}"
           echo "::group::npm pack $sub"
@@ -156,7 +155,6 @@ jobs:
             --homepage "https://github.com/celestia-island/malkuth"
 
       - name: Publish root package
-        env:
         run: |
           echo "::group::npm pack (root)"
           (cd dist && npm pack --dry-run)
