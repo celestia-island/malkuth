@@ -83,7 +83,7 @@ libc = "^0.2"
 
 [dev-dependencies]
 tokio = { version = "^1", features = ["rt", "rt-multi-thread", "macros", "net", "signal", "sync", "time", "process", "io-util", "fs"] }
-criterion = { version = "^0.5", features = ["async_tokio"] }
+criterion = { version = "^0.8", features = ["async_tokio"] }
 
 [[bench]]
 name = "rpc"
