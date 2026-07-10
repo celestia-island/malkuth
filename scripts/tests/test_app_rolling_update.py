@@ -1,5 +1,7 @@
 """API: the test-app performs a gradual gray update gen-0 -> gen-1."""
-import sys, time, pathlib
+import sys
+import time
+import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _harness import Proc, bin_path, free_port, line_request, parse_kv, wait_port  # noqa: E402
 

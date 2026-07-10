@@ -1,7 +1,8 @@
 """CLI: a single pod behind the sticky proxy answers via the public port."""
-import sys, pathlib
+import sys
+import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _harness import Proc, bin_path, free_port, line_request, line_request_retry, wait_port  # noqa: E402
+from _harness import Proc, bin_path, free_port, line_request_retry, wait_port  # noqa: E402
 
 
 def test_cli_proxy_basic() -> None:

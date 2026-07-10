@@ -117,6 +117,26 @@ backends `CoordinationLock` (`file-lock`, `lease`, `pg-lock`) et le
 `LeaseLeaderElector` `leader-follower` sont implémentés. Voir
 [docs/design/](../en/design/) pour la conception.
 
+## Serveur MCP
+
+Construisez malkuth avec la feature `mcp` et lancez le serveur stdio — il expose le toolkit de supervision aux assistants de codage IA via le Model Context Protocol :
+
+```bash
+malkuth mcp
+```
+
+Le serveur annonce deux outils : `malkuth_supervise` (lance un ensemble de workers sous le superviseur avec des politiques de redémarrage + un limiteur de débit à fenêtre glissante ; bloque jusqu'à leur sortie ou au déclenchement du timeout, puis renvoie l'instantané d'état final) et `malkuth_probe` (vérification HTTP healthz / readyz sur une URL de service). Branchez-le dans un client MCP :
+
+```json
+{
+  "mcpServers": {
+    "malkuth": { "command": "malkuth", "args": ["mcp"] }
+  }
+}
+```
+
+La feature `mcp` implique `worker` + `schema` ; elle ajoute `rmcp` et un client `reqwest` pour l'outil de sonde.
+
 ## Licence
 
 SySL-1.0 (Synthetic Source License). Voir [LICENSE](https://sysl.celestia.world).

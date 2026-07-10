@@ -1,6 +1,8 @@
 """CLI: same client IP sticks to one backend; crashing it is tolerated
 (either re-routed to another pod, or the crashed pod is restarted)."""
-import sys, time, pathlib
+import sys
+import time
+import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _harness import Proc, bin_path, free_port, line_request, line_request_retry, parse_kv, wait_port  # noqa: E402
 

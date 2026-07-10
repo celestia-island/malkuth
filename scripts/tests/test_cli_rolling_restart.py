@@ -1,5 +1,9 @@
 """CLI: a file change under --watch triggers a rolling restart of the pods."""
-import os, sys, time, tempfile, pathlib
+import os
+import sys
+import time
+import tempfile
+import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _harness import Proc, bin_path, free_port, wait_port  # noqa: E402
 

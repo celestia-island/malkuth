@@ -1,5 +1,9 @@
 """API: the test-app supervises copies of itself and restarts a killed worker."""
-import os, signal, sys, time, pathlib
+import os
+import signal
+import sys
+import time
+import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _harness import Proc, bin_path, free_port, line_request, parse_kv, wait_port  # noqa: E402
 

@@ -115,6 +115,26 @@ CLI 的 pod 池 + 粘性代理已可用（经端到端验证）。所有三个
 `leader-follower` `LeaseLeaderElector` 已实现。设计文档见
 [设计文档](../en/design/)。
 
+## MCP 服务器
+
+使用 `mcp` feature 构建 malkuth 并运行 stdio 服务器——它通过模型上下文协议（Model Context Protocol）将监管工具包暴露给 AI 编码助手：
+
+```bash
+malkuth mcp
+```
+
+服务器提供两个工具：`malkuth_supervise`（在监管器下以重启策略 + 滑动窗口速率限制启动一组 worker；阻塞直到它们退出或超时触发，然后返回最终状态快照）和 `malkuth_probe`（对服务 URL 进行 HTTP healthz / readyz 检查）。将其接入 MCP 客户端：
+
+```json
+{
+  "mcpServers": {
+    "malkuth": { "command": "malkuth", "args": ["mcp"] }
+  }
+}
+```
+
+`mcp` feature 隐含 `worker` + `schema`；它还添加了 `rmcp` 和用于探测工具的 `reqwest` 客户端。
+
 ## 许可证
 
 SySL-1.0（Synthetic Source License）。详见 [LICENSE](https://sysl.celestia.world)。

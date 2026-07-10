@@ -1,5 +1,9 @@
 """Run every malkuth integration test_* module and report a summary."""
-import importlib, sys, pathlib, time, traceback
+import importlib
+import sys
+import pathlib
+import time
+import traceback
 
 HERE = pathlib.Path(__file__).resolve()
 sys.path.insert(0, str(HERE.parent))          # scripts/tests/  (_harness)

@@ -117,6 +117,26 @@ async fn main() -> std::io::Result<()> {
 `leader-follower` `LeaseLeaderElector`가 구현되었습니다. 설계는
 [docs/design/](../en/design/)을 참조하세요.
 
+## MCP 서버
+
+`mcp` feature로 malkuth를 빌드하고 stdio 서버를 실행합니다——모델 컨텍스트 프로토콜(Model Context Protocol)을 통해 감독 툴킷을 AI 코딩 어시스턴트에 노출합니다:
+
+```bash
+malkuth mcp
+```
+
+서버는 두 가지 도구를 제공합니다: `malkuth_supervise`(재시작 정책 + 슬라이딩 윈도우 속도 제한 하에 감독자 아래에 worker 집합을 시작하고, 그들이 종료되거나 타임아웃이 발생할 때까지 블록한 후 최종 상태 스냅샷을 반환) 및 `malkuth_probe`(서비스 URL에 대한 HTTP healthz / readyz 검사). MCP 클라이언트에 연결하려면:
+
+```json
+{
+  "mcpServers": {
+    "malkuth": { "command": "malkuth", "args": ["mcp"] }
+  }
+}
+```
+
+`mcp` feature는 `worker` + `schema`를 암시하며, 프로브 도구용 `rmcp`와 `reqwest` 클라이언트를 추가합니다.
+
 ## 라이선스
 
 SySL-1.0（Synthetic Source License）。[LICENSE](https://sysl.celestia.world)를 참조하세요。
