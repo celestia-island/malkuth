@@ -8,6 +8,7 @@ set lists
 # Shared celestia-devtools recipes — NOT in git. This justfile references shared
 # variables, so the import is REQUIRED. Bootstrap once: celestia-devtools init
 # (or `just fetch` if already staged). Refresh after upgrades.
+python_cmd := "python3"
 import? "./.just/git-bash-interop.just"
 import? "./.just/celestia-devtools.just"
 
