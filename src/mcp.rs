@@ -217,14 +217,39 @@ fn parse_policy(name: Option<&str>) -> RestartPolicy {
     }
 }
 
+// ── proxy detection ──────────────────────────────────
+
+/// Detect HTTP(S) proxy from environment variables.
+///
+/// Checks env vars in priority order:
+/// 1. `MALKUTH_PROXY` (malkuth-specific override)
+/// 2. `HTTP_PROXY`
+/// 3. `HTTPS_PROXY`
+/// 4. `ALL_PROXY`
+fn detect_proxy() -> Option<reqwest::Proxy> {
+    let candidates: [&str; 4] = ["MALKUTH_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"];
+    for var in candidates {
+        if let Ok(val) = std::env::var(var) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                if let Ok(proxy) = reqwest::Proxy::all(trimmed) {
+                    return Some(proxy);
+                }
+            }
+        }
+    }
+    None
+}
+
 // ── public entry point ───────────────────────────────
 
 pub async fn run() -> Result<(), Box<dyn Error>> {
+    let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(10));
+    if let Some(proxy) = detect_proxy() {
+        builder = builder.proxy(proxy);
+    }
     let server = Server {
-        http: reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .unwrap_or_default(),
+        http: builder.build().unwrap_or_default(),
     };
     let transport = rmcp::transport::stdio();
     let server_handle = server.serve(transport).await?;

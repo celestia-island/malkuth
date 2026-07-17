@@ -168,3 +168,22 @@ client for the probe tool.
 ## License
 
 SySL-1.0 (Synthetic Source License). See [LICENSE](./LICENSE) or the [SySL website](https://sysl.celestia.world).
+
+## MCP Server Deployment
+
+For production MCP deployments, use an **auto-restart wrapper** to keep the server alive across updates without interrupting the client session.
+
+### Recommended launcher
+
+#!/bin/bash
+while true; do
+  /path/to/malkuth mcp
+  sleep 0.2
+done
+
+### How it works
+
+1. The wrapper runs `malkuth mcp` in a `while true` loop.
+2. If the process exits, it restarts within 0.2 seconds.
+3. To update: `kill $(pgrep -f "malkuth mcp" | head -1)`
+4. malkuth can also supervise other MCP tools — use it as a watcher for the entire MCP toolchain.
