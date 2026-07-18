@@ -7,7 +7,7 @@
 ## 1. Contexte et objectifs
 Les trois projets sont structurellement homogènes — tous en **Rust (edition
 2024, MSRV 1.85) + axum 0.8 + tokio + JSON-RPC sur sockets Unix /
-WebSocket**, et tous partagent déjà la crate `arona` comme couche de
+WebSocket**, et tous partagent déjà la crate `plana` comme couche de
 protocole. C'est cette homogénéité qui rend pertinent le fait de construire
 *une seule* fois un mécanisme de supervision et de le réutiliser trois fois.
 Le mécanisme doit servir quatre besoins imbriqués, exprimés comme une seule
@@ -139,7 +139,7 @@ des écritures concurrentes dans A, utilisé comme bail de leader dans B. Cette
 unification du trait est précisément là qu'« atterrissent » les principes
 communs.
 ## 4. Appropriation des crates
-L'objectif utilisateur « mettre ça dans arona » doit être scindé, car **arona
+L'objectif utilisateur « mettre ça dans plana » doit être scindé, car **plana
 aujourd'hui est une crate purement de protocole/types** — uniquement des
 dépendances `serde` / `ts-rs` / `schemars`, `lib.rs:5` impose « chaque type
 est défini dans entelecheia et consommé par shittim-chest », et il
@@ -147,12 +147,12 @@ est défini dans entelecheia et consommé par shittim-chest », et il
 Injecter de la logique d'exécution (tokio, `sd_listen_fds`, traitement des
 signaux) casserait cette identité légère et publiable.
 Découpage :
-- **`arona::lifecycle` (contrat de protocole, vit dans arona).** Uniquement
+- **`plana::lifecycle` (contrat de protocole, vit dans plana).** Uniquement
   des méthodes et types JSON-RPC : `DrainState`, `ReadyStatus`,
   `Lifecycle.Drain`, `Lifecycle.Status`, `Worker.Status`, etc. Satisfait la
-  règle d'arona « apparié des deux côtés ».
+  règle d'plana « apparié des deux côtés ».
 - **`malkuth` (nouvelle crate, exécution).** Dépend des types de
-  protocole `arona` + `tokio` + une liaison `libsystemd` (socket activation)
+  protocole `plana` + `tokio` + une liaison `libsystemd` (socket activation)
   + des traits de backend. Activé par fonctionnalités (feature-gated) :
   - `replica` — coordination + orchestration du sous-système A.
   - `leader-follower` — élection par bail + failover du sous-système B.
@@ -160,7 +160,7 @@ Découpage :
   - `file-lock` / `pg-lock` / `lease` — backends `CoordinationLock`.
 Les trois projets dépendent de `malkuth` et activent les
 fonctionnalités dont ils ont besoin (voir la matrice §8). Tout mettre dans
-arona le forcerait à devenir « protocole + exécution optionnelle » et
+plana le forcerait à devenir « protocole + exécution optionnelle » et
 détruirait sa pureté — non recommandé.
 ## 5. Abstractions principales
 ### 5.1 `Worker` — une ressource-processus-enfant supervisée
@@ -371,7 +371,7 @@ Sélection des fonctionnalités par projet (`malkuth`) :
 1. **Phase A — Layer 1 sur les trois projets.** Sémantique des signaux +
    `/healthz` / `/readyz` + vidange. Risque le plus bas, gain immédiat le
    plus élevé (corrige d'abord le kill brutal de SIGTERM).
-2. **Phase B — protocole `arona::lifecycle` + squelette
+2. **Phase B — protocole `plana::lifecycle` + squelette
    `malkuth`.** Définitions de traits, `acquire_listener`,
    trait `CoordinationLock` + backends `FileLock` / `PgLock`, primitives
    `Worker` + `Supervisor`.

@@ -39,7 +39,7 @@
 
 ## 6. 跨仓依赖
 
-- shittim-chest 强依赖 malkuth 做编排；arona 提供协议类型。
+- shittim-chest 强依赖 malkuth 做编排；plana 提供协议类型。
 - 本仓无 `path = "../..."` 的硬编码 patch。
 
 ---

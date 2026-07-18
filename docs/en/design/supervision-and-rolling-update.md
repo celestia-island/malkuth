@@ -7,7 +7,7 @@
 ## 1. Background & Goals
 The three projects are structurally homogeneous — all **Rust (edition
 2024, MSRV 1.85) + axum 0.8 + tokio + JSON-RPC over Unix sockets /
-WebSocket**, and all already share the `arona` crate as their protocol
+WebSocket**, and all already share the `plana` crate as their protocol
 layer. This homogeneity is what makes a *single* supervision mechanism
 worth building once and reusing three times.
 The mechanism must serve four overlapping needs expressed as one
@@ -129,7 +129,7 @@ is the same trait in 2a and 2b — used to coordinate concurrent writes
 in A, used as the leader lease in B. That trait unification is precisely
 where "the principles are common" lands.
 ## 4. Crate Ownership
-The user goal "put it in arona" must be split, because **arona today is
+The user goal "put it in plana" must be split, because **plana today is
 a pure protocol/type crate** — only `serde` / `ts-rs` / `schemars`
 dependencies, `lib.rs:5` mandates "every type is defined in entelecheia
 and consumed by shittim-chest", and it `exclude`s all non-protocol
@@ -137,10 +137,10 @@ artefacts for crates.io publishing. Injecting runtime logic (tokio,
 `sd_listen_fds`, signal handling) would break that lightweight,
 publishable identity.
 Split:
-- **`arona::lifecycle` (protocol contract, lives in arona).** Only
+- **`plana::lifecycle` (protocol contract, lives in plana).** Only
   JSON-RPC methods and types: `DrainState`, `ReadyStatus`,
   `Lifecycle.Drain`, `Lifecycle.Status`, `Worker.Status`, etc. Satisfies
-  arona's "paired on both sides" rule.
+  plana's "paired on both sides" rule.
 - **`malkuth` (standalone crate, runtime).** Depends on `tokio`
   (pure Rust — no `libsystemd`). Protocol types are self-contained
   within `malkuth`. Feature-gated:
@@ -149,7 +149,7 @@ Split:
   - `socket-activation` — systemd fd acquisition.
   - `file-lock` / `pg-lock` / `lease` — `CoordinationLock` backends.
 The three projects depend on `malkuth` and enable the features
-they need (see §8 matrix). Putting everything in arona would force it to
+they need (see §8 matrix). Putting everything in plana would force it to
 become "protocol + optional runtime" and destroy its purity — not
 recommended.
 ## 5. Core Abstractions
@@ -349,7 +349,7 @@ Feature selection per project (`malkuth`):
 1. **Phase A — Layer 1 across all three projects.** Signal semantics +
    `/healthz` / `/readyz` + drain. Lowest risk, highest immediate payoff
    (fixes SIGTERM hard-kill first).
-2. **Phase B — `arona::lifecycle` protocol + `malkuth`
+2. **Phase B — `plana::lifecycle` protocol + `malkuth`
    skeleton.** Trait definitions, `acquire_listener`,
    `CoordinationLock` trait + `FileLock` / `PgLock` backends, `Worker` +
    `Supervisor` primitives.
