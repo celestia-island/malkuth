@@ -8,7 +8,7 @@
 ## 1. Antecedentes y Objetivos
 Los tres proyectos son estructuralmente homogéneos: todos son **Rust
 (edition 2024, MSRV 1.85) + axum 0.8 + tokio + JSON-RPC sobre sockets
-Unix / WebSocket**, y todos comparten ya el crate `arona` como capa de
+Unix / WebSocket**, y todos comparten ya el crate `plana` como capa de
 protocolo. Precisamente esta homogeneidad es lo que hace que valga la
 pena construir *un único* mecanismo de supervisión y reutilizarlo tres
 veces.
@@ -142,7 +142,7 @@ coordinar escrituras concurrentes en A, y como lease del leader en B.
 Esa unificación del trait es justamente el punto donde aterriza "los
 principios son comunes".
 ## 4. Pertenencia de crates
-El objetivo del usuario "ponlo en arona" debe partirse, porque **arona
+El objetivo del usuario "ponlo en plana" debe partirse, porque **plana
 hoy es un crate puramente de protocolo/tipos** — sólo dependencias
 `serde` / `ts-rs` / `schemars`, `lib.rs:5` exige "cada tipo se define en
 entelecheia y se consume en shittim-chest", y hace `exclude` de todos
@@ -150,19 +150,19 @@ los artefactos que no son de protocolo para publicar en crates.io.
 Inyectar lógica de runtime (tokio, `sd_listen_fds`, manejo de señales)
 rompería esa identidad ligera y publicable.
 Partición:
-- **`arona::lifecycle` (contrato de protocolo, vive en arona).** Sólo
+- **`plana::lifecycle` (contrato de protocolo, vive en plana).** Sólo
   métodos y tipos JSON-RPC: `DrainState`, `ReadyStatus`,
   `Lifecycle.Drain`, `Lifecycle.Status`, `Worker.Status`, etc. Satisface
-  la regla de arona de "emparejado en ambos lados".
+  la regla de plana de "emparejado en ambos lados".
 - **`malkuth` (crate nuevo, runtime).** Depende de los tipos de
-  protocolo de `arona` + `tokio` + un binding de `libsystemd` (socket
+  protocolo de `plana` + `tokio` + un binding de `libsystemd` (socket
   activation) + traits de backend. Activado por features:
   - `replica` — coordinación y orquestación del Subsistema A.
   - `leader-follower` — elección por lease y failover del Subsistema B.
   - `socket-activation` — adquisición de fd de systemd.
   - `file-lock` / `pg-lock` / `lease` — backends de `CoordinationLock`.
 Los tres proyectos dependen de `malkuth` y activan las features
-que necesitan (véase la matriz del §8). Meterlo todo en arona la
+que necesitan (véase la matriz del §8). Meterlo todo en plana la
 forzaría a convertirse en "protocolo + runtime opcional" y destruiría su
 pureza — no recomendado.
 ## 5. Abstracciones núcleo
@@ -374,7 +374,7 @@ Selección de features por proyecto (`malkuth`):
 1. **Fase A — Capa 1 en los tres proyectos.** Semántica de señales +
    `/healthz` / `/readyz` + drain. Menor riesgo, mayor beneficio
    inmediato (arregla primero el hard-kill por SIGTERM).
-2. **Fase B — protocolo `arona::lifecycle` + esqueleto de
+2. **Fase B — protocolo `plana::lifecycle` + esqueleto de
    `malkuth`.** Definiciones de trait, `acquire_listener`, trait
    `CoordinationLock` + backends `FileLock` / `PgLock`, primitivas
    `Worker` + `Supervisor`.
