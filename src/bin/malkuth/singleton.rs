@@ -133,8 +133,8 @@ fn read_lock_info(lock_path: &PathBuf) -> (u32, Option<SystemTime>) {
     let lines: Vec<&str> = buf.trim().lines().collect();
     let pid: u32 = lines.first().and_then(|s| s.parse().ok()).unwrap_or(0);
     let mtime = if lines.len() >= 3 {
-        let secs: u64 = lines[1].parse().ok()?;
-        let nsecs: u32 = lines[2].parse().ok()?;
+        let secs: u64 = lines[1].parse().unwrap_or(0);
+        let nsecs: u32 = lines[2].parse().unwrap_or(0);
         SystemTime::UNIX_EPOCH.checked_add(std::time::Duration::new(secs, nsecs))
     } else {
         None
