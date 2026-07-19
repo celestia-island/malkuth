@@ -53,6 +53,11 @@ pub struct Args {
     #[arg(long = "drain-secs", default_value = "8")]
     pub drain_secs: u64,
 
+    /// Ensure only one malkuth instance runs per proxy port.
+    /// Same binary mtime → refuses to start. Different mtime → kills old instance.
+    #[arg(long = "singleton")]
+    pub singleton: bool,
+
     /// The command to run (everything after `--`), e.g. `-- cargo run`.
     #[arg(last = true, allow_hyphen_values = true)]
     pub command: Vec<String>,
