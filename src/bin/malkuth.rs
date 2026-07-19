@@ -9,6 +9,8 @@ mod cli;
 mod pool;
 #[path = "malkuth/proxy.rs"]
 mod proxy;
+#[path = "malkuth/singleton.rs"]
+mod singleton;
 #[path = "malkuth/watcher.rs"]
 mod watcher;
 
@@ -19,7 +21,7 @@ use clap::Parser;
 use cli::{Args, ProxySpec};
 use pool::{PodManager, assign_ports};
 use proxy::{ProxyState, run_proxy};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// Formats timestamps as local time `YYYY-MM-DD HH:MM:SS` (no timezone suffix),
 /// matching the format used by sibling celestia-island CLIs (e.g. lagrange).
@@ -69,6 +71,27 @@ async fn main() {
             std::process::exit(2);
         })
     });
+
+    // Singleton lock — prevents duplicate instances on the same proxy port.
+    if args.singleton {
+        let port = proxy_spec.map(|s| s.public_port).unwrap_or(0);
+        if port > 0 {
+            match singleton::acquire(port) {
+                Ok(_guard) => {
+                    // Leak the guard — held for the lifetime of the process.
+                    // On exit the OS releases the flock automatically.
+                    std::mem::forget(_guard);
+                    info!(port, "singleton lock acquired");
+                }
+                Err(e) => {
+                    error!("{e}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            warn!("--singleton requires --proxy to be set; ignoring");
+        }
+    }
 
     let ports = match &proxy_spec {
         Some(spec) => assign_ports(
