@@ -1,8 +1,15 @@
 //! Singleton lock for the malkuth watchdog binary.
 //!
 //! Uses O_CREAT|O_EXCL (CREATE_NEW on Windows) to atomically create a
-//! lock file keyed by proxy port. Reads the owning PID from the file
-//! to determine if the old process is still alive.
+//! lock file keyed by proxy port. The lock file records:
+//! - PID
+//! - Creation time (Unix epoch seconds.nanos)
+//! - Binary build mtime (Unix epoch seconds.nanos)
+//! - Binary path
+//! - Working directory
+//!
+//! Lock directory defaults to /tmp/malkuth-locks (Unix) / %TEMP%\malkuth-locks
+//! (Windows). Override via MALKUTH_LOCK_DIR environment variable.
 //!
 //! - Same binary mtime → refuses to start.
 //! - Different mtime → SIGTERM old, wait, SIGKILL, proceed.
@@ -14,14 +21,59 @@ use std::path::PathBuf;
 use std::process;
 use std::time::SystemTime;
 
+/// Metadata written into every lock file.
+struct LockMeta {
+    pid: u32,
+    created_at: SystemTime,
+    build_mtime: SystemTime,
+    binary_path: PathBuf,
+    working_dir: PathBuf,
+}
+
+impl LockMeta {
+    fn serialize(&self) -> String {
+        let c = self.created_at.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+        let b = self.build_mtime.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+        format!(
+            "{}\n{}.{}\n{}.{}\n{}\n{}",
+            self.pid,
+            c.as_secs(), c.subsec_nanos(),
+            b.as_secs(), b.subsec_nanos(),
+            self.binary_path.display(),
+            self.working_dir.display(),
+        )
+    }
+
+    fn deserialize(raw: &str) -> Option<Self> {
+        let lines: Vec<&str> = raw.trim().lines().collect();
+        if lines.len() < 5 { return None; }
+        let pid: u32 = lines[0].parse().ok()?;
+        let created_at = parse_time(lines[1])?;
+        let build_mtime = parse_time(lines[2])?;
+        let binary_path = PathBuf::from(lines[3]);
+        let working_dir = PathBuf::from(lines[4]);
+        Some(LockMeta { pid, created_at, build_mtime, binary_path, working_dir })
+    }
+}
+
+fn parse_time(s: &str) -> Option<SystemTime> {
+    let (secs, nsecs) = s.split_once('.')?;
+    let s: u64 = secs.parse().ok()?;
+    let n: u32 = nsecs.parse().ok()?;
+    SystemTime::UNIX_EPOCH.checked_add(std::time::Duration::new(s, n))
+}
+
+fn format_time(t: SystemTime) -> String {
+    let d = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+    format!("{}.{}", d.as_secs(), d.subsec_nanos())
+}
+
 pub struct SingletonGuard {
     _lock_path: PathBuf,
 }
 
 impl Drop for SingletonGuard {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self._lock_path);
-    }
+    fn drop(&mut self) { let _ = fs::remove_file(&self._lock_path); }
 }
 
 #[derive(Debug)]
@@ -33,9 +85,7 @@ pub enum SingletonError {
 impl std::fmt::Display for SingletonError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SingletonError::AlreadyRunning(pid) => {
-                write!(f, "another malkuth instance is already running (pid {pid})")
-            }
+            SingletonError::AlreadyRunning(pid) => write!(f, "another malkuth instance is already running (pid {pid})"),
             SingletonError::Io(e) => write!(f, "singleton lock I/O error: {e}"),
         }
     }
@@ -45,7 +95,7 @@ impl From<std::io::Error> for SingletonError {
     fn from(e: std::io::Error) -> Self { SingletonError::Io(e) }
 }
 
-// ── Platform: process liveness check ────────────────────────────
+// ── Platform helpers ────────────────────────────────────────────
 
 #[cfg(unix)]
 fn is_process_alive(pid: u32) -> bool {
@@ -57,9 +107,9 @@ fn is_process_alive(pid: u32) -> bool {
 fn kill_process(pid: u32) -> std::io::Result<()> {
     let rc = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
     if rc != 0 {
-        let err = std::io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::ESRCH) { return Ok(()); }
-        return Err(err);
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() == Some(libc::ESRCH) { return Ok(()); }
+        return Err(e);
     }
     for _ in 0..20 {
         if !is_process_alive(pid) { return Ok(()); }
@@ -82,12 +132,8 @@ fn is_process_alive(pid: u32) -> bool {
 #[cfg(windows)]
 fn kill_process(pid: u32) -> std::io::Result<()> {
     if !is_process_alive(pid) { return Ok(()); }
-    let status = std::process::Command::new("taskkill")
-        .args(["/F", "/PID", &pid.to_string()])
-        .status()?;
-    if !status.success() {
-        return Err(std::io::Error::new(std::io::ErrorKind::Other, "taskkill failed"));
-    }
+    let s = std::process::Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]).status()?;
+    if !s.success() { return Err(std::io::Error::new(std::io::ErrorKind::Other, "taskkill failed")); }
     for _ in 0..20 {
         if !is_process_alive(pid) { return Ok(()); }
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -101,68 +147,64 @@ pub fn acquire(proxy_port: u16) -> Result<SingletonGuard, SingletonError> {
     let lock_dir = lock_dir_path();
     fs::create_dir_all(&lock_dir).ok();
     let lock_path = lock_dir.join(format!("malkuth-{proxy_port}.lock"));
-    let binary_mtime = get_binary_mtime();
 
-    // O_CREAT|O_EXCL on Unix → CREATE_NEW on Windows.
+    let meta = LockMeta {
+        pid: process::id(),
+        created_at: SystemTime::now(),
+        build_mtime: get_binary_mtime().unwrap_or(SystemTime::UNIX_EPOCH),
+        binary_path: std::env::current_exe().unwrap_or_default(),
+        working_dir: std::env::current_dir().unwrap_or_default(),
+    };
+
     match OpenOptions::new().write(true).create_new(true).open(&lock_path) {
         Ok(mut file) => {
-            let pid = process::id();
-            let mut content = format!("{pid}\n");
-            if let Some(mt) = &binary_mtime {
-                if let Ok(dur) = mt.duration_since(SystemTime::UNIX_EPOCH) {
-                    content.push_str(&format!("{}\n{}", dur.as_secs(), dur.subsec_nanos()));
-                }
-            }
-            file.write_all(content.as_bytes())?;
+            file.write_all(meta.serialize().as_bytes())?;
             Ok(SingletonGuard { _lock_path: lock_path })
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            let (old_pid, old_mtime) = read_lock_info(&lock_path);
+            let old_meta = read_meta(&lock_path);
 
-            if !is_process_alive(old_pid) {
+            if !is_process_alive(old_meta.pid) {
                 let _ = fs::remove_file(&lock_path);
                 return acquire(proxy_port);
             }
 
-            match (&binary_mtime, &old_mtime) {
-                (Some(new_mt), Some(old_mt)) if new_mt == old_mt => {
-                    Err(SingletonError::AlreadyRunning(old_pid))
-                }
-                (Some(_), Some(_)) => {
-                    eprintln!("malkuth: killing old instance (pid {old_pid}, different build)");
-                    let _ = kill_process(old_pid);
-                    std::thread::sleep(std::time::Duration::from_millis(800));
-                    let _ = fs::remove_file(&lock_path);
-                    acquire(proxy_port)
-                }
-                _ => Err(SingletonError::AlreadyRunning(old_pid)),
+            if meta.build_mtime == old_meta.build_mtime {
+                return Err(SingletonError::AlreadyRunning(old_meta.pid));
             }
+
+            eprintln!("malkuth: killing old instance (pid {}, different build)", old_meta.pid);
+            let _ = kill_process(old_meta.pid);
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            let _ = fs::remove_file(&lock_path);
+            acquire(proxy_port)
         }
         Err(e) => Err(SingletonError::Io(e)),
     }
 }
 
 fn lock_dir_path() -> PathBuf {
-    let dir = PathBuf::from("/tmp/malkuth-locks");
-    fs::create_dir_all(&dir).ok();
-    dir
+    if let Ok(dir) = std::env::var("MALKUTH_LOCK_DIR") {
+        return PathBuf::from(dir);
+    }
+    #[cfg(unix)]
+    { PathBuf::from("/tmp/malkuth-locks") }
+    #[cfg(windows)]
+    { std::env::temp_dir().join("malkuth-locks") }
 }
 
-fn read_lock_info(lock_path: &PathBuf) -> (u32, Option<SystemTime>) {
+fn read_meta(lock_path: &PathBuf) -> LockMeta {
     let mut buf = String::new();
     if let Ok(mut f) = File::open(lock_path) {
         let _ = f.read_to_string(&mut buf);
     }
-    let lines: Vec<&str> = buf.trim().lines().collect();
-    let pid: u32 = lines.first().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let mtime = if lines.len() >= 3 {
-        let secs: u64 = lines[1].parse().unwrap_or(0);
-        let nsecs: u32 = lines[2].parse().unwrap_or(0);
-        SystemTime::UNIX_EPOCH.checked_add(std::time::Duration::new(secs, nsecs))
-    } else {
-        None
-    };
-    (pid, mtime)
+    LockMeta::deserialize(&buf).unwrap_or(LockMeta {
+        pid: 0,
+        created_at: SystemTime::UNIX_EPOCH,
+        build_mtime: SystemTime::UNIX_EPOCH,
+        binary_path: PathBuf::new(),
+        working_dir: PathBuf::new(),
+    })
 }
 
 fn get_binary_mtime() -> Option<SystemTime> {
