@@ -143,14 +143,16 @@ pub fn acquire(proxy_port: u16) -> Result<SingletonGuard, SingletonError> {
 }
 
 fn lock_dir_path() -> PathBuf {
-    #[cfg(target_os = "linux")]
-    if fs::metadata("/run").is_ok() {
-        return PathBuf::from("/run/malkuth");
-    }
+    // Prefer XDG_RUNTIME_DIR on Linux, fall back to HOME/.malkuth, then /tmp
     #[cfg(unix)]
     {
+        if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
+            let p = PathBuf::from(dir).join("malkuth");
+            if fs::create_dir_all(&p).is_ok() { return p; }
+        }
         if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(".malkuth");
+            let p = PathBuf::from(home).join(".malkuth");
+            if fs::create_dir_all(&p).is_ok() { return p; }
         }
     }
     std::env::temp_dir()
