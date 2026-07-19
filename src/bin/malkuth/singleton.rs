@@ -78,14 +78,17 @@ pub fn acquire(proxy_port: u16) -> Result<SingletonGuard, SingletonError> {
                 (Some(new_mt), Some(old_mt)) if new_mt == old_mt => {
                     return Err(SingletonError::AlreadyRunning(old_pid));
                 }
-                _ => {
+                (Some(_), Some(_)) => {
+                    // Different binary — kill old and proceed
                     eprintln!("malkuth: killing old instance (pid {old_pid}, different build)");
                     let _ = kill_process(old_pid);
-                    // Brief wait for cleanup
                     std::thread::sleep(std::time::Duration::from_millis(800));
-                    // Remove stale lock file and retry
                     let _ = fs::remove_file(&lock_path);
                     return acquire(proxy_port);
+                }
+                _ => {
+                    // Can't determine build identity — refuse to start
+                    return Err(SingletonError::AlreadyRunning(old_pid));
                 }
             }
         }
