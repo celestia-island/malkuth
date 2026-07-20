@@ -54,38 +54,35 @@ name = "malkuth"
 required-features = ["cli"]
 
 [dependencies]
-serde = { version = "^1", features = ["derive"] }
-serde_json = "^1"
-schemars = { version = "^1", features = ["derive"], optional = true }
-thiserror = "^2"
+
 async-trait = "^0.1"
-tracing = "^0.1"
-futures-util = { version = "^0.3", features = ["io"] }
-tokio = { version = "^1", features = ["rt", "rt-multi-thread", "macros", "net", "signal", "sync", "time", "process", "io-util", "fs"] }
-
-tokio-tungstenite = { version = "^0.29", optional = true }
-interprocess = { version = "^2", optional = true, features = ["tokio"] }
 axum = { version = "^0.8", optional = true }
-tokio-postgres = { version = "^0.7", optional = true }
-
+chrono = { version = "^0.4", optional = true }
 # CLI-only deps
 clap = { version = "^4", features = ["derive"], optional = true }
+futures-util = { version = "^0.3", features = ["io"] }
+interprocess = { version = "^2", optional = true, features = ["tokio"] }
 notify = { version = "^8", optional = true }
-tracing-subscriber = { version = "^0.3", optional = true, features = ["env-filter"] }
-chrono = { version = "^0.4", optional = true }
-
-# MCP (optional, for standalone MCP server)
-rmcp = { version = "^1", optional = true, features = ["server", "transport-io", "macros"] }
 # HTTP client for the probe tool (healthz/readyz checks).
 reqwest = { version = "^0.13", optional = true, default-features = false, features = ["rustls"] }
-
+# MCP (optional, for standalone MCP server)
+rmcp = { version = "^1", optional = true, features = ["server", "transport-io", "macros"] }
+schemars = { version = "^1", features = ["derive"], optional = true }
+serde = { version = "^1", features = ["derive"] }
+serde_json = "^1"
+thiserror = "^2"
+tokio = { version = "^1", features = ["rt", "rt-multi-thread", "macros", "net", "signal", "sync", "time", "process", "io-util", "fs"] }
+tokio-postgres = { version = "^0.7", optional = true }
+tokio-tungstenite = { version = "^0.29", optional = true }
+tracing = "^0.1"
+tracing-subscriber = { version = "^0.3", optional = true, features = ["env-filter"] }
 [target.'cfg(unix)'.dependencies]
 libc = "^0.2"
 
 [dev-dependencies]
-tokio = { version = "^1", features = ["rt", "rt-multi-thread", "macros", "net", "signal", "sync", "time", "process", "io-util", "fs"] }
-criterion = { version = "^0.5", features = ["async_tokio"] }
 
+criterion = { version = "^0.5", features = ["async_tokio"] }
+tokio = { version = "^1", features = ["rt", "rt-multi-thread", "macros", "net", "signal", "sync", "time", "process", "io-util", "fs"] }
 [[bench]]
 name = "rpc"
 harness = false
