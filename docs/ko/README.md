@@ -141,13 +141,11 @@ malkuth mcp
 
 SySL-1.0（Synthetic Source License）。[LICENSE](https://sysl.celestia.world)를 참조하세요。
 
-## MCP Server Deployment
+## MCP 서버 배포
 
-> (English section — translation pending)
+프로덕션 MCP 배포의 경우 **자동 재시작 래퍼**를 사용하여 클라이언트 세션을 중단하지 않고 업데이트 전반에 걸쳐 서버를 계속 실행하세요.
 
-For production MCP deployments, use an **auto-restart wrapper** to keep the server alive across updates without interrupting the client session.
-
-### Recommended launcher
+### 권장 실행기
 
 #!/bin/bash
 while true; do
@@ -155,9 +153,9 @@ while true; do
   sleep 0.2
 done
 
-### How it works
+### 작동 방식
 
-1. The wrapper runs `malkuth mcp` in a `while true` loop.
-2. If the process exits, it restarts within 0.2 seconds.
-3. To update: `kill $(pgrep -f "malkuth mcp" | head -1)`
-4. malkuth can also supervise other MCP tools — use it as a watcher for the entire MCP toolchain.
+1. 래퍼는 `while true` 루프에서 `malkuth mcp`를 실행합니다.
+2. 프로세스가 종료되면 0.2초 이내에 재시작됩니다.
+3. 업데이트 방법: `kill $(pgrep -f "malkuth mcp" | head -1)`
+4. malkuth는 다른 MCP 도구도 감독할 수 있습니다——전체 MCP 툴체인의 감시자로 사용하세요.
