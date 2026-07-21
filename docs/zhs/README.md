@@ -139,13 +139,11 @@ malkuth mcp
 
 SySL-1.0（Synthetic Source License）。详见 [LICENSE](https://sysl.celestia.world)。
 
-## MCP Server Deployment
+## MCP 服务器部署
 
-> (English section — translation pending)
+对于生产环境的 MCP 部署，请使用**自动重启包装器**，以便在更新时保持服务器运行，而不会中断客户端会话。
 
-For production MCP deployments, use an **auto-restart wrapper** to keep the server alive across updates without interrupting the client session.
-
-### Recommended launcher
+### 推荐启动器
 
 #!/bin/bash
 while true; do
@@ -153,9 +151,9 @@ while true; do
   sleep 0.2
 done
 
-### How it works
+### 工作原理
 
-1. The wrapper runs `malkuth mcp` in a `while true` loop.
-2. If the process exits, it restarts within 0.2 seconds.
-3. To update: `kill $(pgrep -f "malkuth mcp" | head -1)`
-4. malkuth can also supervise other MCP tools — use it as a watcher for the entire MCP toolchain.
+1. 包装器在 `while true` 循环中运行 `malkuth mcp`。
+2. 如果进程退出，它会在 0.2 秒内重启。
+3. 更新方式：`kill $(pgrep -f "malkuth mcp" | head -1)`
+4. malkuth 还可以监管其他 MCP 工具——将其用作整个 MCP 工具链的监视器。
