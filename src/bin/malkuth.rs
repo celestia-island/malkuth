@@ -201,67 +201,110 @@ async fn run_daemon(config_path: &str) -> Result<(), String> {
     use malkuth::{DrainController, Supervisor, config::DaemonConfig};
     use std::time::Duration;
 
-    let cfg = DaemonConfig::from_file(config_path)?;
+    let pid_file = {
+        let cfg = DaemonConfig::from_file(config_path)?;
+        cfg.daemon.pid_file.clone()
+            .unwrap_or_else(|| "/tmp/malkuth-daemon.pid".into())
+    };
 
-    let pid_file = cfg.daemon.pid_file.clone()
-        .unwrap_or_else(|| "/tmp/malkuth-daemon.pid".into());
-
-    // ── Singleton guard ─────────────────────────────────────────
     match acquire_daemon_lock(&pid_file) {
         Ok(()) => info!(%pid_file, "daemon lock acquired"),
         Err(e) => return Err(e),
     }
 
-    let service_count = cfg.services.len();
-    let service_list: Vec<_> = cfg.services.iter().map(|s| (s.id.clone(), s.program.clone())).collect();
-    let daemon_host = cfg.daemon.host.clone();
-    let max_restarts = cfg.daemon.rate_limit_max_restarts;
-    let rate_window = Duration::from_secs(cfg.daemon.rate_limit_window_secs);
-    let cooldown = Duration::from_secs(cfg.daemon.cooldown_secs);
+    // ── Signal sources ──────────────────────────────────────────
+    let reload_notify = std::sync::Arc::new(tokio::sync::Notify::new());
+    let (exit_tx, exit_rx) = tokio::sync::watch::channel(false);
 
-    let specs = cfg.into_worker_specs();
-
-    if specs.is_empty() {
-        return Err("config defines no [[services]]".into());
+    // SIGINT/SIGTERM → exit
+    {
+        let exit_tx = exit_tx.clone();
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c().await.ok();
+            info!("SIGINT received");
+            let _ = exit_tx.send(true);
+        });
+    }
+    #[cfg(unix)]
+    {
+        let exit_tx2 = exit_tx.clone();
+        tokio::spawn(async move {
+            let mut sig = tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::terminate()
+            ).ok();
+            if let Some(sig) = sig.as_mut() { sig.recv().await; }
+            info!("SIGTERM received");
+            let _ = exit_tx2.send(true);
+        });
+    }
+    // SIGHUP → reload
+    #[cfg(unix)]
+    {
+        let reload2 = reload_notify.clone();
+        tokio::spawn(async move {
+            let mut sig = tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::hangup()
+            ).ok();
+            loop {
+                if let Some(sig) = sig.as_mut() { sig.recv().await; } else { break; }
+                info!("SIGHUP received");
+                reload2.notify_one();
+            }
+        });
     }
 
-    let drain = DrainController::new();
+    // ── Supervision loop ────────────────────────────────────────
+    loop {
+        let cfg = DaemonConfig::from_file(config_path).unwrap_or_else(|e| {
+            error!(config_path, %e, "config read failed");
+            std::process::exit(1);
+        });
+        let daemon_host = cfg.daemon.host.clone();
+        let max_restarts = cfg.daemon.rate_limit_max_restarts;
+        let rate_window = Duration::from_secs(cfg.daemon.rate_limit_window_secs);
+        let cooldown = Duration::from_secs(cfg.daemon.cooldown_secs);
 
-    // Wire Ctrl-C to begin drain.
-    let drain_sig = drain.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        drain_sig.begin_drain(malkuth::ShutdownKind::Graceful);
-    });
+        let specs = cfg.into_worker_specs();
+        let service_list: Vec<_> = specs.iter().map(|s| (s.id.clone(), s.program.clone())).collect();
+        let service_count = service_list.len();
+        if specs.is_empty() { error!("config defines no [[services]]"); std::process::exit(1); }
 
-    let supervisor = Supervisor::new(specs)
-        .rate_limit(max_restarts, rate_window)
-        .cooldown(cooldown);
+        let drain = DrainController::new();
+        let drain_for_signal = drain.clone();
 
-    info!(
-        services = service_count,
-        host = %daemon_host,
-        "malkuth daemon starting"
-    );
+        // Per-iteration signal wiring: drain on reload or exit
+        let reload2 = reload_notify.clone();
+        let mut exit_rx2 = exit_rx.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = reload2.notified() => {}
+                _ = exit_rx2.changed() => {}
+            }
+            drain_for_signal.begin_drain(malkuth::ShutdownKind::Graceful);
+        });
 
-    for (id, program) in &service_list {
-        info!(id = %id, program = %program, "worker registered");
+        let supervisor = Supervisor::new(specs)
+            .rate_limit(max_restarts, rate_window)
+            .cooldown(cooldown);
+
+        info!(services = service_count, host = %daemon_host, "malkuth daemon starting");
+        for (id, program) in &service_list {
+            info!(id = %id, program = %program, "worker registered");
+        }
+
+        let results = supervisor.run(drain).await;
+        for info in &results {
+            info!(id = %info.id, restarts = info.restart_count, "worker drained");
+        }
+
+        if *exit_rx.borrow() {
+            info!("exit signal received, shutting down");
+            break;
+        }
+        info!("reloading config and restarting workers...");
     }
 
-    let results = supervisor.run(drain).await;
-
-    // ── Cleanup ────────────────────────────────────────────────
     release_daemon_lock(&pid_file);
-
-    for info in &results {
-        warn!(
-            id = %info.id,
-            status = ?info.status,
-            restarts = info.restart_count,
-            "worker stopped"
-        );
-    }
-
     Ok(())
 }
 
