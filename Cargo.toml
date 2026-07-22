@@ -42,7 +42,7 @@ leader-follower = ["lease"]
 schema = ["dep:schemars"]
 
 # ── CLI binary ─────────────────────────────────────────────────
-cli = ["dep:clap", "dep:notify", "dep:tracing-subscriber", "dep:chrono"]
+cli = ["dep:clap", "dep:notify", "dep:tracing-subscriber", "dep:chrono", "dep:toml"]
 
 # ── MCP server ─────────────────────────────────────────────────
 # Standalone MCP (Model Context Protocol) server exposing supervision + probe
@@ -73,6 +73,7 @@ clap = { version = "^4", features = ["derive"], optional = true }
 notify = { version = "^8", optional = true }
 tracing-subscriber = { version = "^0.3", optional = true, features = ["env-filter"] }
 chrono = { version = "^0.4", optional = true }
+toml = { version = "^0.8", optional = true }
 
 # MCP (optional, for standalone MCP server)
 rmcp = { version = "^1", optional = true, features = ["server", "transport-io", "macros"] }

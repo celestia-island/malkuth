@@ -62,6 +62,10 @@ pub mod worker;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 
+// ── TOML configuration (cli + worker features) ──────────────────
+#[cfg(all(feature = "cli", feature = "worker"))]
+pub mod config;
+
 // ── Convenience re-exports ─────────────────────────────────────
 pub use hooks::{DrainHook, ExitReason, ExitSource, Heartbeat, HeartbeatReport, ProbeSink};
 pub use jsonrpc::{Id, Request, Response, Router, RpcError, RpcHandler};
