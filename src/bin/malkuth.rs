@@ -44,6 +44,7 @@ use tracing::{error, info, warn};
 struct MalkuthTimer;
 
 impl tracing_subscriber::fmt::time::FormatTime for MalkuthTimer {
+    #[allow(dead_code)]
     fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
         write!(w, "{}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"))
     }
