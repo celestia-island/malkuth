@@ -218,7 +218,7 @@ mod tests {
         let reg = ApprovalRegistry::new(10, Duration::ZERO);
         reg.approve("p6", "chest", GateDecision::Allow);
         std::thread::sleep(Duration::from_millis(10));
-        let reg2 = ApprovalRegistry::new(10, Duration::ZERO);
+        let _reg2 = ApprovalRegistry::new(10, Duration::ZERO);
         assert!(validate_drain_request("chest", "p6", None, &reg).is_err());
     }
 }
