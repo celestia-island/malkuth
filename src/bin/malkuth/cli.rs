@@ -66,6 +66,15 @@ pub struct Args {
     #[arg(long = "ipc-path")]
     pub ipc_path: Option<String>,
 
+    /// Take over a listener fd inherited via fork+exec from a previous malkuth
+    /// instance (e.g. `--takeover LISTEN_FD=5`). Used during self-update.
+    #[arg(long = "takeover")]
+    pub takeover: Option<String>,
+
+    /// Path to a new malkuth binary for zero-downtime self-update.
+    #[arg(long = "self-update", value_name = "PATH")]
+    pub self_update: Option<String>,
+
     /// The command to run (everything after `--`), e.g. `-- cargo run`.
     #[arg(last = true, allow_hyphen_values = true)]
     pub command: Vec<String>,
