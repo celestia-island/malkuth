@@ -24,6 +24,16 @@ pub struct Args {
     #[arg(long = "watch", value_name = "PATH")]
     pub watch: Vec<PathBuf>,
 
+    /// Shell command to run before restarting after a file change.
+    /// Example: `--build "vite build"`. If the command exits non-zero,
+    /// the restart is skipped.
+    #[arg(long = "build", value_name = "CMD")]
+    pub build: Option<String>,
+
+    /// File-change debounce window in seconds (default: 3).
+    #[arg(long = "debounce", default_value = "3")]
+    pub debounce: u64,
+
     /// Reverse-proxy spec `PUBLIC:LO-HI`, e.g. `3000:3000-3999`. The CLI listens
     /// on PUBLIC and forwards to the pods' backend ports, which are assigned
     /// from the inclusive range LO..=HI (skipping PUBLIC itself). Sticky by

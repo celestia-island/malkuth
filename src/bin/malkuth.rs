@@ -25,6 +25,7 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::signal;
 
 use std::collections::HashMap;
+use std::process::Stdio;
 use clap::Parser;
 use cli::{Args, ProxySpec};
 use pool::{PodManager, assign_ports};
@@ -244,12 +245,37 @@ async fn main() {
     }
 
     if !args.watch.is_empty() {
-        let mut rx = watcher::spawn(args.watch.clone());
+        let mut rx = watcher::spawn(args.watch.clone(), args.debounce);
+        let build_cmd = args.build.clone();
+        let pod_count = args.pod_count.max(1);
         let manager = Arc::clone(&manager);
         tokio::spawn(async move {
             let mut next_pod: usize = 0;
             while rx.recv().await.is_some() {
-                let pod_count = args.pod_count.max(1);
+                // Run optional build command before restarting
+                if let Some(ref cmd) = build_cmd {
+                    info!(cmd, "running build command before restart");
+                    match tokio::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(cmd)
+                        .stdout(Stdio::inherit())
+                        .stderr(Stdio::inherit())
+                        .status()
+                        .await
+                    {
+                        Ok(status) if status.success() => {
+                            info!(cmd, "build succeeded, proceeding with restart");
+                        }
+                        Ok(status) => {
+                            warn!(cmd, code = %status, "build failed; skipping restart");
+                            continue;
+                        }
+                        Err(e) => {
+                            warn!(cmd, error = %e, "build command failed; skipping restart");
+                            continue;
+                        }
+                    }
+                }
                 let id = next_pod % pod_count;
                 next_pod = next_pod.wrapping_add(1);
                 info!(pod = id, "rolling restart triggered by file change");
