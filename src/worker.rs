@@ -7,7 +7,9 @@
 //! concurrently via a `FuturesUnordered`.
 
 use std::{
+    path::PathBuf,
     process::Stdio,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::process::{Child, Command};
@@ -33,6 +35,12 @@ pub struct WorkerSpec {
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
     pub restart_policy: RestartPolicy,
+    /// Optional working directory for the child process.
+    pub working_dir: Option<PathBuf>,
+    /// Per-worker drain signal — set externally to trigger a graceful restart
+    /// of this specific worker without affecting the rest of the pool.
+    #[allow(clippy::type_complexity)]
+    pub drain_signal: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl WorkerSpec {
@@ -45,6 +53,8 @@ impl WorkerSpec {
             args: Vec::new(),
             env: Vec::new(),
             restart_policy: RestartPolicy::Permanent,
+            working_dir: None,
+            drain_signal: None,
         }
     }
     #[must_use]
@@ -68,6 +78,11 @@ impl WorkerSpec {
     #[must_use]
     pub fn policy(mut self, policy: RestartPolicy) -> Self {
         self.restart_policy = policy;
+        self
+    }
+    #[must_use]
+    pub fn working_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.working_dir = Some(dir.into());
         self
     }
 }
@@ -100,6 +115,21 @@ impl Supervisor {
     pub fn cooldown(mut self, cooldown: Duration) -> Self {
         self.cooldown = cooldown;
         self
+    }
+
+    /// Register a drain signal for a worker and return a handle to trigger it.
+    ///
+    /// Call `notify_one()` on the returned `Arc<Notify>` to gracefully restart
+    /// that specific worker. Must be called before `run()`.
+    pub fn register_drain(&mut self, worker_id: &str) -> Option<Arc<tokio::sync::Notify>> {
+        let signal = Arc::new(tokio::sync::Notify::new());
+        for spec in &mut self.specs {
+            if spec.id == worker_id {
+                spec.drain_signal = Some(signal.clone());
+                return Some(signal);
+            }
+        }
+        None
     }
 
     /// Run the supervision loop until `drain` begins, then return final snapshots.
@@ -156,7 +186,7 @@ async fn supervise_one(
             }
         };
 
-        // Race child exit against drain.
+        // Race child exit against global drain AND per-worker drain signal.
         tokio::select! {
             status = child.wait() => {
                 match status {
@@ -176,7 +206,17 @@ async fn supervise_one(
                 }
             }
             _ = drain.wait_for_drain() => {
-                // Best-effort kill on drain.
+                let _ = child.kill().await;
+                break;
+            }
+            _ = async {
+                if let Some(ref signal) = spec.drain_signal {
+                    signal.notified().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => {
+                info!(worker = %spec.id, "per-worker drain signal received");
                 let _ = child.kill().await;
                 break;
             }
@@ -198,6 +238,9 @@ fn spawn(spec: &WorkerSpec) -> std::io::Result<Child> {
     cmd.args(&spec.args);
     for (k, v) in &spec.env {
         cmd.env(k, v);
+    }
+    if let Some(ref dir) = spec.working_dir {
+        cmd.current_dir(dir);
     }
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::inherit());

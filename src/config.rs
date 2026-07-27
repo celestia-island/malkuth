@@ -14,7 +14,7 @@
 //! KEY = "value"
 //! ```
 
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 use serde::Deserialize;
 
@@ -108,6 +108,8 @@ impl DaemonConfig {
                 args: svc.args,
                 env,
                 restart_policy: policy,
+                working_dir: svc.working_dir.map(PathBuf::from),
+                drain_signal: None,
             }
         }).collect()
     }

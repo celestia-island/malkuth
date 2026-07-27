@@ -22,6 +22,7 @@
 //! | `cli` | `malkuth` watchdog binary (pod pool + sticky proxy) |
 
 // ── Layer 1: lifecycle & wire types ────────────────────────────
+pub mod drain_auth;
 pub mod hooks;
 pub mod lifecycle;
 pub mod traits;
