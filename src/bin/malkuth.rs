@@ -5,47 +5,51 @@
 
 #[path = "malkuth/cli.rs"]
 mod cli;
+#[path = "malkuth/ipc_proxy.rs"]
+#[cfg(feature = "ipc")]
+mod ipc_proxy;
 #[path = "malkuth/pool.rs"]
 mod pool;
 #[path = "malkuth/proxy.rs"]
 mod proxy;
-#[path = "malkuth/ws_proxy.rs"]
-#[cfg(feature = "ws")]
-mod ws_proxy;
-#[path = "malkuth/ipc_proxy.rs"]
-#[cfg(feature = "ipc")]
-mod ipc_proxy;
-#[path = "malkuth/singleton.rs"]
-mod singleton;
 #[path = "malkuth/self_update.rs"]
 #[cfg(unix)]
 mod self_update;
+#[path = "malkuth/singleton.rs"]
+mod singleton;
 #[path = "malkuth/watcher.rs"]
 mod watcher;
+#[path = "malkuth/ws_proxy.rs"]
+#[cfg(feature = "ws")]
+mod ws_proxy;
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::signal;
 
-use std::path::PathBuf;
-use std::collections::HashMap;
-use std::process::Stdio;
 use clap::Parser;
 use cli::{Args, ProxySpec};
+#[cfg(feature = "ipc")]
+use ipc_proxy::run_ipc_proxy;
 use pool::{PodManager, assign_ports};
 use proxy::ProxyState;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::process::Stdio;
+use tracing::{error, info, warn};
 #[cfg(feature = "ws")]
 #[cfg(feature = "ws")]
 use ws_proxy::run_ws_proxy;
-#[cfg(feature = "ipc")]
-use ipc_proxy::run_ipc_proxy;
-use tracing::{error, info, warn};
+
+const DEFAULT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Recursively snapshot file mtimes from all watched paths.
 /// Returns a map of path → last-modified time.
 fn snapshot_mtimes(paths: &[PathBuf]) -> HashMap<PathBuf, std::time::SystemTime> {
     let mut map = HashMap::new();
     for root in paths {
-        if !root.exists() { continue; }
+        if !root.exists() {
+            continue;
+        }
         let mut stack = vec![root.clone()];
         while let Some(dir) = stack.pop() {
             if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -66,8 +70,13 @@ fn snapshot_mtimes(paths: &[PathBuf]) -> HashMap<PathBuf, std::time::SystemTime>
 }
 
 /// Compare two mtime snapshots — true if any file was added, removed, or modified.
-fn mtimes_changed(before: &HashMap<PathBuf, std::time::SystemTime>, after: &HashMap<PathBuf, std::time::SystemTime>) -> bool {
-    if before.len() != after.len() { return true; }
+fn mtimes_changed(
+    before: &HashMap<PathBuf, std::time::SystemTime>,
+    after: &HashMap<PathBuf, std::time::SystemTime>,
+) -> bool {
+    if before.len() != after.len() {
+        return true;
+    }
     for (path, mtime) in before {
         match after.get(path) {
             Some(t) if t == mtime => continue,
@@ -75,6 +84,87 @@ fn mtimes_changed(before: &HashMap<PathBuf, std::time::SystemTime>, after: &Hash
         }
     }
     false
+}
+
+/// Collect metadata for a supervised binary: compile timestamp and SHA-256 hash.
+fn collect_binary_info(program: &str) -> Option<malkuth::info_page::BinaryInfo> {
+    let path = std::path::PathBuf::from(program);
+    if !path.exists() {
+        return None;
+    }
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| program.to_string());
+    let path_str = path.display().to_string();
+
+    let compile_time = path
+        .metadata()
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .map(|t| {
+            let dt: chrono::DateTime<chrono::Local> = t.into();
+            dt.format("%Y-%m-%d %H:%M:%S").to_string()
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let hash = compute_file_hash(&path).unwrap_or_else(|_| "err".to_string());
+    let hash_trimmed = hash.trim_end_matches('=');
+    let hash_short = if hash_trimmed.len() > 6 {
+        hash_trimmed[hash_trimmed.len() - 6..].to_string()
+    } else {
+        hash_trimmed.to_string()
+    };
+
+    Some(malkuth::info_page::BinaryInfo {
+        name,
+        path: path_str,
+        compile_time,
+        hash,
+        hash_short,
+    })
+}
+
+fn compute_file_hash(path: &std::path::Path) -> Result<String, Box<dyn std::error::Error>> {
+    use sha2::Digest;
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let result = hasher.finalize();
+    Ok(base32_encode(&result))
+}
+
+const BASE32_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+fn base32_encode(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    let mut buf = 0u64;
+    let mut bits = 0;
+    for &b in bytes {
+        buf = (buf << 8) | u64::from(b);
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            let idx = ((buf >> bits) & 0x1f) as usize;
+            out.push(BASE32_ALPHABET[idx] as char);
+        }
+    }
+    if bits > 0 {
+        let idx = ((buf << (5 - bits)) & 0x1f) as usize;
+        out.push(BASE32_ALPHABET[idx] as char);
+    }
+    while out.len() % 8 != 0 {
+        out.push('=');
+    }
+    out
 }
 
 /// Formats timestamps as local time `YYYY-MM-DD HH:MM:SS` (no timezone suffix),
@@ -213,12 +303,11 @@ async fn main() {
     if let Some(fd) = self_update::inherited_listener_fd() {
         info!(fd, "taking over inherited listener fd");
         use std::os::unix::io::FromRawFd;
-        let std_listener = unsafe {
-            std::net::TcpListener::from_raw_fd(fd)
-        };
+        let std_listener = unsafe { std::net::TcpListener::from_raw_fd(fd) };
         std_listener.set_nonblocking(true).ok();
         let _tokio_listener = tokio::net::TcpListener::from_std(std_listener)
-            .map_err(|e| error!(error = %e, "failed to create tokio listener from inherited fd")).ok();
+            .map_err(|e| error!(error = %e, "failed to create tokio listener from inherited fd"))
+            .ok();
         info!("successfully took over inherited listener fd {}", fd);
     }
 
@@ -266,13 +355,14 @@ async fn main() {
                 match proxy_type.as_str() {
                     #[cfg(feature = "ws")]
                     "ws" => {
-                        if let Err(e) = ws_proxy::run_ws_proxy(public, state, HashMap::new()).await {
+                        if let Err(e) = ws_proxy::run_ws_proxy(public, state, HashMap::new()).await
+                        {
                             error!(error = %e, "ws proxy stopped");
                         }
                     }
                     #[cfg(feature = "ipc")]
                     "ipc" => {
-                        let path = ipc_path.unwrap_or_else(|| "/tmp/malkuth-proxy.sock".into());
+                        let path = _ipc_path.unwrap_or_else(|| "/tmp/malkuth-proxy.sock".into());
                         if let Err(e) = ipc_proxy::run_ipc_proxy(&path, state).await {
                             error!(error = %e, "ipc proxy stopped");
                         }
@@ -336,6 +426,57 @@ async fn main() {
         });
     }
 
+    // ── Info page HTTP server (optional) ──────────────────────
+    if let Some(info_port) = args.info_port {
+        let addr: SocketAddr = format!("{}:{}", args.host, info_port)
+            .parse()
+            .unwrap_or_else(|e| {
+                error!("invalid info-port bind address: {e}");
+                std::process::exit(2);
+            });
+        let version = DEFAULT_VERSION.to_string();
+        let watch = args
+            .watch
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>();
+        let proxy = proxy_spec
+            .as_ref()
+            .map(|s| format!("0.0.0.0:{} → {}-{}", s.public_port, s.range_lo, s.range_hi));
+        let show_details = !args.release;
+        let status = if args.info_landing {
+            malkuth::info_page::InfoStatus::Landing
+        } else {
+            malkuth::info_page::InfoStatus::Working
+        };
+        let command_str = args.command.first().map(|s| s.as_str()).unwrap_or("");
+        let binaries = if args.info_landing {
+            collect_binary_info(command_str).into_iter().collect()
+        } else {
+            vec![]
+        };
+        tokio::spawn(async move {
+            let router = malkuth::info_page::info_router(
+                version,
+                status,
+                if show_details { watch } else { vec![] },
+                if show_details { proxy } else { None },
+                binaries,
+            );
+            let listener = match tokio::net::TcpListener::bind(addr).await {
+                Ok(l) => l,
+                Err(e) => {
+                    error!(addr = %addr, error = %e, "failed to bind info page listener");
+                    return;
+                }
+            };
+            info!(addr = %addr, "info page listening");
+            if let Err(e) = axum::serve(listener, router).await {
+                error!(error = %e, "info page server stopped");
+            }
+        });
+    }
+
     info!("malkuth supervisor ready; press Ctrl-C to stop");
     signal::ctrl_c().await.ok();
     info!("shutdown signal received; exiting (child pods killed via kill_on_drop)");
@@ -348,7 +489,9 @@ async fn run_daemon(config_path: &str) -> Result<(), String> {
 
     let pid_file = {
         let cfg = DaemonConfig::from_file(config_path)?;
-        cfg.daemon.pid_file.clone()
+        cfg.daemon
+            .pid_file
+            .clone()
             .unwrap_or_else(|| "/tmp/malkuth-daemon.pid".into())
     };
 
@@ -374,10 +517,11 @@ async fn run_daemon(config_path: &str) -> Result<(), String> {
     {
         let exit_tx2 = exit_tx.clone();
         tokio::spawn(async move {
-            let mut sig = tokio::signal::unix::signal(
-                tokio::signal::unix::SignalKind::terminate()
-            ).ok();
-            if let Some(sig) = sig.as_mut() { sig.recv().await; }
+            let mut sig =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+            if let Some(sig) = sig.as_mut() {
+                sig.recv().await;
+            }
             info!("SIGTERM received");
             let _ = exit_tx2.send(true);
         });
@@ -387,11 +531,14 @@ async fn run_daemon(config_path: &str) -> Result<(), String> {
     {
         let reload2 = reload_notify.clone();
         tokio::spawn(async move {
-            let mut sig = tokio::signal::unix::signal(
-                tokio::signal::unix::SignalKind::hangup()
-            ).ok();
+            let mut sig =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).ok();
             loop {
-                if let Some(sig) = sig.as_mut() { sig.recv().await; } else { break; }
+                if let Some(sig) = sig.as_mut() {
+                    sig.recv().await;
+                } else {
+                    break;
+                }
                 info!("SIGHUP received");
                 reload2.notify_one();
             }
@@ -410,9 +557,15 @@ async fn run_daemon(config_path: &str) -> Result<(), String> {
         let cooldown = Duration::from_secs(cfg.daemon.cooldown_secs);
 
         let specs = cfg.into_worker_specs();
-        let service_list: Vec<_> = specs.iter().map(|s| (s.id.clone(), s.program.clone())).collect();
+        let service_list: Vec<_> = specs
+            .iter()
+            .map(|s| (s.id.clone(), s.program.clone()))
+            .collect();
         let service_count = service_list.len();
-        if specs.is_empty() { error!("config defines no [[services]]"); std::process::exit(1); }
+        if specs.is_empty() {
+            error!("config defines no [[services]]");
+            std::process::exit(1);
+        }
 
         let drain = DrainController::new();
         let drain_for_signal = drain.clone();
@@ -481,8 +634,7 @@ fn acquire_daemon_lock(pid_file: &str) -> Result<(), String> {
     let mut f = fs::File::create(pid_file)
         .map_err(|e| format!("cannot create pid file {}: {}", pid_file, e))?;
     let pid = std::process::id();
-    write!(f, "{}", pid)
-        .map_err(|e| format!("cannot write pid file: {}", e))?;
+    write!(f, "{}", pid).map_err(|e| format!("cannot write pid file: {}", e))?;
 
     Ok(())
 }
