@@ -10,8 +10,10 @@ mod pool;
 #[path = "malkuth/proxy.rs"]
 mod proxy;
 #[path = "malkuth/ws_proxy.rs"]
+#[cfg(feature = "ws")]
 mod ws_proxy;
 #[path = "malkuth/ipc_proxy.rs"]
+#[cfg(feature = "ipc")]
 mod ipc_proxy;
 #[path = "malkuth/singleton.rs"]
 mod singleton;
@@ -30,6 +32,7 @@ use clap::Parser;
 use cli::{Args, ProxySpec};
 use pool::{PodManager, assign_ports};
 use proxy::{ProxyState, run_proxy};
+#[cfg(feature = "ws")]
 #[cfg(feature = "ws")]
 use ws_proxy::run_ws_proxy;
 #[cfg(feature = "ipc")]
