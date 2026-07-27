@@ -26,12 +26,11 @@ mod watcher;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::signal;
 
-use std::collections::HashMap;
 use std::process::Stdio;
 use clap::Parser;
 use cli::{Args, ProxySpec};
 use pool::{PodManager, assign_ports};
-use proxy::{ProxyState, run_proxy};
+use proxy::ProxyState;
 #[cfg(feature = "ws")]
 #[cfg(feature = "ws")]
 use ws_proxy::run_ws_proxy;
@@ -41,6 +40,7 @@ use tracing::{error, info, warn};
 
 /// Formats timestamps as local time `YYYY-MM-DD HH:MM:SS` (no timezone suffix),
 /// matching the format used by sibling celestia-island CLIs (e.g. lagrange).
+#[allow(dead_code)]
 struct MalkuthTimer;
 
 impl tracing_subscriber::fmt::time::FormatTime for MalkuthTimer {
@@ -221,7 +221,7 @@ async fn main() {
                     std::process::exit(2);
                 });
             let proxy_type = args.proxy_type.clone();
-            let ipc_path = args.ipc_path.clone();
+            let _ipc_path = args.ipc_path.clone();
             tokio::spawn(async move {
                 match proxy_type.as_str() {
                     #[cfg(feature = "ws")]

@@ -51,6 +51,7 @@ pub fn spawn_with_listen_fd(
 /// Convenience wrapper that spawns the current binary (as returned by
 /// [`std::env::current_exe`]) with the original command-line arguments,
 /// passing `listen_fd` to the child.
+#[allow(dead_code)]
 pub fn spawn_self(listen_fd: RawFd) -> std::io::Result<std::process::Child> {
     let exe = std::env::current_exe()?;
     let args: Vec<String> = std::env::args().skip(1).collect();
