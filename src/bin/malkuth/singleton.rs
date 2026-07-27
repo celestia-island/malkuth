@@ -79,11 +79,6 @@ fn parse_time(s: &str) -> Option<SystemTime> {
     SystemTime::UNIX_EPOCH.checked_add(std::time::Duration::new(s, n))
 }
 
-fn format_time(t: SystemTime) -> String {
-    let d = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
-    format!("{}.{}", d.as_secs(), d.subsec_nanos())
-}
-
 pub struct SingletonGuard {
     _lock_path: PathBuf,
 }

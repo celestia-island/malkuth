@@ -12,7 +12,7 @@ const LOGO_BYTES: &[u8] = include_bytes!("info_page/logo.webp");
 
 fn base64_encode(bytes: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
@@ -66,14 +66,14 @@ pub struct BinaryInfo {
 fn detect_install_method() -> &'static str {
     if std::env::var_os("CARGO_MANIFEST_DIR").is_some() {
         static C: &str = "cargo";
-        return &C;
+        return C;
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Ok(p) = exe.canonicalize() {
             let s = p.to_string_lossy();
             if s.contains("/node_modules/") || s.contains("\\node_modules\\") {
                 static N: &str = "npm";
-                return &N;
+                return N;
             }
         }
     }
@@ -85,12 +85,12 @@ fn detect_install_method() -> &'static str {
                 || std::path::Path::new(d).join("versions").exists()
             {
                 static N: &str = "nvm";
-                return &N;
+                return N;
             }
         }
     }
     static X: &str = "";
-    &X
+    X
 }
 
 /// Build an axum Router that serves the Malkuth info page on every request.
