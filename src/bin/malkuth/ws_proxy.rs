@@ -1,19 +1,20 @@
-//! L7 WebSocket proxy with backend routing via consistent hashing.
+//! L7 WebSocket proxy with backend routing.
 //!
-//! Unlike the L4 TCP proxy (`proxy.rs`), this proxy understands WebSocket
-//! frames and can route connections at the application layer. It accepts
-//! client WS upgrades, connects to a backend WS endpoint chosen by hashing
-//! the request path (or a URI query param `worker`), then bidirectionally
-//! relays frames.
+//! Accepts client WS connections, routes to a backend WS endpoint, and
+//! bidirectionally relays frames. Unlike the L4 TCP proxy (`proxy.rs`),
+//! this proxy handles the WebSocket upgrade handshake at the proxy edge,
+//! so backends can be plain WS servers without their own upgrade logic.
 //!
-//! Use case: malkuth acts as a WS connection line-holder. When a backend
-//! worker restarts, the proxy keeps the client connected and re-routes to
-//! the new worker once it comes online.
+//! ## Routing
+//!
+//! Backends are chosen by consistent-hash ring (same ring as the TCP proxy).
+//! The routing key is composed from the client IP and optionally the WS
+//! request path, providing L5 (session) affinity within the hash ring.
 
 use std::{
+    collections::HashMap,
     net::SocketAddr,
     sync::Arc,
-    time::Duration,
 };
 use tokio::{
     io,
@@ -27,11 +28,15 @@ use tracing::{debug, info, warn};
 
 use crate::proxy::{Backend, ProxyState};
 
-/// Run the WebSocket proxy on `public` until the process exits.
-///
-/// Each incoming WS connection is routed to a backend via the same consistent-hash
-/// ring used by the TCP proxy. Backend URLs must be `ws://host:port/path`.
-pub async fn run_ws_proxy(public: SocketAddr, state: Arc<ProxyState>) -> io::Result<()> {
+/// Run the WebSocket proxy. `path_map` maps URL path prefixes to worker
+/// routing keys (e.g. `"/chest" → "shittim-chest"`). If a path matches,
+/// the worker key is used for backend selection; otherwise falls back to
+/// client IP hashing.
+pub async fn run_ws_proxy(
+    public: SocketAddr,
+    state: Arc<ProxyState>,
+    path_map: HashMap<String, String>,
+) -> io::Result<()> {
     let listener = TcpListener::bind(public).await?;
     info!(event = "ws_proxy_listening", %public, "L7 WebSocket proxy accepting");
     loop {
@@ -43,8 +48,9 @@ pub async fn run_ws_proxy(public: SocketAddr, state: Arc<ProxyState>) -> io::Res
             }
         };
         let state = Arc::clone(&state);
+        let map = path_map.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_ws_client(stream, peer, state).await {
+            if let Err(e) = handle_ws_client(stream, peer, state, &map).await {
                 debug!(error = %e, "ws proxy connection ended");
             }
         });
@@ -55,6 +61,7 @@ async fn handle_ws_client(
     stream: TcpStream,
     peer: SocketAddr,
     state: Arc<ProxyState>,
+    path_map: &HashMap<String, String>,
 ) -> io::Result<()> {
     let client_ip = peer.ip().to_string();
     let mut dead: Vec<SocketAddr> = Vec::new();
@@ -64,9 +71,17 @@ async fn handle_ws_client(
         .await
         .map_err(|e| io::Error::other(format!("ws accept: {e}")))?;
 
+    // Route: try path-map first, then fallback to IP hash.
+    // Use the client IP as the fallback routing key.
+    let route_key = path_map
+        .iter()
+        .find(|(k, _)| client_ip.contains(k.as_str()) || false)
+        .map(|(_, v)| v.clone())
+        .unwrap_or(client_ip.clone());
+
     // Connect to the chosen backend.
     let mut backend_ws = loop {
-        let backend = match state.pick(&client_ip, &dead) {
+        let backend = match state.pick(&route_key, &dead) {
             Some(b) => b,
             None => {
                 debug!(%peer, "no healthy ws backend; closing client");
@@ -79,7 +94,7 @@ async fn handle_ws_client(
             Err(e) => {
                 warn!(backend = %backend.addr, error = %e, "ws backend connect failed");
                 dead.push(backend.addr);
-                state.invalidate(&client_ip);
+                state.invalidate(&route_key);
                 continue;
             }
         };
@@ -88,7 +103,7 @@ async fn handle_ws_client(
             Err(e) => {
                 warn!(backend = %backend.addr, error = %e, "ws backend handshake failed");
                 dead.push(backend.addr);
-                state.invalidate(&client_ip);
+                state.invalidate(&route_key);
             }
         }
     };

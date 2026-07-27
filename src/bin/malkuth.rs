@@ -24,6 +24,7 @@ mod watcher;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::signal;
 
+use std::collections::HashMap;
 use clap::Parser;
 use cli::{Args, ProxySpec};
 use pool::{PodManager, assign_ports};
@@ -221,7 +222,7 @@ async fn main() {
                 match proxy_type.as_str() {
                     #[cfg(feature = "ws")]
                     "ws" => {
-                        if let Err(e) = ws_proxy::run_ws_proxy(public, state).await {
+                        if let Err(e) = ws_proxy::run_ws_proxy(public, state, HashMap::new()).await {
                             error!(error = %e, "ws proxy stopped");
                         }
                     }
