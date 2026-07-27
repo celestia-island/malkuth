@@ -11,19 +11,13 @@
 //! The routing key is composed from the client IP and optionally the WS
 //! request path, providing L5 (session) affinity within the hash ring.
 
-use std::{
-    collections::HashMap,
-    net::SocketAddr,
-    sync::Arc,
-};
+use futures_util::{SinkExt, StreamExt};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::{
     io,
     net::{TcpListener, TcpStream},
 };
-use tokio_tungstenite::{
-    WebSocketStream, accept_async, client_async, tungstenite::Message,
-};
-use futures_util::{SinkExt, StreamExt};
+use tokio_tungstenite::{WebSocketStream, accept_async, client_async, tungstenite::Message};
 use tracing::{debug, info, warn};
 
 use crate::proxy::{Backend, ProxyState};

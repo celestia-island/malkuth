@@ -8,35 +8,26 @@
 //! Address form: `ipc:/path/to/socket` — the proxy listens at this path
 //! and forwards to TCP backends via the consistent-hash ring.
 
-use std::{
-    net::SocketAddr,
-    path::PathBuf,
-    sync::Arc,
-};
-use tokio::{
-    io,
-    net::TcpStream,
-};
 use interprocess::local_socket::{
     tokio::{Listener as LocalSocketListener, Stream as LocalSocketStream},
     traits::tokio::Listener as _,
     {GenericFilePath, ListenerOptions, Name, ToFsName},
 };
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use tokio::{io, net::TcpStream};
 use tracing::{debug, info, warn};
 
 use crate::proxy::ProxyState;
 
 /// Run the IPC proxy, listening on `socket_path` and forwarding to TCP backends.
-pub async fn run_ipc_proxy(
-    socket_path: &str,
-    state: Arc<ProxyState>,
-) -> io::Result<()> {
+pub async fn run_ipc_proxy(socket_path: &str, state: Arc<ProxyState>) -> io::Result<()> {
     let path = socket_path.strip_prefix("ipc:").unwrap_or(socket_path);
 
     // Remove any stale socket file.
     let _ = std::fs::remove_file(path);
 
-    let name = path.to_fs_name::<GenericFilePath>()
+    let name = path
+        .to_fs_name::<GenericFilePath>()
         .map_err(|e| io::Error::other(format!("invalid ipc name: {e}")))?;
     let listener = ListenerOptions::new()
         .name(name)

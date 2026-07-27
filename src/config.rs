@@ -68,10 +68,18 @@ pub enum PolicyDef {
     Temporary,
 }
 
-fn default_host() -> String { "127.0.0.1".into() }
-fn default_rate_limit_window() -> u64 { 60 }
-fn default_rate_limit_max() -> u32 { 5 }
-fn default_cooldown() -> u64 { 30 }
+fn default_host() -> String {
+    "127.0.0.1".into()
+}
+fn default_rate_limit_window() -> u64 {
+    60
+}
+fn default_rate_limit_max() -> u32 {
+    5
+}
+fn default_cooldown() -> u64 {
+    30
+}
 
 impl Default for DaemonSettings {
     fn default() -> Self {
@@ -89,28 +97,34 @@ impl DaemonConfig {
     pub fn from_file(path: &str) -> Result<Self, String> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read config {}: {}", path, e))?;
-        toml::from_str(&content)
-            .map_err(|e| format!("invalid TOML in {}: {}", path, e))
+        toml::from_str(&content).map_err(|e| format!("invalid TOML in {}: {}", path, e))
     }
 
     pub fn into_worker_specs(self) -> Vec<WorkerSpec> {
-        self.services.into_iter().map(|svc| {
-            let policy = match svc.restart_policy {
-                PolicyDef::Permanent => RestartPolicy::Permanent,
-                PolicyDef::Transient => RestartPolicy::Transient,
-                PolicyDef::Temporary => RestartPolicy::Temporary,
-            };
-            let env: Vec<(String, String)> = svc.env.into_iter().collect();
-            WorkerSpec {
-                id: svc.id,
-                kind: if svc.kind.is_empty() { "service".into() } else { svc.kind },
-                program: svc.program,
-                args: svc.args,
-                env,
-                restart_policy: policy,
-                working_dir: svc.working_dir.map(PathBuf::from),
-                drain_signal: None,
-            }
-        }).collect()
+        self.services
+            .into_iter()
+            .map(|svc| {
+                let policy = match svc.restart_policy {
+                    PolicyDef::Permanent => RestartPolicy::Permanent,
+                    PolicyDef::Transient => RestartPolicy::Transient,
+                    PolicyDef::Temporary => RestartPolicy::Temporary,
+                };
+                let env: Vec<(String, String)> = svc.env.into_iter().collect();
+                WorkerSpec {
+                    id: svc.id,
+                    kind: if svc.kind.is_empty() {
+                        "service".into()
+                    } else {
+                        svc.kind
+                    },
+                    program: svc.program,
+                    args: svc.args,
+                    env,
+                    restart_policy: policy,
+                    working_dir: svc.working_dir.map(PathBuf::from),
+                    drain_signal: None,
+                }
+            })
+            .collect()
     }
 }

@@ -5,40 +5,40 @@
 
 #[path = "malkuth/cli.rs"]
 mod cli;
+#[path = "malkuth/ipc_proxy.rs"]
+#[cfg(feature = "ipc")]
+mod ipc_proxy;
 #[path = "malkuth/pool.rs"]
 mod pool;
 #[path = "malkuth/proxy.rs"]
 mod proxy;
-#[path = "malkuth/ws_proxy.rs"]
-#[cfg(feature = "ws")]
-mod ws_proxy;
-#[path = "malkuth/ipc_proxy.rs"]
-#[cfg(feature = "ipc")]
-mod ipc_proxy;
-#[path = "malkuth/singleton.rs"]
-mod singleton;
 #[path = "malkuth/self_update.rs"]
 #[cfg(unix)]
 mod self_update;
+#[path = "malkuth/singleton.rs"]
+mod singleton;
 #[path = "malkuth/watcher.rs"]
 mod watcher;
+#[path = "malkuth/ws_proxy.rs"]
+#[cfg(feature = "ws")]
+mod ws_proxy;
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::signal;
 
-use std::path::PathBuf;
-use std::collections::HashMap;
-use std::process::Stdio;
 use clap::Parser;
 use cli::{Args, ProxySpec};
+#[cfg(feature = "ipc")]
+use ipc_proxy::run_ipc_proxy;
 use pool::{PodManager, assign_ports};
 use proxy::ProxyState;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::process::Stdio;
+use tracing::{error, info, warn};
 #[cfg(feature = "ws")]
 #[cfg(feature = "ws")]
 use ws_proxy::run_ws_proxy;
-#[cfg(feature = "ipc")]
-use ipc_proxy::run_ipc_proxy;
-use tracing::{error, info, warn};
 
 const DEFAULT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -47,7 +47,9 @@ const DEFAULT_VERSION: &str = env!("CARGO_PKG_VERSION");
 fn snapshot_mtimes(paths: &[PathBuf]) -> HashMap<PathBuf, std::time::SystemTime> {
     let mut map = HashMap::new();
     for root in paths {
-        if !root.exists() { continue; }
+        if !root.exists() {
+            continue;
+        }
         let mut stack = vec![root.clone()];
         while let Some(dir) = stack.pop() {
             if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -68,8 +70,13 @@ fn snapshot_mtimes(paths: &[PathBuf]) -> HashMap<PathBuf, std::time::SystemTime>
 }
 
 /// Compare two mtime snapshots — true if any file was added, removed, or modified.
-fn mtimes_changed(before: &HashMap<PathBuf, std::time::SystemTime>, after: &HashMap<PathBuf, std::time::SystemTime>) -> bool {
-    if before.len() != after.len() { return true; }
+fn mtimes_changed(
+    before: &HashMap<PathBuf, std::time::SystemTime>,
+    after: &HashMap<PathBuf, std::time::SystemTime>,
+) -> bool {
+    if before.len() != after.len() {
+        return true;
+    }
     for (path, mtime) in before {
         match after.get(path) {
             Some(t) if t == mtime => continue,
@@ -103,7 +110,11 @@ fn collect_binary_info(program: &str) -> Option<malkuth::info_page::BinaryInfo> 
 
     let hash = compute_file_hash(&path).unwrap_or_else(|_| "err".to_string());
     let hash_trimmed = hash.trim_end_matches('=');
-    let hash_short = if hash_trimmed.len() > 6 { hash_trimmed[hash_trimmed.len()-6..].to_string() } else { hash_trimmed.to_string() };
+    let hash_short = if hash_trimmed.len() > 6 {
+        hash_trimmed[hash_trimmed.len() - 6..].to_string()
+    } else {
+        hash_trimmed.to_string()
+    };
 
     Some(malkuth::info_page::BinaryInfo {
         name,
@@ -122,7 +133,9 @@ fn compute_file_hash(path: &std::path::Path) -> Result<String, Box<dyn std::erro
     let mut buf = [0u8; 8192];
     loop {
         let n = f.read(&mut buf)?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hasher.update(&buf[..n]);
     }
     let result = hasher.finalize();
@@ -290,12 +303,11 @@ async fn main() {
     if let Some(fd) = self_update::inherited_listener_fd() {
         info!(fd, "taking over inherited listener fd");
         use std::os::unix::io::FromRawFd;
-        let std_listener = unsafe {
-            std::net::TcpListener::from_raw_fd(fd)
-        };
+        let std_listener = unsafe { std::net::TcpListener::from_raw_fd(fd) };
         std_listener.set_nonblocking(true).ok();
         let _tokio_listener = tokio::net::TcpListener::from_std(std_listener)
-            .map_err(|e| error!(error = %e, "failed to create tokio listener from inherited fd")).ok();
+            .map_err(|e| error!(error = %e, "failed to create tokio listener from inherited fd"))
+            .ok();
         info!("successfully took over inherited listener fd {}", fd);
     }
 
@@ -339,12 +351,13 @@ async fn main() {
                 });
             let proxy_type = args.proxy_type.clone();
             let _ipc_path = args.ipc_path.clone();
-        tokio::spawn(async move {
-            use malkuth::info_page::{info_router};
+            tokio::spawn(async move {
+                use malkuth::info_page::info_router;
                 match proxy_type.as_str() {
                     #[cfg(feature = "ws")]
                     "ws" => {
-                        if let Err(e) = ws_proxy::run_ws_proxy(public, state, HashMap::new()).await {
+                        if let Err(e) = ws_proxy::run_ws_proxy(public, state, HashMap::new()).await
+                        {
                             error!(error = %e, "ws proxy stopped");
                         }
                     }
@@ -423,8 +436,14 @@ async fn main() {
                 std::process::exit(2);
             });
         let version = DEFAULT_VERSION.to_string();
-        let watch = args.watch.iter().map(|p| p.display().to_string()).collect::<Vec<_>>();
-        let proxy = proxy_spec.as_ref().map(|s| format!("0.0.0.0:{} → {}-{}", s.public_port, s.range_lo, s.range_hi));
+        let watch = args
+            .watch
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>();
+        let proxy = proxy_spec
+            .as_ref()
+            .map(|s| format!("0.0.0.0:{} → {}-{}", s.public_port, s.range_lo, s.range_hi));
         let show_details = !args.release;
         let status = if args.info_landing {
             malkuth::info_page::InfoStatus::Landing
@@ -471,7 +490,9 @@ async fn run_daemon(config_path: &str) -> Result<(), String> {
 
     let pid_file = {
         let cfg = DaemonConfig::from_file(config_path)?;
-        cfg.daemon.pid_file.clone()
+        cfg.daemon
+            .pid_file
+            .clone()
             .unwrap_or_else(|| "/tmp/malkuth-daemon.pid".into())
     };
 
@@ -497,10 +518,11 @@ async fn run_daemon(config_path: &str) -> Result<(), String> {
     {
         let exit_tx2 = exit_tx.clone();
         tokio::spawn(async move {
-            let mut sig = tokio::signal::unix::signal(
-                tokio::signal::unix::SignalKind::terminate()
-            ).ok();
-            if let Some(sig) = sig.as_mut() { sig.recv().await; }
+            let mut sig =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+            if let Some(sig) = sig.as_mut() {
+                sig.recv().await;
+            }
             info!("SIGTERM received");
             let _ = exit_tx2.send(true);
         });
@@ -510,11 +532,14 @@ async fn run_daemon(config_path: &str) -> Result<(), String> {
     {
         let reload2 = reload_notify.clone();
         tokio::spawn(async move {
-            let mut sig = tokio::signal::unix::signal(
-                tokio::signal::unix::SignalKind::hangup()
-            ).ok();
+            let mut sig =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).ok();
             loop {
-                if let Some(sig) = sig.as_mut() { sig.recv().await; } else { break; }
+                if let Some(sig) = sig.as_mut() {
+                    sig.recv().await;
+                } else {
+                    break;
+                }
                 info!("SIGHUP received");
                 reload2.notify_one();
             }
@@ -533,9 +558,15 @@ async fn run_daemon(config_path: &str) -> Result<(), String> {
         let cooldown = Duration::from_secs(cfg.daemon.cooldown_secs);
 
         let specs = cfg.into_worker_specs();
-        let service_list: Vec<_> = specs.iter().map(|s| (s.id.clone(), s.program.clone())).collect();
+        let service_list: Vec<_> = specs
+            .iter()
+            .map(|s| (s.id.clone(), s.program.clone()))
+            .collect();
         let service_count = service_list.len();
-        if specs.is_empty() { error!("config defines no [[services]]"); std::process::exit(1); }
+        if specs.is_empty() {
+            error!("config defines no [[services]]");
+            std::process::exit(1);
+        }
 
         let drain = DrainController::new();
         let drain_for_signal = drain.clone();
@@ -604,8 +635,7 @@ fn acquire_daemon_lock(pid_file: &str) -> Result<(), String> {
     let mut f = fs::File::create(pid_file)
         .map_err(|e| format!("cannot create pid file {}: {}", pid_file, e))?;
     let pid = std::process::id();
-    write!(f, "{}", pid)
-        .map_err(|e| format!("cannot write pid file: {}", e))?;
+    write!(f, "{}", pid).map_err(|e| format!("cannot write pid file: {}", e))?;
 
     Ok(())
 }

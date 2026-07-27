@@ -62,11 +62,7 @@ pub fn spawn_self(listen_fd: RawFd) -> std::io::Result<std::process::Child> {
 /// Returns the fd number if `LISTEN_FD_ENV` is set and valid.
 pub fn inherited_listener_fd() -> Option<i32> {
     let val: i32 = std::env::var(LISTEN_FD_ENV).ok()?.parse().ok()?;
-    if val >= 3 {
-        Some(val)
-    } else {
-        None
-    }
+    if val >= 3 { Some(val) } else { None }
 }
 
 #[cfg(test)]

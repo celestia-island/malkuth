@@ -76,9 +76,7 @@ impl ApprovalRegistry {
     pub fn is_approved(&self, _proposal_id: &str, worker_id: &str) -> bool {
         let entries = self.entries.read().unwrap();
         entries.iter().any(|e| {
-            e.worker_id == worker_id
-                && e.decision != GateDecision::Block
-                && e.is_valid(self.ttl)
+            e.worker_id == worker_id && e.decision != GateDecision::Block && e.is_valid(self.ttl)
         })
     }
 

@@ -1,7 +1,7 @@
 use axum::{
     Router,
     extract::Request,
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::get,
 };
@@ -65,21 +65,27 @@ pub struct BinaryInfo {
 
 fn detect_install_method() -> &'static str {
     if std::env::var_os("CARGO_MANIFEST_DIR").is_some() {
-        static C: &str = "cargo"; return &C;
+        static C: &str = "cargo";
+        return &C;
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Ok(p) = exe.canonicalize() {
             let s = p.to_string_lossy();
             if s.contains("/node_modules/") || s.contains("\\node_modules\\") {
-                static N: &str = "npm"; return &N;
+                static N: &str = "npm";
+                return &N;
             }
         }
     }
     if let Ok(path) = std::env::var("PATH") {
         for dir in path.split(':') {
             let d = dir.trim();
-            if d.ends_with("/nvm") || d.ends_with("\\nvm") || std::path::Path::new(d).join("versions").exists() {
-                static N: &str = "nvm"; return &N;
+            if d.ends_with("/nvm")
+                || d.ends_with("\\nvm")
+                || std::path::Path::new(d).join("versions").exists()
+            {
+                static N: &str = "nvm";
+                return &N;
             }
         }
     }
@@ -117,10 +123,7 @@ struct InfoState {
     binaries: Vec<BinaryInfo>,
 }
 
-async fn info_page(
-    state: axum::extract::State<InfoState>,
-    req: Request,
-) -> Response {
+async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Response {
     let lang = detect_language(req.headers());
     let i18n = get_i18n(&lang);
 
@@ -128,7 +131,9 @@ async fn info_page(
     let landing = state.status == InfoStatus::Landing;
     let task = match state.status {
         InfoStatus::Ready => i18n.get("task_idle").map_or("Idle", |v| v.as_str()),
-        InfoStatus::Working => i18n.get("task_working").map_or("Starting / Restarting", |v| v.as_str()),
+        InfoStatus::Working => i18n
+            .get("task_working")
+            .map_or("Starting / Restarting", |v| v.as_str()),
         InfoStatus::Landing => i18n.get("task_landing").map_or("Landing", |v| v.as_str()),
     };
 
@@ -136,25 +141,35 @@ async fn info_page(
     context.insert("lang", &lang);
     context.insert("dir", if lang == "ar" { "rtl" } else { "ltr" });
     context.insert("title", i18n.get("title").map_or("Malkuth", |v| v.as_str()));
-    context.insert("heading", i18n.get("heading").map_or("Malkuth", |v| v.as_str()));
+    context.insert(
+        "heading",
+        i18n.get("heading").map_or("Malkuth", |v| v.as_str()),
+    );
     context.insert("tagline", i18n.get("tagline").map_or("", |v| v.as_str()));
-    context.insert("version_label", i18n.get("version").map_or("Version", |v| v.as_str()));
-    context.insert("task_label", i18n.get("task").map_or("Current Task", |v| v.as_str()));
+    context.insert(
+        "version_label",
+        i18n.get("version").map_or("Version", |v| v.as_str()),
+    );
+    context.insert(
+        "task_label",
+        i18n.get("task").map_or("Current Task", |v| v.as_str()),
+    );
     let retry_full = i18n.get("retry").map_or("", |v| v.as_str());
-    let (retry_before, retry_after) = retry_full
-        .split_once("{n}")
-        .unwrap_or((retry_full, ""));
+    let (retry_before, retry_after) = retry_full.split_once("{n}").unwrap_or((retry_full, ""));
     context.insert("retry_before", retry_before);
     context.insert("retry_after", retry_after);
     context.insert("footer", i18n.get("footer").map_or("", |v| v.as_str()));
     context.insert(
         "status_text",
         if landing {
-            i18n.get("status_landing").map_or("Redirecting shortly", |v| v.as_str())
+            i18n.get("status_landing")
+                .map_or("Redirecting shortly", |v| v.as_str())
         } else if ready {
-            i18n.get("status_ready").map_or("All services running.", |v| v.as_str())
+            i18n.get("status_ready")
+                .map_or("All services running.", |v| v.as_str())
         } else {
-            i18n.get("status_starting").map_or("Starting...", |v| v.as_str())
+            i18n.get("status_starting")
+                .map_or("Starting...", |v| v.as_str())
         },
     );
     context.insert("ready", &ready);
@@ -165,22 +180,22 @@ async fn info_page(
     let install_method = detect_install_method();
     context.insert(
         "install_label",
-        i18n.get("install_label").map_or("Installed via", |v| v.as_str()),
+        i18n.get("install_label")
+            .map_or("Installed via", |v| v.as_str()),
     );
-    context.insert(
-        "install_method",
-        install_method,
-    );
+    context.insert("install_method", install_method);
     context.insert("binaries", &state.binaries);
 
     context.insert(
         "binaries_title",
-        i18n.get("binaries_title").map_or("Supervised Binaries", |v| v.as_str()),
+        i18n.get("binaries_title")
+            .map_or("Supervised Binaries", |v| v.as_str()),
     );
     let redirect_full = i18n.get("redirect_before").map_or("", |v| v.as_str());
     let (redirect_before, redirect_after) = (
         redirect_full,
-        i18n.get("redirect_after").map_or("seconds...", |v| v.as_str()),
+        i18n.get("redirect_after")
+            .map_or("seconds...", |v| v.as_str()),
     );
     context.insert("redirect_before", redirect_before);
     context.insert("redirect_after", redirect_after);
@@ -190,7 +205,8 @@ async fn info_page(
     );
     context.insert(
         "refresh_label",
-        i18n.get("refresh_label").map_or("Refresh Now", |v| v.as_str()),
+        i18n.get("refresh_label")
+            .map_or("Refresh Now", |v| v.as_str()),
     );
     context.insert(
         "retry_unit",
@@ -198,19 +214,23 @@ async fn info_page(
     );
     context.insert(
         "retry_manual",
-        i18n.get("retry_manual").map_or("You can also refresh manually.", |v| v.as_str()),
+        i18n.get("retry_manual")
+            .map_or("You can also refresh manually.", |v| v.as_str()),
     );
     context.insert(
         "copy_hint",
-        i18n.get("copy_hint").map_or("Click to copy", |v| v.as_str()),
+        i18n.get("copy_hint")
+            .map_or("Click to copy", |v| v.as_str()),
     );
     context.insert(
         "copied_msg",
-        i18n.get("copied_msg").map_or("Copied to clipboard", |v| v.as_str()),
+        i18n.get("copied_msg")
+            .map_or("Copied to clipboard", |v| v.as_str()),
     );
     context.insert(
         "copy_fail_msg",
-        i18n.get("copy_fail_msg").map_or("Copy failed", |v| v.as_str()),
+        i18n.get("copy_fail_msg")
+            .map_or("Copy failed", |v| v.as_str()),
     );
     let footer_full = i18n.get("footer").map_or("", |v| v.as_str());
     if let Some((before, after)) = footer_full.split_once("Malkuth") {
@@ -223,8 +243,14 @@ async fn info_page(
 
     context.insert("logo_base64", &base64_encode(LOGO_BYTES));
 
-    context.insert("proxy_label", i18n.get("proxy_label").unwrap_or(&"Proxy".to_string()));
-    context.insert("watch_label", i18n.get("watch_label").unwrap_or(&"Watching".to_string()));
+    context.insert(
+        "proxy_label",
+        i18n.get("proxy_label").unwrap_or(&"Proxy".to_string()),
+    );
+    context.insert(
+        "watch_label",
+        i18n.get("watch_label").unwrap_or(&"Watching".to_string()),
+    );
     if let Some(ref ep) = state.proxy_endpoint {
         context.insert("proxy_endpoint", ep);
     }
@@ -304,7 +330,9 @@ fn match_language(tag: &str) -> String {
 
 fn get_i18n(lang: &str) -> &HashMap<String, String> {
     static EMPTY: LazyLock<HashMap<String, String>> = LazyLock::new(HashMap::new);
-    I18N_DATA.get(lang).unwrap_or_else(|| I18N_DATA.get("en").unwrap_or(&EMPTY))
+    I18N_DATA
+        .get(lang)
+        .unwrap_or_else(|| I18N_DATA.get("en").unwrap_or(&EMPTY))
 }
 
 #[cfg(test)]
@@ -393,7 +421,10 @@ mod tests {
         ctx.insert("copied_msg", "Copied to clipboard");
         ctx.insert("copy_fail_msg", "Copy failed");
         ctx.insert("footer_prefix", "Powered by ");
-        ctx.insert("footer_suffix", " — a composable service-supervision toolkit for Rust");
+        ctx.insert(
+            "footer_suffix",
+            " — a composable service-supervision toolkit for Rust",
+        );
 
         match tera::Tera::one_off(TEMPLATE, &ctx, false) {
             Ok(html) => println!("OK: {} bytes", html.len()),
