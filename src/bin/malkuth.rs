@@ -26,6 +26,8 @@ mod watcher;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::signal;
 
+use std::path::PathBuf;
+use std::collections::HashMap;
 use std::process::Stdio;
 use clap::Parser;
 use cli::{Args, ProxySpec};
@@ -37,6 +39,43 @@ use ws_proxy::run_ws_proxy;
 #[cfg(feature = "ipc")]
 use ipc_proxy::run_ipc_proxy;
 use tracing::{error, info, warn};
+
+/// Recursively snapshot file mtimes from all watched paths.
+/// Returns a map of path → last-modified time.
+fn snapshot_mtimes(paths: &[PathBuf]) -> HashMap<PathBuf, std::time::SystemTime> {
+    let mut map = HashMap::new();
+    for root in paths {
+        if !root.exists() { continue; }
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if let Ok(meta) = entry.metadata() {
+                        if let Ok(mtime) = meta.modified() {
+                            map.insert(path, mtime);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    map
+}
+
+/// Compare two mtime snapshots — true if any file was added, removed, or modified.
+fn mtimes_changed(before: &HashMap<PathBuf, std::time::SystemTime>, after: &HashMap<PathBuf, std::time::SystemTime>) -> bool {
+    if before.len() != after.len() { return true; }
+    for (path, mtime) in before {
+        match after.get(path) {
+            Some(t) if t == mtime => continue,
+            _ => return true,
+        }
+    }
+    false
+}
 
 /// Formats timestamps as local time `YYYY-MM-DD HH:MM:SS` (no timezone suffix),
 /// matching the format used by sibling celestia-island CLIs (e.g. lagrange).
@@ -251,38 +290,47 @@ async fn main() {
     if !args.watch.is_empty() {
         let mut rx = watcher::spawn(args.watch.clone(), args.debounce);
         let build_cmd = args.build.clone();
+        let watch_paths = args.watch.clone();
         let pod_count = args.pod_count.max(1);
         let manager = Arc::clone(&manager);
         tokio::spawn(async move {
             let mut next_pod: usize = 0;
             while rx.recv().await.is_some() {
-                // Run optional build command before restarting
+                // Run optional build command before restarting.
+                // Only restart if the build actually produced changed output.
                 if let Some(ref cmd) = build_cmd {
-                    info!(cmd, "running build command before restart");
-                    match tokio::process::Command::new("sh")
+                    info!(cmd, "running build command");
+                    let before = snapshot_mtimes(&watch_paths);
+                    let status = tokio::process::Command::new("sh")
                         .arg("-c")
                         .arg(cmd)
                         .stdout(Stdio::inherit())
                         .stderr(Stdio::inherit())
                         .status()
-                        .await
-                    {
-                        Ok(status) if status.success() => {
-                            info!(cmd, "build succeeded, proceeding with restart");
+                        .await;
+                    match status {
+                        Ok(s) if s.success() => {
+                            let after = snapshot_mtimes(&watch_paths);
+                            if mtimes_changed(&before, &after) {
+                                info!(cmd, "build produced changes, proceeding with restart");
+                            } else {
+                                info!(cmd, "build produced no changes, skipping restart");
+                                continue;
+                            }
                         }
-                        Ok(status) => {
-                            warn!(cmd, code = %status, "build failed; skipping restart");
+                        Ok(s) => {
+                            warn!(cmd, code = %s, "build failed; skipping restart");
                             continue;
                         }
                         Err(e) => {
-                            warn!(cmd, error = %e, "build command failed; skipping restart");
+                            warn!(cmd, error = %e, "build command error; skipping restart");
                             continue;
                         }
                     }
                 }
                 let id = next_pod % pod_count;
                 next_pod = next_pod.wrapping_add(1);
-                info!(pod = id, "rolling restart triggered by file change");
+                info!(pod = id, "rolling restart triggered");
                 manager.restart_one(id).await;
             }
         });
