@@ -7,12 +7,17 @@ use tokio::sync::mpsc;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{info, warn};
 
-/// Debounce window: coalesce a burst of editor saves into one restart.
-const DEBOUNCE: Duration = Duration::from_millis(400);
+/// Default debounce when no explicit value is given.
+const DEFAULT_DEBOUNCE: Duration = Duration::from_secs(3);
 
 /// Spawn a watcher over `paths`. Returns a receiver that yields `()` each time
 /// a (debounced) change is observed. Drops cleanly when the receiver is dropped.
-pub fn spawn(paths: Vec<PathBuf>) -> mpsc::Receiver<()> {
+pub fn spawn(paths: Vec<PathBuf>, debounce_secs: u64) -> mpsc::Receiver<()> {
+    let debounce = if debounce_secs == 0 {
+        DEFAULT_DEBOUNCE
+    } else {
+        Duration::from_secs(debounce_secs)
+    };
     let (tx, rx) = mpsc::channel::<()>(16);
     if paths.is_empty() {
         return rx;
@@ -51,7 +56,7 @@ pub fn spawn(paths: Vec<PathBuf>) -> mpsc::Receiver<()> {
                     ) =>
                 {
                     let now = std::time::Instant::now();
-                    let fire = !matches!(last_fire, Some(t) if now.duration_since(t) < DEBOUNCE);
+                    let fire = !matches!(last_fire, Some(t) if now.duration_since(t) < debounce);
                     if fire {
                         last_fire = Some(now);
                         info!(?e.paths, "file change → schedule restart");
