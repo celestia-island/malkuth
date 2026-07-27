@@ -82,7 +82,7 @@ let status = c.call("Lifecycle.Status", json!({})).await?;
 ## تغليف أي برنامج عبر واجهة سطر الأوامر
 
 ```bash
-malkuth --watch ./src --proxy 3000:3000-3999 --pod-count 3 -- cargo run
+malkuth --watch ./src --build "vite build" --debounce 3 --proxy 3000:3000-3999 --pod-count 3 -- cargo run
 ```
 
 يشغّل هذا 3 بودات (تُخصِّص لنفسها المنافذ 3001–3003 عبر متغير البيئة `PORT`)،

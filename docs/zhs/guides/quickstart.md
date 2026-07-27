@@ -81,7 +81,7 @@ let status = c.call("Lifecycle.Status", json!({})).await?;
 ## 用 CLI 包装任意程序
 
 ```bash
-malkuth --watch ./src --proxy 3000:3000-3999 --pod-count 3 -- cargo run
+malkuth --watch ./src --build "vite build" --debounce 3 --proxy 3000:3000-3999 --pod-count 3 -- cargo run
 ```
 
 这会运行 3 个 pod（通过 `PORT` 环境变量自分配端口 3001–3003），逐个探测每个 pod
