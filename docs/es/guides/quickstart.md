@@ -85,7 +85,7 @@ o `IpcTransport` (feature `ipc`, dirección `ipc:/tmp/sock`). O usa
 ## Envolver cualquier programa con el CLI
 
 ```bash
-malkuth --watch ./src --proxy 3000:3000-3999 --pod-count 3 -- cargo run
+malkuth --watch ./src --build "vite build" --debounce 3 --proxy 3000:3000-3999 --pod-count 3 -- cargo run
 ```
 
 Esto lanza 3 pods (autoasignando los puertos 3001–3003 mediante la variable de

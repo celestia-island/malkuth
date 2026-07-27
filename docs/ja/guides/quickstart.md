@@ -84,7 +84,7 @@ JSON-RPC 2.0 で送られます。
 ## CLI で任意のプログラムをラップ
 
 ```bash
-malkuth --watch ./src --proxy 3000:3000-3999 --pod-count 3 -- cargo run
+malkuth --watch ./src --build "vite build" --debounce 3 --proxy 3000:3000-3999 --pod-count 3 -- cargo run
 ```
 
 これは 3 つのポッドを実行し（`PORT` 環境変数でポート 3001〜3003 を自己割り当て）、

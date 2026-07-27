@@ -83,7 +83,7 @@ ou `IpcTransport` (feature `ipc`, adresse `ipc:/tmp/sock`). Ou utilisez
 ## Envelopper n'importe quel programme avec le CLI
 
 ```bash
-malkuth --watch ./src --proxy 3000:3000-3999 --pod-count 3 -- cargo run
+malkuth --watch ./src --build "vite build" --debounce 3 --proxy 3000:3000-3999 --pod-count 3 -- cargo run
 ```
 
 Cela lance 3 pods (auto-attribution des ports 3001–3003 via la variable
