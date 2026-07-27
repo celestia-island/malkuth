@@ -28,17 +28,12 @@ use tokio::signal;
 
 use clap::Parser;
 use cli::{Args, ProxySpec};
-#[cfg(feature = "ipc")]
-use ipc_proxy::run_ipc_proxy;
 use pool::{PodManager, assign_ports};
 use proxy::ProxyState;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use tracing::{error, info, warn};
-#[cfg(feature = "ws")]
-#[cfg(feature = "ws")]
-use ws_proxy::run_ws_proxy;
 
 const DEFAULT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -533,12 +528,8 @@ async fn run_daemon(config_path: &str) -> Result<(), String> {
         tokio::spawn(async move {
             let mut sig =
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).ok();
-            loop {
-                if let Some(sig) = sig.as_mut() {
-                    sig.recv().await;
-                } else {
-                    break;
-                }
+            while let Some(sig) = sig.as_mut() {
+                sig.recv().await;
                 info!("SIGHUP received");
                 reload2.notify_one();
             }

@@ -17,10 +17,10 @@ use tokio::{
     io,
     net::{TcpListener, TcpStream},
 };
-use tokio_tungstenite::{WebSocketStream, accept_async, client_async, tungstenite::Message};
+use tokio_tungstenite::{WebSocketStream, accept_async, client_async};
 use tracing::{debug, info, warn};
 
-use crate::proxy::{Backend, ProxyState};
+use crate::proxy::ProxyState;
 
 /// Run the WebSocket proxy. `path_map` maps URL path prefixes to worker
 /// routing keys (e.g. `"/chest" → "shittim-chest"`). If a path matches,
@@ -119,29 +119,19 @@ async fn relay_ws(
     let (mut backend_sink, mut backend_stream) = backend.split();
 
     let c2b = async {
-        loop {
-            match client_stream.next().await {
-                Some(Ok(msg)) => {
-                    if msg.is_close() {
-                        break;
-                    }
-                    if backend_sink.send(msg).await.is_err() {
-                        break;
-                    }
-                }
-                _ => break,
+        while let Some(Ok(msg)) = client_stream.next().await {
+            if msg.is_close() {
+                break;
+            }
+            if backend_sink.send(msg).await.is_err() {
+                break;
             }
         }
     };
     let b2c = async {
-        loop {
-            match backend_stream.next().await {
-                Some(Ok(msg)) => {
-                    if client_sink.send(msg).await.is_err() {
-                        break;
-                    }
-                }
-                _ => break,
+        while let Some(Ok(msg)) = backend_stream.next().await {
+            if client_sink.send(msg).await.is_err() {
+                break;
             }
         }
     };
@@ -153,8 +143,6 @@ async fn relay_ws(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn relay_does_nothing_on_empty_streams() {
         // Compile-time validation only — actual relay requires live WS connections.
