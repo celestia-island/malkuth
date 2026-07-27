@@ -15,6 +15,8 @@ mod ws_proxy;
 mod ipc_proxy;
 #[path = "malkuth/singleton.rs"]
 mod singleton;
+#[path = "malkuth/self_update.rs"]
+mod self_update;
 #[path = "malkuth/watcher.rs"]
 mod watcher;
 
@@ -135,6 +137,54 @@ async fn main() {
             }
         } else {
             warn!("--singleton requires --proxy to be set; ignoring");
+        }
+    }
+
+    // ── Self-update: fork+exec into new binary, then drain ──────
+    if let Some(ref new_binary) = args.self_update {
+        let proxy_fd = proxy_spec.as_ref().and_then(|_spec| {
+            // We can't get the fd before binding. The self-update
+            // will fork+exec from the daemon mode handler instead.
+            info!("self-update requested for watchdog mode; forwarding to daemon handler");
+            None::<i32>
+        });
+        let extra: Vec<String> = std::env::args().collect();
+        match self_update::fork_and_exec(new_binary, proxy_fd, &extra[1..]) {
+            Ok(false) => {
+                info!("self-update: parent draining and exiting");
+                // Workers are killed via kill_on_drop; proxy connections drain.
+                return;
+            }
+            Ok(true) => {
+                // Child — we'll fall through to the normal startup path
+                // with inherited fd from LISTEN_FD_ENV.
+                info!("self-update: child process taking over");
+            }
+            Err(e) => {
+                error!(error = %e, "self-update fork failed");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // ── Handle inherited listener fd from self-update takeover ───
+    if let Some(ref takeover_spec) = args.takeover {
+        if let Some(fd_str) = takeover_spec.strip_prefix("LISTEN_FD=") {
+            if let Ok(fd) = fd_str.parse::<i32>() {
+                info!(fd, "taking over inherited listener fd");
+                // Convert raw fd to std TcpListener, then to tokio.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::io::FromRawFd;
+                    let std_listener = unsafe {
+                        std::net::TcpListener::from_raw_fd(fd)
+                    };
+                    std_listener.set_nonblocking(true).ok();
+                    let _tokio_listener = tokio::net::TcpListener::from_std(std_listener)
+                        .map_err(|e| error!(error = %e, "failed to create tokio listener from inherited fd")).ok();
+                    info!("successfully took over inherited listener fd {}", fd);
+                }
+            }
         }
     }
 
