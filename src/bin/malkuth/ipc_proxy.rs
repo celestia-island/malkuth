@@ -9,11 +9,11 @@
 //! and forwards to TCP backends via the consistent-hash ring.
 
 use interprocess::local_socket::{
-    tokio::{Listener as LocalSocketListener, Stream as LocalSocketStream},
+    tokio::Stream as LocalSocketStream,
     traits::tokio::Listener as _,
-    {GenericFilePath, ListenerOptions, Name, ToFsName},
+    {GenericFilePath, ListenerOptions, ToFsName},
 };
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 use tokio::{io, net::TcpStream};
 use tracing::{debug, info, warn};
 
