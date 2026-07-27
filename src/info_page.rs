@@ -8,6 +8,31 @@ use axum::{
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+const LOGO_BYTES: &[u8] = include_bytes!("info_page/logo.webp");
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(CHARS[(n >> 18) as usize] as char);
+        out.push(CHARS[((n >> 12) & 63) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(CHARS[((n >> 6) & 63) as usize] as char);
+        }
+        if chunk.len() > 2 {
+            out.push(CHARS[(n & 63) as usize] as char);
+        }
+    }
+    while out.len() % 4 != 0 {
+        out.push('=');
+    }
+    out
+}
+
 static I18N_DATA: LazyLock<HashMap<String, HashMap<String, String>>> = LazyLock::new(|| {
     let raw: HashMap<String, HashMap<String, String>> =
         serde_json::from_str(include_str!("info_page/i18n/all.json"))
@@ -78,8 +103,7 @@ async fn info_page(
         },
     );
 
-    let placeholder_logo = "";
-    context.insert("logo_base64", placeholder_logo);
+    context.insert("logo_base64", &base64_encode(LOGO_BYTES));
 
     match tera::Tera::one_off(TEMPLATE, &context, false) {
         Ok(html) => Html(html).into_response(),

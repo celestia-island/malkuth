@@ -3,14 +3,43 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="refresh" content="10">
 <title>{{ title }}</title>
 <style>
+  :root {
+    --bg: #0e0e1e;
+    --fg: #d4d4e8;
+    --card-bg: rgba(255, 255, 255, 0.04);
+    --card-border: rgba(255, 255, 255, 0.08);
+    --heading: #ffffff;
+    --tagline: rgba(212, 212, 232, 0.6);
+    --label: rgba(212, 212, 232, 0.5);
+    --value: #d4d4e8;
+    --divider: rgba(255, 255, 255, 0.05);
+    --retry: rgba(212, 212, 232, 0.4);
+    --footer: rgba(212, 212, 232, 0.25);
+    --footer-hover: rgba(212, 212, 232, 0.55);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f5f5f0;
+      --fg: #333340;
+      --card-bg: rgba(255, 255, 255, 0.8);
+      --card-border: rgba(0, 0, 0, 0.08);
+      --heading: #1a1a2e;
+      --tagline: rgba(30, 30, 50, 0.5);
+      --label: rgba(30, 30, 50, 0.45);
+      --value: #333340;
+      --divider: rgba(0, 0, 0, 0.05);
+      --retry: rgba(30, 30, 50, 0.35);
+      --footer: rgba(30, 30, 50, 0.2);
+      --footer-hover: rgba(30, 30, 50, 0.5);
+    }
+  }
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    background: #0e0e1e;
-    color: #d4d4e8;
+    background: var(--bg);
+    color: var(--fg);
     min-height: 100vh;
     display: flex;
     align-items: center;
@@ -21,8 +50,8 @@
   .card {
     max-width: 480px;
     width: 100%;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
     border-radius: 12px;
     padding: 2.5rem 2rem;
     text-align: center;
@@ -38,27 +67,30 @@
     height: 64px;
     margin: 0 auto 1rem;
     opacity: 0.8;
+    display: block;
   }
   h1 {
     font-size: 1.5rem;
     font-weight: 700;
     margin-bottom: 0.5rem;
-    color: #ffffff;
+    color: var(--heading);
   }
   .tagline {
     font-size: 0.875rem;
-    color: rgba(212, 212, 232, 0.6);
+    color: var(--tagline);
     margin-bottom: 1.5rem;
   }
   .status {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 8px;
     padding: 8px 16px;
     border-radius: 9999px;
     font-size: 0.8125rem;
     font-weight: 600;
     margin-bottom: 1.25rem;
+    text-align: center;
   }
   .status--ready {
     background: rgba(46, 213, 115, 0.12);
@@ -80,73 +112,56 @@
     flex-shrink: 0;
   }
   .status--ready .status-dot { background: #2ed573; }
-  .status--working .status-dot { background: #ffa500; }
+  .status--working .status-dot { background: #ffa500; animation: pulse 2s ease-in-out infinite; }
   .info-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 8px 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    border-bottom: 1px solid var(--divider);
     font-size: 0.8125rem;
   }
   .info-row:last-of-type { border-bottom: none; }
-  .info-label {
-    color: rgba(212, 212, 232, 0.5);
-  }
+  .info-label { color: var(--label); }
   .info-value {
-    color: #d4d4e8;
+    color: var(--value);
     font-weight: 500;
     font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
   }
   .retry-hint {
     margin-top: 1.25rem;
     font-size: 0.75rem;
-    color: rgba(212, 212, 232, 0.4);
+    color: var(--retry);
+    line-height: 1.8;
+  }
+  .countdown {
+    font-weight: 700;
+    font-size: 1.5em;
+    color: var(--countdown-color, #2ed573);
+    margin-left: 4px;
   }
   .footer {
     margin-top: 1.5rem;
     font-size: 0.6875rem;
-    color: rgba(212, 212, 232, 0.25);
+    color: var(--footer);
   }
-  .pulse-ring {
-    display: inline-block;
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    background: #ffa500;
-    opacity: 0.3;
-    animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+  .footer a {
+    color: inherit;
+    text-decoration: none;
+    transition: color 0.2s ease;
   }
-  @keyframes ping {
-    0% { transform: scale(1); opacity: 0.3; }
-    75%, 100% { transform: scale(2.5); opacity: 0; }
-  }
+  .footer a:hover { color: var(--footer-hover); }
 </style>
 </head>
 <body>
 <div class="card">
   {% if logo_base64 %}
   <img class="logo" src="data:image/webp;base64,{{ logo_base64 }}" alt="Malkuth" />
-  {% else %}
-  <svg class="logo" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <circle cx="32" cy="32" r="28" stroke="rgba(255,255,255,0.15)" stroke-width="2"/>
-    <circle cx="32" cy="32" r="8" fill="rgba(255,255,255,0.7)"/>
-    <line x1="32" y1="4" x2="32" y2="20" stroke="rgba(255,255,255,0.3)" stroke-width="2"/>
-    <line x1="56" y1="18" x2="44" y2="26" stroke="rgba(255,255,255,0.25)" stroke-width="2"/>
-    <line x1="56" y1="46" x2="44" y2="38" stroke="rgba(255,255,255,0.25)" stroke-width="2"/>
-    <line x1="8" y1="18" x2="20" y2="26" stroke="rgba(255,255,255,0.25)" stroke-width="2"/>
-    <line x1="8" y1="46" x2="20" y2="38" stroke="rgba(255,255,255,0.25)" stroke-width="2"/>
-    <line x1="32" y1="60" x2="32" y2="44" stroke="rgba(255,255,255,0.3)" stroke-width="2"/>
-  </svg>
   {% endif %}
   <h1>{{ heading }}</h1>
   <p class="tagline">{{ tagline }}</p>
   <div class="status {% if ready %}status--ready{% else %}status--working{% endif %}">
-    {% if ready %}
     <span class="status-dot"></span>
-    {% else %}
-    <span class="pulse-ring"></span>
-    {% endif %}
     <span>{{ status_text }}</span>
   </div>
   <div class="info-row">
@@ -157,8 +172,11 @@
     <span class="info-label">{{ task_label }}</span>
     <span class="info-value">{{ task }}</span>
   </div>
-  <p class="retry-hint">{{ retry }}</p>
-  <p class="footer">{{ footer }}</p>
+  <p class="retry-hint">{{ retry }} <span class="countdown" id="countdown" style="--countdown-color: {% if ready %}#2ed573{% else %}#ffa500{% endif %}">10s</span></p>
+  <p class="footer"><a href="https://github.com/celestia-island/malkuth" target="_blank" rel="noopener">{{ footer }}</a></p>
 </div>
+<script>
+(function(){var s=10;var e=document.getElementById("countdown");function t(){if(s<=0){location.reload();return}e.textContent=s+"s";s--;setTimeout(t,1000);}t();})();
+</script>
 </body>
 </html>
