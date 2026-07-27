@@ -352,7 +352,6 @@ async fn main() {
             let proxy_type = args.proxy_type.clone();
             let _ipc_path = args.ipc_path.clone();
             tokio::spawn(async move {
-                use malkuth::info_page::info_router;
                 match proxy_type.as_str() {
                     #[cfg(feature = "ws")]
                     "ws" => {
@@ -363,7 +362,7 @@ async fn main() {
                     }
                     #[cfg(feature = "ipc")]
                     "ipc" => {
-                        let path = ipc_path.unwrap_or_else(|| "/tmp/malkuth-proxy.sock".into());
+                        let path = _ipc_path.unwrap_or_else(|| "/tmp/malkuth-proxy.sock".into());
                         if let Err(e) = ipc_proxy::run_ipc_proxy(&path, state).await {
                             error!(error = %e, "ipc proxy stopped");
                         }

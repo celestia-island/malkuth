@@ -154,7 +154,6 @@ async fn relay_ws(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{Ipv4Addr, SocketAddrV4};
 
     #[test]
     fn relay_does_nothing_on_empty_streams() {
