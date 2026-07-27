@@ -1,83 +1,60 @@
-//! Self-update — fork+exec based zero-downtime restart for the malkuth daemon.
+//! Self-update: spawn a new binary inheriting a listener fd.
 //!
-//! When a new malkuth binary is available, the running daemon can:
-//! 1. Fork a child process
-//! 2. Child exec's the new binary with the listener fd inherited
-//! 3. Parent gracefully drains and exits
-//! 4. New process takes over the listener immediately
+//! Uses `std::process::Command::pre_exec()` to clear `FD_CLOEXEC` on the
+//! listener fd before the child execs, then passes the fd number via the
+//! `MALKUTH_LISTEN_FD` environment variable.
 //!
-//! This is the final piece (Phase 6) of the malkuth supervision lifecycle.
-//!
-//! ## Usage
-//!
-//! ```ignore
-//! # Old daemon detects new binary and triggers self-update:
-//! malkuth daemon --config malkuth.toml --self-update /path/to/new/malkuth
-//!
-//! # New process starts with inherited fd:
-//! malkuth --takeover LISTEN_FD=5 daemon --config malkuth.toml
-//! ```
+//! All other fds with `FD_CLOEXEC` set (tokio's eventfd, timer fd, epoll fd,
+//! etc.) are automatically closed by the kernel at exec time — no blind
+//! close loop, no undefined behaviour.
 
-use std::os::unix::process::CommandExt;
-use std::process::Command;
+use std::os::unix::{io::RawFd, process::CommandExt};
 
-use tracing::{error, info};
+/// Environment variable name used to hand the inherited fd number to the
+/// child process.
+pub const LISTEN_FD_ENV: &str = "MALKUTH_LISTEN_FD";
 
-/// Environment variable used to pass the inherited listener fd.
-const LISTEN_FD_ENV: &str = "MALKUTH_LISTEN_FD";
-
-/// Fork the current process, exec the new binary with the listener fd inherited,
-/// and exit the parent after draining.
+/// Spawn `program` with `args` as a child process, preserving `listen_fd`
+/// across the exec boundary by clearing its `FD_CLOEXEC` flag in the child's
+/// `pre_exec` hook.
 ///
-/// Returns `true` in the child (new process), `false` in the parent (old process).
-/// The caller should:
-/// - In the parent: begin drain, wait for workers, exit.
-/// - In the child: take over the listener and start serving.
-pub fn fork_and_exec(
-    new_binary: &str,
-    listener_fd: Option<i32>,
-    extra_args: &[String],
-) -> std::io::Result<bool> {
-    let pid = unsafe { libc::fork() };
-    if pid < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    if pid > 0 {
-        // Parent — old process.
-        info!(child_pid = pid, "forked new malkuth process; beginning drain");
-        return Ok(false);
-    }
+/// On success the returned [`std::process::Child`] represents the new
+/// process.  The caller is responsible for waiting on it and/or terminating
+/// the current (parent) process once handoff is complete.
+///
+/// # Safety
+///
+/// `pre_exec` runs in the child after `fork(2)` but before `execve(2)`.
+/// Only async-signal-safe operations are legal there; `fcntl` is safe.
+pub fn spawn_with_listen_fd(
+    program: &str,
+    args: &[String],
+    listen_fd: RawFd,
+) -> std::io::Result<std::process::Child> {
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
+    cmd.env(LISTEN_FD_ENV, listen_fd.to_string());
 
-    // Child — new process.
-    // Close all fds except stdin/stdout/stderr and the listener.
-    if let Some(fd) = listener_fd {
-        let max_fd = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
-        let max = if max_fd > 0 { max_fd as i32 } else { 1024 };
-        for f in 3..max {
-            if f != fd {
-                unsafe { libc::close(f) };
-            }
-        }
-        unsafe {
-            libc::setenv(
-                LISTEN_FD_ENV.as_ptr() as *const libc::c_char,
-                format!("{fd}").as_ptr() as *const libc::c_char,
-                1,
-            );
-        }
-    }
-
-    let mut cmd = Command::new(new_binary);
-    cmd.args(extra_args);
-    // Pre-exec: inherit all fds from fork. The only relevant one is the listener.
     unsafe {
-        cmd.pre_exec(|| Ok(()));
+        cmd.pre_exec(move || {
+            let flags = libc::fcntl(listen_fd, libc::F_GETFD);
+            if flags != -1 {
+                libc::fcntl(listen_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+            }
+            Ok(())
+        });
     }
 
-    let err = cmd.exec();
-    // Only reaches here if exec fails.
-    error!(error = %err, binary = new_binary, "exec of new malkuth binary failed");
-    std::process::exit(1);
+    cmd.spawn()
+}
+
+/// Convenience wrapper that spawns the current binary (as returned by
+/// [`std::env::current_exe`]) with the original command-line arguments,
+/// passing `listen_fd` to the child.
+pub fn spawn_self(listen_fd: RawFd) -> std::io::Result<std::process::Child> {
+    let exe = std::env::current_exe()?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    spawn_with_listen_fd(&exe.to_string_lossy(), &args, listen_fd)
 }
 
 /// Check if the current process was started with an inherited listener fd.
