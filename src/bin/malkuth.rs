@@ -9,6 +9,10 @@ mod cli;
 mod pool;
 #[path = "malkuth/proxy.rs"]
 mod proxy;
+#[path = "malkuth/ws_proxy.rs"]
+mod ws_proxy;
+#[path = "malkuth/ipc_proxy.rs"]
+mod ipc_proxy;
 #[path = "malkuth/singleton.rs"]
 mod singleton;
 #[path = "malkuth/watcher.rs"]
@@ -21,6 +25,10 @@ use clap::Parser;
 use cli::{Args, ProxySpec};
 use pool::{PodManager, assign_ports};
 use proxy::{ProxyState, run_proxy};
+#[cfg(feature = "ws")]
+use ws_proxy::run_ws_proxy;
+#[cfg(feature = "ipc")]
+use ipc_proxy::run_ipc_proxy;
 use tracing::{error, info, warn};
 
 /// Formats timestamps as local time `YYYY-MM-DD HH:MM:SS` (no timezone suffix),
@@ -168,9 +176,28 @@ async fn main() {
                     error!("invalid proxy bind address: {e}");
                     std::process::exit(2);
                 });
+            let proxy_type = args.proxy_type.clone();
+            let ipc_path = args.ipc_path.clone();
             tokio::spawn(async move {
-                if let Err(e) = run_proxy(public, state).await {
-                    error!(error = %e, "proxy stopped");
+                match proxy_type.as_str() {
+                    #[cfg(feature = "ws")]
+                    "ws" => {
+                        if let Err(e) = ws_proxy::run_ws_proxy(public, state).await {
+                            error!(error = %e, "ws proxy stopped");
+                        }
+                    }
+                    #[cfg(feature = "ipc")]
+                    "ipc" => {
+                        let path = ipc_path.unwrap_or_else(|| "/tmp/malkuth-proxy.sock".into());
+                        if let Err(e) = ipc_proxy::run_ipc_proxy(&path, state).await {
+                            error!(error = %e, "ipc proxy stopped");
+                        }
+                    }
+                    _ => {
+                        if let Err(e) = proxy::run_proxy(public, state).await {
+                            error!(error = %e, "tcp proxy stopped");
+                        }
+                    }
                 }
             });
         }
