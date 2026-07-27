@@ -90,6 +90,18 @@ pub struct Args {
     #[arg(long = "info-port", value_name = "PORT")]
     pub info_port: Option<u16>,
 
+    /// Hide internal details (proxy, watch paths) from the info page.
+    /// Useful in production to avoid leaking infrastructure topology.
+    #[arg(long = "release", short = 'r')]
+    pub release: bool,
+
+    /// Show a landing-style info page (even when backends are healthy) that
+    /// displays each supervised binary's compile timestamp and SHA-256 hash,
+    /// then auto-redirects after a short countdown. The countdown can be
+    /// cancelled via a button which then becomes "refresh now".
+    #[arg(long = "info-landing")]
+    pub info_landing: bool,
+
     /// The command to run (everything after `--`), e.g. `-- cargo run`.
     #[arg(last = true, allow_hyphen_values = true)]
     pub command: Vec<String>,
