@@ -140,13 +140,11 @@ malkuth mcp
 
 [SySL-1.0（Synthetic Source License）](https://sysl.celestia.world)。
 
-## MCP Server Deployment
+## نشر خادم MCP
 
-> (English section — translation pending)
+لنشر MCP في بيئة الإنتاج، استخدم **غلاف إعادة التشغيل التلقائي** للحفاظ على تشغيل الخادم أثناء التحديثات دون مقاطعة جلسة العميل.
 
-For production MCP deployments, use an **auto-restart wrapper** to keep the server alive across updates without interrupting the client session.
-
-### Recommended launcher
+### المُشغِّل المُوصى به
 
 #!/bin/bash
 while true; do
@@ -154,9 +152,9 @@ while true; do
   sleep 0.2
 done
 
-### How it works
+### كيف يعمل
 
-1. The wrapper runs `malkuth mcp` in a `while true` loop.
-2. If the process exits, it restarts within 0.2 seconds.
-3. To update: `kill $(pgrep -f "malkuth mcp" | head -1)`
-4. malkuth can also supervise other MCP tools — use it as a watcher for the entire MCP toolchain.
+1. يُشغِّل الغلاف `malkuth mcp` في حلقة `while true`.
+2. إذا خرجت العملية، يُعاد تشغيلها خلال 0.2 ثانية.
+3. للتحديث: `kill $(pgrep -f "malkuth mcp" | head -1)`
+4. يمكن لـ malkuth أيضاً الإشراف على أدوات MCP الأخرى — استخدمه كمراقب لسلسلة أدوات MCP بأكملها.

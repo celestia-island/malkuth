@@ -145,13 +145,11 @@ Feature `mcp` неявно включает `worker` + `schema`; она доба
 
 SySL-1.0（Synthetic Source License）。См. [LICENSE](https://sysl.celestia.world)。
 
-## MCP Server Deployment
+## Развёртывание MCP-сервера
 
-> (English section — translation pending)
+Для промышленных развёртываний MCP используйте **обёртку с автоматическим перезапуском**, чтобы сервер оставался активным во время обновлений, не прерывая сеанс клиента.
 
-For production MCP deployments, use an **auto-restart wrapper** to keep the server alive across updates without interrupting the client session.
-
-### Recommended launcher
+### Рекомендуемый запускатель
 
 #!/bin/bash
 while true; do
@@ -159,9 +157,9 @@ while true; do
   sleep 0.2
 done
 
-### How it works
+### Как это работает
 
-1. The wrapper runs `malkuth mcp` in a `while true` loop.
-2. If the process exits, it restarts within 0.2 seconds.
-3. To update: `kill $(pgrep -f "malkuth mcp" | head -1)`
-4. malkuth can also supervise other MCP tools — use it as a watcher for the entire MCP toolchain.
+1. Обёртка запускает `malkuth mcp` в цикле `while true`.
+2. Если процесс завершается, он перезапускается в течение 0,2 секунды.
+3. Обновление: `kill $(pgrep -f "malkuth mcp" | head -1)`
+4. malkuth также может контролировать другие MCP-инструменты — используйте его как наблюдателя для всей цепочки MCP-инструментов.
