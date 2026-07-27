@@ -58,6 +58,14 @@ pub struct Args {
     #[arg(long = "singleton")]
     pub singleton: bool,
 
+    /// Proxy type: "tcp" (L4, default), "ws" (L7 WebSocket), "ipc" (Unix socket → TCP).
+    #[arg(long = "proxy-type", default_value = "tcp")]
+    pub proxy_type: String,
+
+    /// IPC socket path when --proxy-type=ipc (e.g. "ipc:/tmp/malkuth.sock").
+    #[arg(long = "ipc-path")]
+    pub ipc_path: Option<String>,
+
     /// The command to run (everything after `--`), e.g. `-- cargo run`.
     #[arg(last = true, allow_hyphen_values = true)]
     pub command: Vec<String>,
