@@ -40,6 +40,8 @@ use ws_proxy::run_ws_proxy;
 use ipc_proxy::run_ipc_proxy;
 use tracing::{error, info, warn};
 
+const DEFAULT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Recursively snapshot file mtimes from all watched paths.
 /// Returns a map of path → last-modified time.
 fn snapshot_mtimes(paths: &[PathBuf]) -> HashMap<PathBuf, std::time::SystemTime> {
@@ -332,6 +334,32 @@ async fn main() {
                 next_pod = next_pod.wrapping_add(1);
                 info!(pod = id, "rolling restart triggered");
                 manager.restart_one(id).await;
+            }
+        });
+    }
+
+    // ── Info page HTTP server (optional) ──────────────────────
+    if let Some(info_port) = args.info_port {
+        let addr: SocketAddr = format!("{}:{}", args.host, info_port)
+            .parse()
+            .unwrap_or_else(|e| {
+                error!("invalid info-port bind address: {e}");
+                std::process::exit(2);
+            });
+        let version = DEFAULT_VERSION.to_string();
+        tokio::spawn(async move {
+            use malkuth::info_page::{InfoStatus, info_router};
+            let router = info_router(version, InfoStatus::Working);
+            let listener = match tokio::net::TcpListener::bind(addr).await {
+                Ok(l) => l,
+                Err(e) => {
+                    error!(addr = %addr, error = %e, "failed to bind info page listener");
+                    return;
+                }
+            };
+            info!(addr = %addr, "info page listening");
+            if let Err(e) = axum::serve(listener, router).await {
+                error!(error = %e, "info page server stopped");
             }
         });
     }

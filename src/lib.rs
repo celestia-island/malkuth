@@ -63,6 +63,10 @@ pub mod worker;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 
+// ── Info page (CLI only) ────────────────────────────────────
+#[cfg(feature = "cli")]
+pub mod info_page;
+
 // ── TOML configuration (cli + worker features) ──────────────────
 #[cfg(all(feature = "cli", feature = "worker"))]
 pub mod config;

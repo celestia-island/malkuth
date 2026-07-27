@@ -85,6 +85,11 @@ pub struct Args {
     #[arg(long = "self-update", value_name = "PATH")]
     pub self_update: Option<String>,
 
+    /// Enable an HTTP info page on the given port. Serves a status page
+    /// showing the Malkuth version and current task in the browser's locale.
+    #[arg(long = "info-port", value_name = "PORT")]
+    pub info_port: Option<u16>,
+
     /// The command to run (everything after `--`), e.g. `-- cargo run`.
     #[arg(last = true, allow_hyphen_values = true)]
     pub command: Vec<String>,
