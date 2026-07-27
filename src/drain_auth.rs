@@ -55,7 +55,7 @@ impl ApprovalRegistry {
 
     /// Register an approved proposal. Called after OreXis or human
     /// confirms a restart is authorized.
-    pub fn approve(&self, proposal_id: &str, worker_id: &str, decision: GateDecision) {
+    pub fn approve(&self, _proposal_id: &str, worker_id: &str, decision: GateDecision) {
         if decision == GateDecision::Block {
             return;
         }
@@ -73,7 +73,7 @@ impl ApprovalRegistry {
     }
 
     /// Check whether a proposal is approved for a given worker.
-    pub fn is_approved(&self, proposal_id: &str, worker_id: &str) -> bool {
+    pub fn is_approved(&self, _proposal_id: &str, worker_id: &str) -> bool {
         let entries = self.entries.read().unwrap();
         entries.iter().any(|e| {
             e.worker_id == worker_id
