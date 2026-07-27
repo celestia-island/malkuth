@@ -17,6 +17,9 @@ mod ipc_proxy;
 mod singleton;
 #[path = "malkuth/watcher.rs"]
 mod watcher;
+#[path = "malkuth/self_update.rs"]
+#[cfg(unix)]
+mod self_update;
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::signal;
