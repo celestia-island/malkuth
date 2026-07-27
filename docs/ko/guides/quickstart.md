@@ -84,7 +84,7 @@ let status = c.call("Lifecycle.Status", json!({})).await?;
 ## CLI로 임의 프로그램 감싸기
 
 ```bash
-malkuth --watch ./src --proxy 3000:3000-3999 --pod-count 3 -- cargo run
+malkuth --watch ./src --build "vite build" --debounce 3 --proxy 3000:3000-3999 --pod-count 3 -- cargo run
 ```
 
 이 명령은 3개의 포드를 실행하고(`PORT` 환경 변수로 포트 3001~3003을 자체 할당),

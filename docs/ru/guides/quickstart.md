@@ -84,7 +84,7 @@ let status = c.call("Lifecycle.Status", json!({})).await?;
 ## Обёртка для любой программы через CLI
 
 ```bash
-malkuth --watch ./src --proxy 3000:3000-3999 --pod-count 3 -- cargo run
+malkuth --watch ./src --build "vite build" --debounce 3 --proxy 3000:3000-3999 --pod-count 3 -- cargo run
 ```
 
 Это запускает 3 пода (самоназначая порты 3001–3003 через переменную окружения

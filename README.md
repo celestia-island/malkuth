@@ -43,7 +43,7 @@ graceful shutdown, health probes, coordination locks, and rolling updates:
 ## As a CLI
 
 ```
-malkuth [--watch PATH]... [--proxy PUBLIC:LO-HI] [--pod-count N] -- <cmd> [args...]
+malkuth [--watch PATH]... [--build CMD] [--debounce SECS] [--proxy PUBLIC:LO-HI] [--pod-count N] -- <cmd> [args...]
 ```
 
 Run 5 parallel copies of your server (each listening on the `PORT` env var →
