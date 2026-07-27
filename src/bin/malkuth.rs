@@ -15,11 +15,11 @@ mod ws_proxy;
 mod ipc_proxy;
 #[path = "malkuth/singleton.rs"]
 mod singleton;
-#[path = "malkuth/watcher.rs"]
-mod watcher;
 #[path = "malkuth/self_update.rs"]
 #[cfg(unix)]
 mod self_update;
+#[path = "malkuth/watcher.rs"]
+mod watcher;
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::signal;
@@ -139,6 +139,42 @@ async fn main() {
         } else {
             warn!("--singleton requires --proxy to be set; ignoring");
         }
+    }
+
+    // ── Self-update: spawn new binary with inherited fd, then drain ──
+    #[cfg(unix)]
+    if let Some(ref new_binary) = args.self_update {
+        let proxy_fd = proxy_spec.as_ref().and_then(|_spec| {
+            // We can't get the fd before binding. The self-update
+            // will fork+exec from the daemon mode handler instead.
+            info!("self-update requested for watchdog mode; forwarding to daemon handler");
+            None::<i32>
+        });
+        let extra: Vec<String> = std::env::args().collect();
+        match self_update::spawn_with_listen_fd(new_binary, &extra[1..], proxy_fd.unwrap_or(0)) {
+            Ok(_child) => {
+                info!("self-update: spawned new process; parent draining and exiting");
+                return;
+            }
+            Err(e) => {
+                error!(error = %e, "self-update spawn failed");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // ── Handle inherited listener fd from self-update takeover ───
+    #[cfg(unix)]
+    if let Some(fd) = self_update::inherited_listener_fd() {
+        info!(fd, "taking over inherited listener fd");
+        use std::os::unix::io::FromRawFd;
+        let std_listener = unsafe {
+            std::net::TcpListener::from_raw_fd(fd)
+        };
+        std_listener.set_nonblocking(true).ok();
+        let _tokio_listener = tokio::net::TcpListener::from_std(std_listener)
+            .map_err(|e| error!(error = %e, "failed to create tokio listener from inherited fd")).ok();
+        info!("successfully took over inherited listener fd {}", fd);
     }
 
     let ports = match &proxy_spec {

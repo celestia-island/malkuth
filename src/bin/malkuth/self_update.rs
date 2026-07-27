@@ -56,3 +56,39 @@ pub fn spawn_self(listen_fd: RawFd) -> std::io::Result<std::process::Child> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     spawn_with_listen_fd(&exe.to_string_lossy(), &args, listen_fd)
 }
+
+/// Check if the current process was started with an inherited listener fd.
+/// Returns the fd number if `LISTEN_FD_ENV` is set and valid.
+pub fn inherited_listener_fd() -> Option<i32> {
+    let val: i32 = std::env::var(LISTEN_FD_ENV).ok()?.parse().ok()?;
+    if val >= 3 {
+        Some(val)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inherited_fd_none_when_env_unset() {
+        unsafe { std::env::remove_var(LISTEN_FD_ENV) };
+        assert!(inherited_listener_fd().is_none());
+    }
+
+    #[test]
+    fn inherited_fd_parses_valid() {
+        unsafe { std::env::set_var(LISTEN_FD_ENV, "5") };
+        assert_eq!(inherited_listener_fd(), Some(5));
+        unsafe { std::env::remove_var(LISTEN_FD_ENV) };
+    }
+
+    #[test]
+    fn inherited_fd_ignores_invalid() {
+        unsafe { std::env::set_var(LISTEN_FD_ENV, "not_a_number") };
+        assert!(inherited_listener_fd().is_none());
+        unsafe { std::env::remove_var(LISTEN_FD_ENV) };
+    }
+}
