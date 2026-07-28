@@ -7,6 +7,7 @@ import { initTheme } from '@celestia-island/hikari'
 import App from './App.vue'
 import LandingPage from './views/LandingPage.vue'
 
+localStorage.setItem('hikari-theme', 'tokyonight')
 initTheme()
 
 const routes = [
