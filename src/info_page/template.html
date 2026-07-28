@@ -503,7 +503,7 @@
           if (countdownSpan) {
             countdownSpan.textContent = data.progress || "\u2014";
           }
-          if (btn) { btn.style.display = "inline-block"; btn.textContent = "{{ cancel_label }}"; }
+          if (btn) { btn.style.display = "inline-block"; btn.textContent = "{{ refresh_label }}"; }
         }
         if (data.state === "starting") {
           if (btn) { btn.style.display = "inline-block"; btn.textContent = "{{ refresh_label }}"; }
@@ -520,7 +520,7 @@
     if (hintEl) { hintEl.innerHTML = ""; }
     if (countdownSpan) { countdownSpan.textContent = "\u2014"; }
     if (countdownUnitEl) { countdownUnitEl.textContent = ""; }
-    if (btn) { btn.style.display = "inline-block"; btn.textContent = "{{ cancel_label }}"; }
+    if (btn) { btn.style.display = "inline-block"; btn.textContent = "{{ refresh_label }}"; }
     poll();
     timer = setInterval(poll, probeTime);
   } else if (initState === "offline") {
