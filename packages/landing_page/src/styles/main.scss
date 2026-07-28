@@ -80,26 +80,6 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   color: var(--value); max-width: 260px; position: relative; cursor: pointer;
 }
 .watch-text { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.watch-item:hover .tooltip { opacity: 1; visibility: visible; transform: translateX(-50%) translateY(-4px); }
-.tooltip {
-  position: absolute; bottom: calc(100% + 8px); left: 50%;
-  transform: translateX(-50%) translateY(0); background: var(--heading); color: var(--bg);
-  padding: 8px 14px; border-radius: 8px; font-size: 0.7rem; white-space: normal;
-  word-break: break-all; min-width: 280px; max-width: 420px; z-index: 10;
-  pointer-events: auto; box-shadow: 0 6px 20px rgba(0,0,0,0.4); line-height: 1.6;
-  opacity: 0; visibility: hidden; transition: opacity 0.15s ease, transform 0.15s ease;
-}
-.tooltip::after {
-  content: ""; position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
-  border: 6px solid transparent; border-top-color: var(--heading);
-}
-.tooltip-path { display: block; word-break: break-all; line-height: 1.5; }
-.tooltip-hint {
-  display: block; margin-top: 6px; padding-top: 6px;
-  border-top: 1px solid rgba(255,255,255,0.15); font-style: italic; font-size: 0.65rem;
-  opacity: 0.7; cursor: pointer;
-}
-
 .toast {
   position: fixed; top: -50px; left: 50%; transform: translateX(-50%);
   background: var(--heading); color: var(--bg); padding: 10px 20px; border-radius: 8px;
@@ -109,29 +89,10 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 }
 .toast.show { top: 20px; }
 
-.portal-tooltip {
-  position: fixed; background: var(--heading, #fff); color: var(--bg, #000);
-  padding: 8px 14px; border-radius: 8px; font-size: 0.7rem; line-height: 1.5;
-  box-shadow: 0 6px 24px rgba(0,0,0,0.4); text-align: center;
-  max-width: min(420px, 80vw); word-break: break-all;
-  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
-  pointer-events: auto; z-index: 999999;
-}
-.portal-tooltip .tooltip-hint { display: block; margin-top: 5px; padding-top: 5px; border-top: 1px solid rgba(255,255,255,0.15); font-style: italic; font-size: 0.65rem; opacity: 0.8; cursor: pointer; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-
 .retry-hint { margin-top: 1.25rem; font-size: 0.75rem; color: var(--retry); line-height: 1.8; }
 .cancel-row { margin-top: 0.5rem; text-align: center; }
 .countdown { font-weight: 700; font-size: 1.5em; color: var(--countdown-color, #2ed573); margin: 0 8px; }
 .countdown-unit { font-size: 0.75rem; font-weight: 400; color: var(--retry); margin-left: 2px; margin-right: 2px; }
-.cancel-btn {
-  display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px;
-  border: 1px solid var(--card-border); border-radius: 6px; background: var(--card-bg);
-  color: var(--label); font-size: 0.6875rem; cursor: pointer;
-  transition: border-color 0.2s ease, color 0.2s ease; font-family: inherit; vertical-align: middle;
-}
-.cancel-btn:hover { border-color: var(--divider); color: var(--fg); }
-.cancel-btn--refresh { color: var(--retry); border-color: rgba(255,165,0,0.25); }
-.cancel-btn--refresh:hover { background: rgba(255,165,0,0.08); border-color: rgba(255,165,0,0.45); color: #ffa500; }
 
 .footer { margin-top: 1.5rem; font-size: 0.6875rem; color: var(--footer); }
 .footer a { color: inherit; text-decoration: underline; text-decoration-color: var(--divider); text-underline-offset: 3px; transition: color 0.2s ease, text-decoration-color 0.2s ease; }
@@ -148,32 +109,28 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .binary-name-full, .binary-time-full, .binary-hash-full { display: none !important; }
 .watch-item > .tooltip { display: none !important; }
 
-.binary-tooltip {
-  position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
-  justify-content: center; z-index: 999999; pointer-events: none;
+.vtty-backdrop {
+  position: fixed; inset: 0; z-index: 999998; background: rgba(0,0,0,0.3);
 }
-.binary-tooltip > * { pointer-events: auto; }
-.binary-tooltip-name {
-  font-weight: 600; color: var(--heading); font-size: 0.875rem; margin-bottom: 8px;
-  background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px;
-  padding: 8px 20px; box-shadow: 0 4px 24px rgba(0,0,0,0.4); backdrop-filter: blur(12px);
+.vtty-panel {
+  position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  z-index: 999999; background: #0c0c18; border: 1px solid rgba(124,138,255,0.3);
+  border-radius: 8px; padding: 16px 20px; box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+  width: min(80ch, 94vw);
 }
+.vtty-title { text-align: center; color: #7c8aff; font-weight: 600; font-size: 0.8125rem; margin-bottom: 10px; }
 .vtty-screen {
-  width: min(80ch, 94vw); height: 420px; overflow: auto; font-family: monospace;
-  font-size: 12px; line-height: 1.35; color: #a0a0c0; background: #0c0c18;
-  border: 1px solid rgba(124,138,255,0.3); border-radius: 6px; padding: 12px;
-  white-space: pre-wrap; box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+  height: 420px; overflow: auto; font-family: monospace; font-size: 12px;
+  line-height: 1.35; color: #a0a0c0; background: rgba(0,0,0,0.2);
+  border: 1px solid rgba(255,255,255,0.06); border-radius: 4px; padding: 10px;
+  white-space: pre-wrap;
 }
 .vtty-loading {
   display: flex; align-items: center; justify-content: center; height: 100%;
   color: #7c8aff; opacity: 0.6;
 }
 .vtty-screen pre { margin: 0; white-space: pre-wrap; }
-.binary-tooltip .tooltip-hint {
-  display: block; margin-top: 8px; padding: 6px 16px; border-radius: 6px;
-  font-size: 0.675rem; font-style: italic; opacity: 0.6; cursor: pointer;
-  background: var(--card-bg); border: 1px solid var(--card-border);
-}
+
 .binary-detail { color: var(--label); font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace; font-size: 0.6875rem; text-align: right; }
 .binary-time { cursor: pointer; }
 .binary-hash { color: rgba(46, 213, 115, 0.7); cursor: pointer; position: relative; }

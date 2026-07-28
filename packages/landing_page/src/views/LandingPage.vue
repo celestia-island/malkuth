@@ -16,12 +16,14 @@
       <div class="info-row" v-if="watchPaths.length">
         <span class="info-label">{{ t('watch_label', 'Watching') }}</span>
         <div class="watch-list">
-          <span class="watch-item" v-for="p in watchPaths" :key="p"
-                :data-path="p" @click="copy(p)"
-                @mouseenter="showWatchTooltip($event, p)" @mouseleave="hidePortal">
-            <span class="watch-text">{{ p }}</span>
-            <span class="tooltip"><span class="tooltip-path">{{ p }}</span><span class="tooltip-hint">{{ t('click_to_copy', 'Click to copy') }}</span></span>
-          </span>
+          <HTooltip v-for="p in watchPaths" :key="p"
+            :text="`${p}\n${t('click_to_copy', 'Click to copy')}`"
+            placement="top" :delay="200" :max-width="'420px'"
+          >
+            <span class="watch-item" @click="copy(p)">
+              <span class="watch-text">{{ p }}</span>
+            </span>
+          </HTooltip>
         </div>
       </div>
     </template>
@@ -29,42 +31,47 @@
     <div class="binaries" v-if="binaries.length">
       <div class="binaries-title">{{ t('binaries_title', 'Supervised Binaries') }}</div>
       <div class="binary-row" v-for="b in binaries" :key="b.name">
-      <span class="binary-name" :data-copy="b.name" @click="copy(b.name)"
-            @mouseenter="(e: MouseEvent) => showBinaryTooltip(e, b.name)" @mouseleave="scheduleHidePortal">
-        <span>{{ b.name }}</span>
-        <span class="vtty-icon">
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-        </span>
-        <span class="binary-name-full">{{ b.name }}<br><span class="tooltip-hint">{{ t('click_to_copy', 'Click to copy') }}</span></span>
-      </span>
+        <HTooltip :text="`${b.name}\n${t('click_to_copy', 'Click to copy')}`"
+          placement="top" :delay="200" :max-width="'420px'"
+        >
+          <span class="binary-name" @click="copy(b.name)">
+            <span>{{ b.name }}</span>
+            <span class="vtty-icon" @click.stop="showBinaryVtty($event, b.name)">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            </span>
+          </span>
+        </HTooltip>
         <span class="binary-detail">
-          <span class="binary-time" :data-copy="b.compile_time"
-                @click="copy(b.compile_time)"
-                @mouseenter="(e: MouseEvent) => showPortalTooltip(e, b.compile_time)" @mouseleave="scheduleHidePortal">
-            {{ b.compile_time }}
-            <span class="binary-time-full">{{ b.compile_time }}<br><span class="tooltip-hint">{{ t('click_to_copy', 'Click to copy') }}</span></span>
-          </span>
+          <HTooltip :text="`${b.compile_time}\n${t('click_to_copy', 'Click to copy')}`"
+            placement="top" :delay="200" :max-width="'420px'"
+          >
+            <span class="binary-time" @click="copy(b.compile_time)">{{ b.compile_time }}</span>
+          </HTooltip>
           ·
-          <span class="binary-hash" :data-copy="b.hash"
-                @click="copy(b.hash)"
-                @mouseenter="(e: MouseEvent) => showPortalTooltip(e, b.hash)" @mouseleave="scheduleHidePortal">
-            <span class="binary-hash-short">{{ b.hash_short }}</span>
-            <span class="binary-hash-full">{{ b.hash }}<br><span class="tooltip-hint">{{ t('click_to_copy', 'Click to copy') }}</span></span>
-          </span>
+          <HTooltip :text="`${b.hash}\n${t('click_to_copy', 'Click to copy')}`"
+            placement="top" :delay="200" :max-width="'420px'"
+          >
+            <span class="binary-hash" @click="copy(b.hash)">
+              <span class="binary-hash-short">{{ b.hash_short }}</span>
+            </span>
+          </HTooltip>
         </span>
       </div>
     </div>
 
-    <p class="retry-hint" id="retryHint" v-if="state === 'landing' || state === 'starting'">
+    <p class="retry-hint" v-if="state === 'landing' || state === 'starting'">
       {{ t('redirect_before', 'Redirecting in') }}
-      <span class="countdown" id="countdown" style="--countdown-color: #ffa500">{{ countdown }}</span>
-      <span class="countdown-unit" id="countdownUnit">{{ t('redirect_after', 'seconds') }}</span>
+      <span class="countdown">{{ countdown }}</span>
+      <span class="countdown-unit">{{ t('redirect_after', 'seconds') }}</span>
     </p>
     <div class="cancel-row">
-      <button class="cancel-btn" id="cancelBtn" v-if="showRefresh" @click="doRefresh"
-              :class="{ 'cancel-btn--refresh': state === 'ready' || state === 'offline' }">
+      <HButton v-if="showRefresh"
+        :variant="state === 'ready' || state === 'offline' ? 'outline' : 'ghost'"
+        size="sm"
+        @click="doRefresh"
+      >
         {{ t('refresh_label', 'Refresh Now') }}
-      </button>
+      </HButton>
     </div>
 
     <p class="footer">
@@ -73,19 +80,13 @@
     <p class="version-line">v{{ version }}</p>
 
     <Teleport to="body">
-      <div
-        class="binary-tooltip"
-        v-if="vttyVisible"
-        @mouseenter="onVttyEnter"
-        @mouseleave="onVttyLeave"
-        @click="copy(vttyName)"
-      >
-        <div class="binary-tooltip-name">{{ vttyName }}</div>
+      <div class="vtty-backdrop" v-if="vttyVisible" @click="vttyVisible = false" />
+      <div class="vtty-panel" v-if="vttyVisible" @click.stop>
+        <div class="vtty-title">{{ vttyName }}</div>
         <div class="vtty-screen">
           <div v-if="!vttyLog.length" class="vtty-loading">{{ t('vtty_loading', 'Loading...') }}</div>
           <pre v-else>{{ vttyLog.join('\n') }}</pre>
         </div>
-        <span class="tooltip-hint">{{ t('click_to_copy', 'Click to copy') }}</span>
       </div>
     </Teleport>
   </div>
@@ -93,7 +94,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useI18n } from '@celestia-island/hikari'
+import { useI18n, HTooltip, HButton } from '@celestia-island/hikari'
 
 const { t } = useI18n()
 
@@ -116,8 +117,6 @@ const cardRef = ref<HTMLElement>()
 
 let countdownTimer: any = null
 let pollTimer: any = null
-let portalEl: HTMLElement | null = null
-let portalHideTimer: any = null
 
 const statusClass = computed(() => {
   if (state.value === 'ready') return 'status--ready'
@@ -147,6 +146,9 @@ function probe() {
       } else {
         state.value = d.state
       }
+      if (d.vttys?.length) {
+        vttyLog.value = d.vttys[0].log || []
+      }
     }).catch(() => {})
 }
 
@@ -164,7 +166,6 @@ function startCountdown() {
   }, 1000)
 }
 
-// Init data from server-injected script
 function loadInit() {
   const init = (window as any).__MALKUTH_INIT__
   if (!init) return
@@ -203,7 +204,6 @@ function loadInit() {
 
 onMounted(() => {
   loadInit()
-  // Accordion animation cleanup
   const card = cardRef.value
   if (card) {
     card.addEventListener('animationend', () => {
@@ -218,66 +218,25 @@ onUnmounted(() => {
   clearInterval(pollTimer)
 })
 
-// Portal tooltip helpers (same as original template)
-function getPortal() {
-  if (!portalEl) { portalEl = document.createElement('div'); document.body.appendChild(portalEl) }
-  return portalEl
-}
-function scheduleHidePortal() {
-  portalHideTimer = setTimeout(hidePortal, 150)
-}
-function showPortalTooltip(ev: MouseEvent, text: string) {
-  hidePortal()
-  clearTimeout(portalHideTimer)
-  const p = getPortal()
-  const tip = document.createElement('div')
-  tip.className = 'portal-tooltip'
-  tip.innerHTML = text + '<br><span class="tooltip-hint" style="cursor:pointer" onclick="navigator.clipboard?.writeText(\'' + text.replace(/'/g, '\\\'') + '\')">' + t('click_to_copy', 'Click to copy') + '</span>'
-  p.appendChild(tip)
-  const rect = (ev.target as HTMLElement).getBoundingClientRect()
-  const tw = tip.offsetWidth
-  let left = rect.left + rect.width / 2 - tw / 2
-  if (left < 8) left = 8
-  if (left + tw > window.innerWidth - 8) left = window.innerWidth - tw - 8
-  tip.style.left = Math.max(8, left) + 'px'
-  let top = rect.top - tip.offsetHeight - 8
-  if (top < 8) {
-    top = rect.bottom + 8
-  }
-  tip.style.top = top + 'px'
-  tip.addEventListener('mouseenter', () => clearTimeout(portalHideTimer))
-  tip.addEventListener('mouseleave', () => { portalHideTimer = setTimeout(hidePortal, 150) })
-}
-function hidePortal() {
-  if (portalEl) { portalEl.innerHTML = '' }
-}
-function showBinaryTooltip(_ev: MouseEvent, name: string) {
-  vttyVisible.value = true
-  vttyName.value = name
-  vttyLog.value = []
-  probe()
-}
-function hideBinaryTooltip() {
-  vttyVisible.value = false
-}
-function onVttyEnter() { clearTimeout(portalHideTimer) }
-function onVttyLeave() { portalHideTimer = setTimeout(hideBinaryTooltip, 150) }
-function showWatchTooltip(ev: MouseEvent, path: string) {
-  const el = ev.currentTarget as HTMLElement
-  const tt = el.querySelector('.tooltip') as HTMLElement
-  if (tt) { tt.style.opacity = '1'; tt.style.visibility = 'visible'; tt.style.transform = 'translateX(-50%) translateY(-4px)' }
-}
 function copy(text: string) {
   navigator.clipboard?.writeText(text).catch(() => {})
   toast(text)
 }
-function toast(msg: string) {
+
+function toast(_msg: string) {
   let el = document.getElementById('globalToast')
   if (!el) { el = document.createElement('div'); el.id = 'globalToast'; el.className = 'toast'; document.body.appendChild(el) }
   el.textContent = t('copied_msg', 'Copied to clipboard')
   el.classList.add('show')
   clearTimeout((el as any)._timer);
   (el as any)._timer = setTimeout(() => el!.classList.remove('show'), 2000)
+}
+
+function showBinaryVtty(ev: MouseEvent, name: string) {
+  vttyName.value = name
+  vttyLog.value = []
+  vttyVisible.value = true
+  probe()
 }
 
 function doRefresh() {
