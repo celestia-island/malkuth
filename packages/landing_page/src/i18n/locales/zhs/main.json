@@ -1,0 +1,19 @@
+{
+  "heading": "Malkuth",
+  "tagline": "此端口由 Malkuth 进程管理器接管",
+  "status_landing": "即将跳转",
+  "status_building": "服务正在重新构建中，请稍候",
+  "status_starting": "服务正在启动中",
+  "status_ready": "所有服务运行正常。",
+  "status_offline": "服务已离线",
+  "proxy_label": "代理",
+  "watch_label": "监听",
+  "binaries_title": "受监管二进制",
+  "redirect_before": "将在",
+  "redirect_after": "秒后跳转",
+  "cancel_label": "取消跳转",
+  "refresh_label": "立即刷新",
+  "vtty_loading": "加载中...",
+  "vtty_no_output": "暂无输出",
+  "click_to_copy": "点击以复制"
+}
