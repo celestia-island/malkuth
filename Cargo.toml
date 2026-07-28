@@ -42,7 +42,7 @@ leader-follower = ["lease"]
 schema = ["dep:schemars"]
 
 # ── CLI binary ─────────────────────────────────────────────────
-cli = ["dep:clap", "dep:notify", "dep:tracing-subscriber", "dep:chrono", "dep:toml", "dep:axum", "dep:tera", "dep:sha2", "dep:reqwest", "dep:regex"]
+cli = ["dep:clap", "dep:notify", "dep:tracing-subscriber", "dep:chrono", "dep:toml", "dep:axum", "dep:tera", "dep:sha2", "dep:reqwest"]
 
 # ── MCP server ─────────────────────────────────────────────────
 # Standalone MCP (Model Context Protocol) server exposing supervision + probe

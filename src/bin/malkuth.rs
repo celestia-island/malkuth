@@ -391,13 +391,6 @@ async fn main() {
 
                     use tokio::io::{AsyncBufReadExt, BufReader};
                     use tokio::process::Command as TokioCommand;
-                    static PROGRESS_RE: std::sync::LazyLock<regex::Regex> =
-                        std::sync::LazyLock::new(|| {
-                            regex::Regex::new(
-                                r"((\d+)%|\[(\d+)/(\d+)\]|\((\d+)/(\d+)\)|(\d+)\s*/\s*(\d+))",
-                            )
-                            .unwrap()
-                        });
 
                     let progress = bp_watcher.clone();
 
@@ -417,10 +410,10 @@ async fn main() {
                                         line = lines.next_line() => {
                                             match line {
                                                 Ok(Some(l)) => {
-                                                    if let Some(caps) = PROGRESS_RE.captures(&l) {
-                                                        let p = caps.get(0).map(|m| m.as_str().to_string());
+                                                    let t = l.trim().to_string();
+                                                    if !t.is_empty() {
                                                         if let Ok(mut g) = progress.lock() {
-                                                            *g = p;
+                                                            *g = Some(t);
                                                         }
                                                     }
                                                 }
