@@ -40,14 +40,14 @@
         <span class="binary-detail">
           <span class="binary-time" :data-copy="b.compile_time"
                 @click="copy(b.compile_time)"
-                @mouseenter="(e: MouseEvent) => showPortalTooltip(e, b.compile_time)" @mouseleave="hidePortal">
+                @mouseenter="(e: MouseEvent) => showPortalTooltip(e, b.compile_time)" @mouseleave="scheduleHidePortal">
             {{ b.compile_time }}
             <span class="binary-time-full">{{ b.compile_time }}<br><span class="tooltip-hint">{{ t('click_to_copy', 'Click to copy') }}</span></span>
           </span>
           ·
           <span class="binary-hash" :data-copy="b.hash"
                 @click="copy(b.hash)"
-                @mouseenter="(e: MouseEvent) => showPortalTooltip(e, b.hash)" @mouseleave="hidePortal">
+                @mouseenter="(e: MouseEvent) => showPortalTooltip(e, b.hash)" @mouseleave="scheduleHidePortal">
             <span class="binary-hash-short">{{ b.hash_short }}</span>
             <span class="binary-hash-full">{{ b.hash }}<br><span class="tooltip-hint">{{ t('click_to_copy', 'Click to copy') }}</span></span>
           </span>
@@ -201,8 +201,12 @@ function getPortal() {
   if (!portalEl) { portalEl = document.createElement('div'); document.body.appendChild(portalEl) }
   return portalEl
 }
+function scheduleHidePortal() {
+  portalHideTimer = setTimeout(hidePortal, 150)
+}
 function showPortalTooltip(ev: MouseEvent, text: string) {
   hidePortal()
+  clearTimeout(portalHideTimer)
   const p = getPortal()
   const tip = document.createElement('div')
   tip.className = 'portal-tooltip'
@@ -214,7 +218,11 @@ function showPortalTooltip(ev: MouseEvent, text: string) {
   if (left < 8) left = 8
   if (left + tw > window.innerWidth - 8) left = window.innerWidth - tw - 8
   tip.style.left = Math.max(8, left) + 'px'
-  tip.style.top = (rect.top + window.scrollY - tip.offsetHeight - 8) + 'px'
+  let top = rect.top - tip.offsetHeight - 8
+  if (top < 8) {
+    top = rect.bottom + 8
+  }
+  tip.style.top = top + 'px'
   tip.addEventListener('mouseenter', () => clearTimeout(portalHideTimer))
   tip.addEventListener('mouseleave', () => { portalHideTimer = setTimeout(hidePortal, 150) })
 }
