@@ -165,10 +165,7 @@ fn kill_process(pid: u32) -> std::io::Result<()> {
         .args(["/F", "/PID", &pid.to_string()])
         .status()?;
     if !s.success() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "taskkill failed",
-        ));
+        return Err(std::io::Error::other("taskkill failed"));
     }
     for _ in 0..20 {
         if !is_process_alive(pid) {
