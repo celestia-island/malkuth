@@ -367,6 +367,16 @@
     vertical-align: middle;
   }
   .vtty-icon:hover { opacity: 0.9; }
+  .vtty-screen { white-space: pre-wrap !important; }
+  @keyframes vttyDots {
+    0%, 20% { opacity: 0; }
+    50% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+  .vtty-loading {
+    display: flex; align-items: center; gap: 1px;
+    animation: vttyDots 1.5s infinite;
+  }
   .vtty-tooltip {
     position: fixed;
     z-index: 999999;
@@ -631,7 +641,10 @@
     el.addEventListener("mouseenter", function(ev) {
       if (!name) return;
       var content = "<div style='text-align:center;color:var(--accent);font-weight:600;margin-bottom:6px'>" + name + "</div>";
-      content += "<div class='vtty-screen' id='vtty-" + name + "' style='width:640px;height:320px;background:#0c0c18;border:1px solid var(--accent);border-radius:4px;padding:6px;font-family:monospace;font-size:11px;line-height:1.25;color:#a0a0c0;overflow:hidden;white-space:pre-wrap;margin-bottom:4px'>No output yet</div>";
+      content += "<div class='vtty-screen' id='vtty-" + name + "' style='width:720px;height:384px;background:#0c0c18;border:1px solid var(--accent);border-radius:4px;padding:8px;font-family:monospace;font-size:11px;line-height:1.3;color:#a0a0c0;overflow:hidden;white-space:pre-wrap;margin-bottom:4px;display:flex;align-items:center;justify-content:center'>";
+      content += "<span class='vtty-loading' style='color:var(--accent);opacity:0.6;font-size:13px'>Loading";
+      content += "<span class='vtty-dots'>.</span>";
+      content += "</span></div>";
       content += "<div class='tooltip-hint' style='text-align:center'>Click to copy</div>";
       showPortalTooltip(el, content);
       // Start polling
@@ -648,6 +661,8 @@
               if (v && v.log) lines = v.log;
             }
             if (lines.length > 0) {
+              screen.style.display = "block";
+              screen.style.textAlign = "left";
               screen.textContent = lines.join("\n");
             }
           })
