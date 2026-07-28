@@ -330,6 +330,51 @@ fn serve_landing(lang: &str, state: &InfoState, nonce: u8) -> Response {
     let next = nonce + 1;
     let offline = nonce >= 3;
 
+    // Probe backend for initial state
+    let initial_backend_up = state.serve_backend.as_ref().map_or(false, |url| {
+        let hp = url
+            .trim_start_matches("http://")
+            .trim_start_matches("https://");
+        let addr: std::net::SocketAddr = match hp.parse().ok() {
+            Some(a) => a,
+            None => return false,
+        };
+        let mut s = match std::net::TcpStream::connect_timeout(
+            &addr,
+            std::time::Duration::from_millis(500),
+        ) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        use std::io::{Read, Write};
+        let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+        let _ = s.write_all(format!("GET / HTTP/1.0\r\nHost: {}\r\n\r\n", hp).as_bytes());
+        let mut buf = [0u8; 64];
+        let n = s.read(&mut buf).unwrap_or(0);
+        std::str::from_utf8(&buf[..n])
+            .unwrap_or("")
+            .contains(" 200 ")
+            || std::str::from_utf8(&buf[..n]).unwrap_or("").contains(" 3")
+    });
+    let init_state: &str = if offline {
+        "offline"
+    } else if initial_backend_up {
+        "ready"
+    } else {
+        "building"
+    };
+    let init_msg = match init_state {
+        "ready" => i18n
+            .get("status_ready")
+            .map_or("All services running.", |v| v.as_str()),
+        "building" => i18n
+            .get("status_building")
+            .map_or("Building...", |v| v.as_str()),
+        _ => i18n
+            .get("status_starting")
+            .map_or("Service temporarily unavailable", |v| v.as_str()),
+    };
+
     let mut ctx = tera::Context::new();
     ctx.insert("lang", lang);
     ctx.insert("dir", if lang == "ar" { "rtl" } else { "ltr" });
@@ -339,23 +384,15 @@ fn serve_landing(lang: &str, state: &InfoState, nonce: u8) -> Response {
         i18n.get("heading").map_or("Malkuth", |v| v.as_str()),
     );
     ctx.insert("tagline", i18n.get("tagline").map_or("", |v| v.as_str()));
-    ctx.insert("ready", &false);
+    ctx.insert("ready", &initial_backend_up);
     ctx.insert("landing", &!offline);
     ctx.insert(
         "task",
         i18n.get("task_landing").map_or("Landing", |v| v.as_str()),
     );
     ctx.insert("version", &state.version);
-    ctx.insert(
-        "status_text",
-        if offline {
-            i18n.get("status_building")
-                .map_or("Service temporarily unavailable", |v| v.as_str())
-        } else {
-            i18n.get("status_landing")
-                .map_or("Redirecting shortly", |v| v.as_str())
-        },
-    );
+    ctx.insert("status_text", init_msg);
+    ctx.insert("initial_state", init_state);
     ctx.insert("task_label", "");
     ctx.insert(
         "redirect_before",
@@ -504,6 +541,7 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
     context.insert("ready", &ready);
     context.insert("landing", &landing);
     context.insert("landing_nonce", &0u8);
+    context.insert("initial_state", "");
     context.insert("task", task);
     context.insert("version", &state.version);
 
