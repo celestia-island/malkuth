@@ -102,6 +102,17 @@ pub struct Args {
     #[arg(long = "info-landing")]
     pub info_landing: bool,
 
+    /// Enable HTTP reverse-proxy mode on the info port. When a backend pod
+    /// is healthy, requests are forwarded to the given URL; otherwise the
+    /// info/landing page is shown. Example: `--serve http://127.0.0.1:8425`.
+    #[arg(long = "serve", value_name = "URL")]
+    pub serve: Option<String>,
+
+    /// Restrict `--serve` forwarding to requests whose Host header matches
+    /// one of the given values (repeatable). If empty, all hosts are served.
+    #[arg(long = "serve-host", value_name = "HOST")]
+    pub serve_host: Vec<String>,
+
     /// The command to run (everything after `--`), e.g. `-- cargo run`.
     #[arg(last = true, allow_hyphen_values = true)]
     pub command: Vec<String>,

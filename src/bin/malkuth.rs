@@ -450,6 +450,8 @@ async fn main() {
         } else {
             vec![]
         };
+        let serve_backend = args.serve.clone();
+        let serve_hosts = args.serve_host.clone();
         tokio::spawn(async move {
             let router = malkuth::info_page::info_router(
                 version,
@@ -457,6 +459,8 @@ async fn main() {
                 if show_details { watch } else { vec![] },
                 if show_details { proxy } else { None },
                 binaries,
+                serve_backend,
+                serve_hosts,
             );
             let listener = match tokio::net::TcpListener::bind(addr).await {
                 Ok(l) => l,
