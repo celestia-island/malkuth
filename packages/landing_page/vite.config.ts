@@ -10,6 +10,7 @@ export default defineConfig({
     alias: {
       '@': resolve(__dirname, 'src'),
       '@celestia-island/hikari': resolve(__dirname, '../../../hikari/packages/vue'),
+      '@celestia-island/plana-ui': resolve(__dirname, '../../../plana/packages/ui/src'),
     },
   },
   build: {

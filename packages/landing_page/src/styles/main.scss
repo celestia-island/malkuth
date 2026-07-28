@@ -11,27 +11,6 @@
   --retry: rgba(212, 212, 232, 0.4);
   --footer: rgba(212, 212, 232, 0.25);
   --footer-hover: rgba(212, 212, 232, 0.55);
-  /* hikari theme tokens */
-  --color-primary: 124 138 255;
-  --color-surface: 30 30 50;
-  --color-text: 212 212 232;
-  --color-border: 255 255 255;
-  --color-on-solid: 255 255 255;
-  --color-error: 255 71 87;
-  --c-primary-strong: rgba(124, 138, 255, 0.4);
-  --c-primary-intense: rgba(124, 138, 255, 0.2);
-  --c-primary-light: rgba(124, 138, 255, 0.08);
-  --space-4: 0.25rem; --space-6: 0.375rem; --space-8: 0.5rem;
-  --space-10: 0.625rem; --space-12: 0.75rem; --space-16: 1rem;
-  --space-24: 1.5rem;
-  --radius-sm: 6px;
-  --text-xs: 0.6875rem; --text-base: 0.8125rem; --text-md: 0.875rem;
-  --duration-normal: 0.2s; --duration-short: 0.1s;
-  --ease-standard: ease;
-  --blur-sm: 8px;
-  --z-tooltip: 99999;
-  --shadow-button: 0 2px 8px rgba(0,0,0,0.3);
-  --shadow-button-danger: 0 2px 8px rgba(255,71,87,0.3);
 }
 @media (prefers-color-scheme: light) {
   :root {
@@ -47,14 +26,6 @@
     --retry: rgba(30, 30, 50, 0.35);
     --footer: rgba(30, 30, 50, 0.2);
     --footer-hover: rgba(30, 30, 50, 0.5);
-    --color-surface: 255 255 255;
-    --color-text: 51 51 64;
-    --color-border: 0 0 0;
-    --color-on-solid: 255 255 255;
-    --c-primary-strong: rgba(124, 138, 255, 0.4);
-    --c-primary-intense: rgba(124, 138, 255, 0.15);
-    --c-primary-light: rgba(124, 138, 255, 0.06);
-    --shadow-button: 0 2px 8px rgba(0,0,0,0.1);
   }
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }

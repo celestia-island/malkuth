@@ -65,7 +65,16 @@
       <span class="countdown-unit">{{ t('redirect_after', 'seconds') }}</span>
     </p>
     <div class="cancel-row">
-      <HButton v-if="showRefresh"
+      <HButton
+        v-if="state === 'ready' || state === 'landing' || state === 'starting'"
+        variant="ghost"
+        size="sm"
+        @click="cancelRedirect"
+      >
+        {{ t('cancel_label', 'Cancel') }}
+      </HButton>
+      <HButton
+        v-if="showRefresh"
         :variant="state === 'ready' || state === 'offline' ? 'outline' : 'ghost'"
         size="sm"
         @click="doRefresh"
@@ -237,6 +246,14 @@ function showBinaryVtty(ev: MouseEvent, name: string) {
   vttyLog.value = []
   vttyVisible.value = true
   probe()
+}
+
+function cancelRedirect() {
+  clearInterval(countdownTimer)
+  clearInterval(pollTimer)
+  showRefresh.value = true
+  state.value = 'building'
+  document.cookie = '__malkuth_nonce=1; max-age=1800; path=/'
 }
 
 function doRefresh() {
