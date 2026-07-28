@@ -365,8 +365,8 @@ fn serve_landing(lang: &str, state: &InfoState, nonce: u8) -> Response {
     };
     let init_msg = match init_state {
         "ready" => i18n
-            .get("status_ready")
-            .map_or("All services running.", |v| v.as_str()),
+            .get("status_landing")
+            .map_or("Redirecting shortly", |v| v.as_str()),
         "building" => i18n
             .get("status_building")
             .map_or("Building...", |v| v.as_str()),

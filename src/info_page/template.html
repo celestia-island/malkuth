@@ -426,7 +426,7 @@
     {% endfor %}
   </div>
   {% endif %}
-  <p class="retry-hint" id="retryHint">{% if landing %}{{ redirect_before }}{% else %}{{ retry_before }}{% endif %}<span class="countdown" id="countdown" style="--countdown-color: {% if ready %}#2ed573{% else %}#ffa500{% endif %}">{% if landing %}3{% else %}10{% endif %}</span><span class="countdown-unit" id="countdownUnit">{% if landing %}{{ redirect_after }}{% else %} {{ retry_unit }}{{ retry_after }}{% endif %}</span></p>
+  <p class="retry-hint" id="retryHint">{% if landing %}{{ redirect_before }}{% else %}{{ retry_before }}{% endif %}<span class="countdown" id="countdown" style="--countdown-color: #ffa500">{% if landing %}3{% else %}10{% endif %}</span><span class="countdown-unit" id="countdownUnit">{% if landing %}{{ redirect_after }}{% else %} {{ retry_unit }}{{ retry_after }}{% endif %}</span></p>
   <div class="cancel-row"><button class="cancel-btn" id="cancelBtn">{{ cancel_label }}</button></div>
   <p class="footer">{{ footer_prefix }}<a href="https://github.com/celestia-island/malkuth" target="_blank" rel="noopener">Malkuth</a>{{ footer_suffix }}</p>
   {% if install_method %}
@@ -505,10 +505,10 @@
   }
 
   if (initState === "ready") {
-    if (isLanding) { startCountdown(); }
+    startCountdown();
     timer = setInterval(poll, probeTime);
-  } else if (initState === "building" || initState === "landing") {
-    if (isLanding) { startCountdown(); }
+  } else if (initState === "building") {
+    poll();
     timer = setInterval(poll, probeTime);
   } else if (initState === "offline") {
     if (countdownSpan) { countdownSpan.textContent = "\u2014"; }
