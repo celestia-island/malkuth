@@ -664,7 +664,7 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
 }
 
 const SUPPORTED: &[&str] = &[
-    "en", "zhs", "zht", "ja", "ko", "fr", "de", "es", "pt", "ru", "ar",
+    "en", "zh-Hans", "zh-Hant", "ja", "ko", "fr", "de", "es", "pt", "ru", "ar",
 ];
 
 fn detect_language(headers: &header::HeaderMap) -> String {
@@ -707,8 +707,8 @@ fn match_language(tag: &str) -> String {
         return tag_lower;
     }
     match tag_lower.as_str() {
-        "zh" | "zh-cn" | "zh-hans" | "zh-sg" => "zhs".into(),
-        "zh-tw" | "zh-hk" | "zh-mo" | "zh-hant" => "zht".into(),
+        "zh" | "zh-cn" | "zh-hans" | "zh-sg" => "zh-Hans".into(),
+        "zh-tw" | "zh-hk" | "zh-mo" | "zh-hant" => "zh-Hant".into(),
         other => {
             let base = other.split_once('-').map_or(other, |(b, _)| b);
             if SUPPORTED.contains(&base) {
@@ -742,14 +742,14 @@ mod tests {
     fn test_detect_zh() {
         let mut headers = header::HeaderMap::new();
         headers.insert("accept-language", "zh-CN,zh;q=0.9".parse().unwrap());
-        assert_eq!(detect_language(&headers), "zhs");
+        assert_eq!(detect_language(&headers), "zh-Hans");
     }
 
     #[test]
     fn test_detect_zht() {
         let mut headers = header::HeaderMap::new();
         headers.insert("accept-language", "zh-TW,zh;q=0.9".parse().unwrap());
-        assert_eq!(detect_language(&headers), "zht");
+        assert_eq!(detect_language(&headers), "zh-Hant");
     }
 
     #[test]

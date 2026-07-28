@@ -390,8 +390,8 @@ Feature selection per project (`malkuth`):
   agreed yes (unify into one worker abstraction across all three
   projects).
 ---
-*Translation: `docs/zhs/design/supervision-and-rolling-update.md`
-is the Simplified Chinese counterpart. Other languages (zht/ja/ko/fr/es/ru/ar)
+*Translation: `docs/zh-Hans/design/supervision-and-rolling-update.md`
+is the Simplified Chinese counterpart. Other languages (zh-Hant/ja/ko/fr/es/ru/ar)
 have been translated as well (see `docs/<lang>/design/`).*
 
 ---

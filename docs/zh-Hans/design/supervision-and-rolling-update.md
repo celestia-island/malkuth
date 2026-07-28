@@ -311,4 +311,4 @@ worker 是 supervisor 的**子进程**(`kill_on_drop`)。主挂 → worker 成�
   worker 抽象)。
 ---
 *对应英文权威源:`docs/en/design/platform/supervision-and-rolling-update.md`。
-其他语言(zht/ja/ko/fr/es/ru)的翻译待 i18n。*
+其他语言(zh-Hant/ja/ko/fr/es/ru)的翻译待 i18n。*
