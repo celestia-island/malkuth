@@ -356,6 +356,33 @@
     cursor: pointer;
     position: relative;
   }
+  .vtty-icon {
+    display: inline-block;
+    margin-left: 6px;
+    color: var(--accent);
+    font-size: 0.8rem;
+    cursor: pointer;
+    opacity: 0.6;
+    transition: opacity 0.2s;
+  }
+  .vtty-icon:hover { opacity: 0.9; }
+  .vtty-tooltip {
+    position: fixed;
+    z-index: 999999;
+    background: #0c0c18;
+    border: 1px solid #7c8aff;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: monospace;
+    font-size: 12px;
+    line-height: 1.3;
+    color: #a0a0c0;
+    max-width: 640px;
+    max-height: 400px;
+    overflow: auto;
+    white-space: pre;
+    box-shadow: 0 0 16px rgba(124,138,255,0.2);
+  }
   .binary-name-full,
   .binary-time-full,
   .binary-hash-full {
@@ -420,7 +447,7 @@
     <div class="binaries-title">{{ binaries_title }}</div>
     {% for b in binaries %}
     <div class="binary-row">
-      <span class="binary-name" data-copy="{{ b.name }}"><span>{{ b.name }}</span><span class="binary-name-full">{{ b.name }}<br><span class="tooltip-hint" data-copy-hint="{{ copy_hint }}"></span></span></span>
+      <span class="binary-name" data-copy="{{ b.name }}"><span>{{ b.name }}</span><span class="vtty-icon" data-vtty-name="{{ b.name }}">▸</span><span class="binary-name-full">{{ b.name }}<br><span class="tooltip-hint" data-copy-hint="{{ copy_hint }}"></span></span></span>
       <span class="binary-detail"><span class="binary-time" data-copy="{{ b.compile_time }}">{{ b.compile_time }}<span class="binary-time-full">{{ b.compile_time }}<br><span class="tooltip-hint" data-copy-hint="{{ copy_hint }}"></span></span></span> · <span class="binary-hash" data-copy="{{ b.hash }}"><span class="binary-hash-short">{{ b.hash_short }}</span><span class="binary-hash-full">{{ b.hash }}<br><span class="tooltip-hint" data-copy-hint="{{ copy_hint }}"></span></span></span></span>
     </div>
     {% endfor %}
@@ -589,6 +616,44 @@
     el.addEventListener("mouseenter", function(ev) {
       showPortalTooltip(el, tt.querySelector(".tooltip-path").outerHTML + "<br>" + tt.querySelector(".tooltip-hint").outerHTML);
       ev.stopPropagation();
+    });
+  });
+
+  // Attach VTTY tooltips to binary-name vtty-icon
+  document.querySelectorAll(".vtty-icon").forEach(function(el) {
+    el.addEventListener("click", function(ev) {
+      ev.stopPropagation();
+      var tip = document.querySelector(".portal-tooltip") || el.querySelector(".portal-tooltip");
+      if (tip) { tip.remove(); return; }
+      var content = document.createElement("div");
+      content.className = "vtty-tooltip";
+      content.innerHTML = "Loading VTTY...";
+      content.setAttribute("data-vtty-name", el.getAttribute("data-vtty-name"));
+      el.parentElement.appendChild(content);
+      // Position near the icon
+      var rect = el.getBoundingClientRect();
+      content.style.left = Math.max(8, rect.left) + "px";
+      content.style.top = (rect.bottom + 4) + "px";
+      content.style.width = "640px";
+      // Poll for build log
+      var name = el.getAttribute("data-vtty-name");
+      (function update() {
+        if (!content.parentElement) return;
+        fetch("/", { headers: { "X-Malkuth-Probe": "1" } })
+          .then(function(r) { return r.json(); })
+          .then(function(d) {
+            if (d.vttys) {
+              var v = d.vttys.find(function(x) { return x.name === name; });
+              if (v && v.log) {
+                content.textContent = v.log.join("\n") || "No output yet";
+              }
+            } else if (d.progress) {
+              content.textContent = d.progress;
+            }
+          })
+          .catch(function() {});
+        setTimeout(update, 2000);
+      })();
     });
   });
 

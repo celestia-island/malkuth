@@ -107,6 +107,7 @@ pub fn info_router(
     serve_backend: Option<String>,
     serve_hosts: Vec<String>,
     build_progress: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    build_log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 ) -> Router<()> {
     let state = InfoState {
         version: version.into(),
@@ -117,6 +118,7 @@ pub fn info_router(
         serve_backend,
         serve_hosts,
         build_progress,
+        build_log,
     };
     Router::new()
         .route("/", get(info_page))
@@ -134,6 +136,7 @@ struct InfoState {
     serve_backend: Option<String>,
     serve_hosts: Vec<String>,
     build_progress: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    build_log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
