@@ -417,4 +417,4 @@ Sélection des fonctionnalités par projet (`malkuth`) :
 ---
 *Source canonique en anglais :
 `docs/en/design/platform/supervision-and-rolling-update.md`. Les autres
-langues (zht/ja/ko/es/ru) sont en attente d'i18n.*
+langues (zh-Hant/ja/ko/es/ru) sont en attente d'i18n.*

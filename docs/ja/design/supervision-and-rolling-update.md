@@ -374,4 +374,4 @@ Redis Sentinel —— これらのマシン内、プロセスレベルの簡略�
   抽象へ統一)。
 ---
 *翻訳: 英語の権威ある原文は `docs/en/design/platform/supervision-and-rolling-update.md`
-です。他の言語 (zhs/zht/ko/fr/es/ru) は i18n 保留中です。*
+です。他の言語 (zh-Hans/zh-Hant/ko/fr/es/ru) は i18n 保留中です。*
