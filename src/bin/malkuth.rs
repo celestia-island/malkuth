@@ -23,7 +23,7 @@ mod watcher;
 #[cfg(feature = "ws")]
 mod ws_proxy;
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, sync::Mutex, time::Duration};
 use tokio::signal;
 
 use clap::Parser;
@@ -372,6 +372,10 @@ async fn main() {
         }
     }
 
+    let build_progress: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let build_log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let bl_watcher = build_log.clone();
+    let bp_watcher = build_progress.clone();
     if !args.watch.is_empty() {
         let mut rx = watcher::spawn(args.watch.clone(), args.debounce);
         let build_cmd = args.build.clone();
@@ -386,29 +390,76 @@ async fn main() {
                 if let Some(ref cmd) = build_cmd {
                     info!(cmd, "running build command");
                     let before = snapshot_mtimes(&watch_paths);
-                    let status = tokio::process::Command::new("sh")
+
+                    use tokio::io::{AsyncBufReadExt, BufReader};
+                    use tokio::process::Command as TokioCommand;
+
+                    let progress = bp_watcher.clone();
+                    let log_lines = bl_watcher.clone();
+
+                    let child = TokioCommand::new("sh")
                         .arg("-c")
                         .arg(cmd)
-                        .stdout(Stdio::inherit())
+                        .stdout(Stdio::piped())
                         .stderr(Stdio::inherit())
-                        .status()
-                        .await;
-                    match status {
-                        Ok(s) if s.success() => {
-                            let after = snapshot_mtimes(&watch_paths);
-                            if mtimes_changed(&before, &after) {
-                                info!(cmd, "build produced changes, proceeding with restart");
-                            } else {
-                                info!(cmd, "build produced no changes, skipping restart");
-                                continue;
+                        .spawn();
+
+                    match child {
+                        Ok(mut child) => {
+                            if let Some(stdout) = child.stdout.take() {
+                                let mut lines = BufReader::new(stdout).lines();
+                                loop {
+                                    tokio::select! {
+                                        line = lines.next_line() => {
+                                            match line {
+                                                Ok(Some(l)) => {
+                                                    let t = l.trim().to_string();
+                                                    if !t.is_empty() {
+                                                        if let Ok(mut g) = log_lines.lock() {
+                                                            g.push(t.clone());
+                                                            if g.len() > 50 { g.remove(0); }
+                                                        }
+                                                        if let Ok(mut g) = progress.lock() {
+                                                            *g = Some(t);
+                                                        }
+                                                    }
+                                                }
+                                                _ => break,
+                                            }
+                                        }
+                                        _ = tokio::signal::ctrl_c() => { break; }
+                                    }
+                                }
+                            }
+                            let status = child.wait().await;
+                            if let Ok(mut g) = progress.lock() {
+                                *g = None;
+                            }
+                            match status {
+                                Ok(s) if s.success() => {
+                                    let after = snapshot_mtimes(&watch_paths);
+                                    if mtimes_changed(&before, &after) {
+                                        info!(
+                                            cmd,
+                                            "build produced changes, proceeding with restart"
+                                        );
+                                    } else {
+                                        info!(cmd, "build produced no changes, skipping restart");
+                                        continue;
+                                    }
+                                }
+                                Ok(s) => {
+                                    warn!(cmd, code = %s, "build failed; skipping restart");
+                                    continue;
+                                }
+                                Err(e) => {
+                                    warn!(cmd, error = %e, "build command error; skipping restart");
+                                    continue;
+                                }
                             }
                         }
-                        Ok(s) => {
-                            warn!(cmd, code = %s, "build failed; skipping restart");
-                            continue;
-                        }
                         Err(e) => {
-                            warn!(cmd, error = %e, "build command error; skipping restart");
+                            warn!(cmd, error = %e, "build spawn failed; skipping restart");
                             continue;
                         }
                     }
@@ -452,6 +503,8 @@ async fn main() {
         };
         let serve_backend = args.serve.clone();
         let serve_hosts = args.serve_host.clone();
+        let bp2 = Arc::clone(&build_progress);
+        let bl2 = Arc::clone(&build_log);
         tokio::spawn(async move {
             let router = malkuth::info_page::info_router(
                 version,
@@ -461,6 +514,8 @@ async fn main() {
                 binaries,
                 serve_backend,
                 serve_hosts,
+                bp2,
+                bl2,
             );
             let listener = match tokio::net::TcpListener::bind(addr).await {
                 Ok(l) => l,
