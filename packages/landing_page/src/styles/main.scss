@@ -143,26 +143,9 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .binary-row { display: grid; grid-template-columns: minmax(70px, auto) 1fr; gap: 8px 12px; padding: 6px 0; border-bottom: 1px solid var(--divider); font-size: 0.75rem; align-items: baseline; }
 .binary-row:last-child { border-bottom: none; }
 .binary-name { font-weight: 600; color: var(--value); text-align: left; cursor: pointer; position: relative; }
-.vtty-icon { display: inline-flex; align-items: center; margin-left: 6px; color: inherit; cursor: pointer; opacity: 0.6; transition: opacity 0.2s; vertical-align: middle; }
-.vtty-icon:hover { opacity: 0.9; }
 .binary-name-full, .binary-time-full, .binary-hash-full { display: none !important; }
 .watch-item > .tooltip { display: none !important; }
 .binary-detail { color: var(--label); font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace; font-size: 0.6875rem; text-align: right; }
 .binary-time { cursor: pointer; }
 .binary-hash { color: rgba(46, 213, 115, 0.7); cursor: pointer; position: relative; }
 .binary-hash-short { display: inline; }
-
-.vtty-tooltip {
-  position: fixed; z-index: 999999; background: #0c0c18; border: 1px solid #7c8aff;
-  border-radius: 6px; padding: 12px 16px; max-width: min(760px, 94vw); min-width: 320px;
-  box-shadow: 0 4px 24px rgba(0,0,0,0.5);
-}
-.vtty-title { text-align: center; color: #7c8aff; font-weight: 600; margin-bottom: 8px; }
-.vtty-screen {
-  min-width: 0; max-width: 100%; height: min(440px, 65vh); overflow: auto;
-  font-family: monospace; font-size: 11px; line-height: 1.35; color: #a0a0c0;
-  background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.06);
-  border-radius: 4px; padding: 8px; white-space: pre-wrap;
-}
-.vtty-loading { display: flex; align-items: center; justify-content: center; height: 100%; color: #7c8aff; opacity: 0.6; }
-.vtty-screen pre { margin: 0; white-space: pre-wrap; }

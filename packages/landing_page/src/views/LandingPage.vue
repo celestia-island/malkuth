@@ -30,11 +30,8 @@
       <div class="binaries-title">{{ t('binaries_title', 'Supervised Binaries') }}</div>
       <div class="binary-row" v-for="b in binaries" :key="b.name">
         <span class="binary-name" :data-copy="b.name" @click="copy(b.name)"
-              @mouseenter="(e: MouseEvent) => showVtty(e, b.name)" @mouseleave="hideVtty">
+              @mouseenter="(e: MouseEvent) => showPortalTooltip(e, b.name)" @mouseleave="scheduleHidePortal">
           <span>{{ b.name }}</span>
-          <span class="vtty-icon">
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-          </span>
           <span class="binary-name-full">{{ b.name }}<br><span class="tooltip-hint">{{ t('click_to_copy', 'Click to copy') }}</span></span>
         </span>
         <span class="binary-detail">
@@ -72,16 +69,6 @@
     </p>
     <p class="version-line">v{{ version }}</p>
 
-
-    <Teleport to="body">
-      <div class="vtty-tooltip" v-if="vttyVisible" :style="vttyStyle">
-        <div class="vtty-title">{{ vttyName }}</div>
-        <div class="vtty-screen">
-          <div v-if="!vttyLog.length" class="vtty-loading">Loading...</div>
-          <pre v-else>{{ vttyLog.join('\n') }}</pre>
-        </div>
-      </div>
-    </Teleport>
   </div>
 </template>
 
@@ -103,16 +90,10 @@ const proxyEndpoint = ref('')
 const watchPaths = ref<string[]>([])
 const binaries = ref<any[]>([])
 
-const vttyVisible = ref(false)
-const vttyName = ref('')
-const vttyLog = ref<string[]>([])
-const vttyStyle = ref<Record<string, string>>({})
-
 const cardRef = ref<HTMLElement>()
 
 let countdownTimer: any = null
 let pollTimer: any = null
-let vttyPollTimer: any = null
 let portalEl: HTMLElement | null = null
 let portalHideTimer: any = null
 
@@ -143,9 +124,6 @@ function probe() {
         clearInterval(pollTimer)
       } else {
         state.value = d.state
-      }
-      if (d.vttys?.length) {
-        vttyLog.value = d.vttys[0].log || []
       }
     }).catch(() => {})
 }
@@ -216,7 +194,6 @@ onMounted(() => {
 onUnmounted(() => {
   clearInterval(countdownTimer)
   clearInterval(pollTimer)
-  clearInterval(vttyPollTimer)
 })
 
 // Portal tooltip helpers (same as original template)
@@ -270,19 +247,6 @@ function toast(msg: string) {
   (el as any)._timer = setTimeout(() => el!.classList.remove('show'), 2000)
 }
 
-function showVtty(ev: MouseEvent, name: string) {
-  vttyName.value = name
-  vttyVisible.value = true
-  const mw = 740
-  let left = ev.clientX
-  if (left + mw > window.innerWidth - 16) left = window.innerWidth - mw - 16
-  if (left < 8) left = 8
-  vttyStyle.value = { left: left + 'px', top: Math.min(ev.clientY + 16, window.innerHeight - 420) + 'px' }
-  probe()
-  clearInterval(vttyPollTimer)
-  vttyPollTimer = setInterval(probe, 2000)
-}
-function hideVtty() { vttyVisible.value = false; clearInterval(vttyPollTimer) }
 function doRefresh() {
   document.cookie = '__malkuth_nonce=1; max-age=1800; path=/'
   location.reload()
