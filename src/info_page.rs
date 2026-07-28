@@ -164,7 +164,17 @@ async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
 
     for (name, value) in headers.iter() {
         let lower = name.as_str().to_lowercase();
-        if lower != "host" && lower != "connection" && lower != "transfer-encoding" {
+        if lower == "cookie" {
+            if let Ok(cookies) = value.to_str() {
+                let cleaned: Vec<&str> = cookies
+                    .split(';')
+                    .filter(|c| !c.trim().starts_with("__malkuth_nonce="))
+                    .collect();
+                if !cleaned.is_empty() {
+                    backend_req = backend_req.header(name.as_str(), cleaned.join(";").as_bytes());
+                }
+            }
+        } else if lower != "host" && lower != "connection" && lower != "transfer-encoding" {
             backend_req = backend_req.header(name.as_str(), value.as_bytes());
         }
     }
@@ -202,7 +212,7 @@ async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
     Ok(response)
 }
 
-/// Read the `malkuth_nonce` cookie value as a retry counter (0 = first visit).
+/// Read the `__malkuth_nonce` cookie value as a retry counter (0 = first visit).
 fn read_nonce(req: &Request) -> u8 {
     let cookie_header = req.headers().get(header::COOKIE);
     let Some(cookies) = cookie_header.and_then(|v| v.to_str().ok()) else {
@@ -210,7 +220,7 @@ fn read_nonce(req: &Request) -> u8 {
     };
     for part in cookies.split(';') {
         let kv = part.trim();
-        if let Some(val) = kv.strip_prefix("malkuth_nonce=") {
+        if let Some(val) = kv.strip_prefix("__malkuth_nonce=") {
             return val.parse::<u8>().unwrap_or(0);
         }
     }
@@ -290,7 +300,7 @@ fn serve_probe(lang: &str, state: &InfoState, req: &Request) -> Response {
 
 /// Serve the landing page. `nonce` is the current retry count (0 → first visit).
 /// The template receives `landing_nonce` to:
-/// - Set the cookie via JS (`document.cookie = "malkuth_nonce=N"`)
+/// - Set the cookie via JS (`document.cookie = "__malkuth_nonce=N"`)
 /// - Show "offline" after 3 failed attempts
 fn serve_landing(lang: &str, state: &InfoState, nonce: u8) -> Response {
     let i18n = get_i18n(lang);
