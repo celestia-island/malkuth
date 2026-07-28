@@ -435,14 +435,14 @@
 </div>
 <script>
 (function(){
-  var start = {% if landing %}3{% else %}10{% endif %};
-  var s = start;
-  var e = document.getElementById("countdown");
-  var u = document.getElementById("countdownUnit");
-  var h = document.getElementById("retryHint");
-  var btn = document.getElementById("cancelBtn");
+  var probeTime = 2000;
   var timer = null;
-  var cancelled = false;
+  var statusEl = document.querySelector(".status");
+  var hintEl = document.getElementById("retryHint");
+  var btn = document.getElementById("cancelBtn");
+  var countdownSpan = document.getElementById("countdown");
+  var countdownUnit = document.getElementById("countdownUnit");
+  var isLanding = {% if landing %}true{% else %}false{% endif %};
 
   // Remove clip-path after accordion animation so tooltips aren't clipped
   var card = document.querySelector(".card");
@@ -453,38 +453,42 @@
     }, { once: true });
   }
 
-  function tick() {
-    if (cancelled) return;
-    if (s <= 0) {
-      document.cookie = "malkuth_nonce={{ landing_nonce }}; max-age=300; path=/";
-      location.reload();
-      return;
-    }
-    e.textContent = s;
-    s--;
-    timer = setTimeout(tick, 1000);
+  function poll() {
+    fetch("/", { headers: { "X-Malkuth-Probe": "1" } })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (statusEl && data.message) {
+          statusEl.textContent = data.message;
+        }
+        if (data.state === "ready") {
+          document.cookie = "malkuth_nonce=1; max-age=300; path=/";
+          location.reload();
+          return;
+        }
+        if (data.state === "offline") {
+          clearInterval(timer);
+          if (hintEl) { hintEl.innerHTML = ""; }
+          if (btn) { btn.style.display = "inline-block"; btn.textContent = "{{ refresh_label }}"; }
+          return;
+        }
+        if (isLanding && countdownSpan) { countdownSpan.remove(); isLanding = false; }
+        if (countdownUnit) { countdownUnit.remove(); }
+        if (btn) { btn.style.display = "inline-block"; btn.textContent = "{{ refresh_label }}"; }
+      })
+      .catch(function() {});
   }
 
-  function cancelCountdown() {
-    if (cancelled) {
-      document.cookie = "malkuth_nonce={{ landing_nonce }}; max-age=300; path=/";
-      location.reload();
-      return;
-    }
-    cancelled = true;
-    clearTimeout(timer);
-    e.textContent = "\u2014";
-    u.textContent = "";
-    h.textContent = "{{ retry_manual }}";
-    btn.textContent = "{{ refresh_label }}";
-    btn.classList.add("cancel-btn--refresh");
+  if (isLanding) {
+    poll();
+    timer = setInterval(poll, probeTime);
   }
 
   if (btn) {
-    btn.onclick = cancelCountdown;
+    btn.onclick = function() {
+      document.cookie = "malkuth_nonce=1; max-age=300; path=/";
+      location.reload();
+    };
   }
-
-  tick();
 
   // ── Tooltip portal ─────────────────────────────────────
   var portal = null;
