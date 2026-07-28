@@ -29,11 +29,14 @@
     <div class="binaries" v-if="binaries.length">
       <div class="binaries-title">{{ t('binaries_title', 'Supervised Binaries') }}</div>
       <div class="binary-row" v-for="b in binaries" :key="b.name">
-        <span class="binary-name" :data-copy="b.name" @click="copy(b.name)"
-              @mouseenter="(e: MouseEvent) => showPortalTooltip(e, b.name)" @mouseleave="scheduleHidePortal">
-          <span>{{ b.name }}</span>
-          <span class="binary-name-full">{{ b.name }}<br><span class="tooltip-hint">{{ t('click_to_copy', 'Click to copy') }}</span></span>
+      <span class="binary-name" :data-copy="b.name" @click="copy(b.name)"
+            @mouseenter="(e: MouseEvent) => showBinaryTooltip(e, b.name)" @mouseleave="scheduleHidePortal">
+        <span>{{ b.name }}</span>
+        <span class="vtty-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         </span>
+        <span class="binary-name-full">{{ b.name }}<br><span class="tooltip-hint">{{ t('click_to_copy', 'Click to copy') }}</span></span>
+      </span>
         <span class="binary-detail">
           <span class="binary-time" :data-copy="b.compile_time"
                 @click="copy(b.compile_time)"
@@ -69,6 +72,22 @@
     </p>
     <p class="version-line">v{{ version }}</p>
 
+    <Teleport to="body">
+      <div
+        class="binary-tooltip"
+        v-if="vttyVisible"
+        @mouseenter="onVttyEnter"
+        @mouseleave="onVttyLeave"
+        @click="copy(vttyName)"
+      >
+        <div class="binary-tooltip-name">{{ vttyName }}</div>
+        <div class="vtty-screen">
+          <div v-if="!vttyLog.length" class="vtty-loading">{{ t('vtty_loading', 'Loading...') }}</div>
+          <pre v-else>{{ vttyLog.join('\n') }}</pre>
+        </div>
+        <span class="tooltip-hint">{{ t('click_to_copy', 'Click to copy') }}</span>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -89,6 +108,9 @@ const logoBase64 = ref('')
 const proxyEndpoint = ref('')
 const watchPaths = ref<string[]>([])
 const binaries = ref<any[]>([])
+const vttyName = ref('')
+const vttyLog = ref<string[]>([])
+const vttyVisible = ref(false)
 
 const cardRef = ref<HTMLElement>()
 
@@ -229,6 +251,17 @@ function showPortalTooltip(ev: MouseEvent, text: string) {
 function hidePortal() {
   if (portalEl) { portalEl.innerHTML = '' }
 }
+function showBinaryTooltip(_ev: MouseEvent, name: string) {
+  vttyVisible.value = true
+  vttyName.value = name
+  vttyLog.value = []
+  probe()
+}
+function hideBinaryTooltip() {
+  vttyVisible.value = false
+}
+function onVttyEnter() { clearTimeout(portalHideTimer) }
+function onVttyLeave() { portalHideTimer = setTimeout(hideBinaryTooltip, 150) }
 function showWatchTooltip(ev: MouseEvent, path: string) {
   const el = ev.currentTarget as HTMLElement
   const tt = el.querySelector('.tooltip') as HTMLElement
