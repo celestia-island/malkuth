@@ -5,8 +5,13 @@ import zhs from './locales/zhs/main.json'
 mergeMessages(en, 'en')
 mergeMessages(zhs, 'zhs')
 
-const userLang = (navigator.language || 'en').split('-')[0]
-const supported = ['en', 'zhs', 'zht', 'ja', 'ko', 'fr', 'de', 'es', 'pt', 'ru', 'ar']
-const lang = supported.includes(userLang) ? userLang : 'en'
-
-setLocale(lang)
+const full = (navigator.language || 'en').toLowerCase()
+const userLang = full.split('-')[0]
+function resolveLocale(): string {
+  if (full.startsWith('zh-cn') || full.startsWith('zh-sg') || full.startsWith('zh-my')) return 'zhs'
+  if (full.startsWith('zh-tw') || full.startsWith('zh-hk') || full.startsWith('zh-mo')) return 'zht'
+  if (userLang === 'zh') return 'zhs'
+  if (userLang === 'en') return 'en'
+  return 'en'
+}
+setLocale(resolveLocale())

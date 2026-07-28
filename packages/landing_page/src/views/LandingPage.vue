@@ -5,7 +5,7 @@
     <p class="tagline">{{ t('tagline', 'This port is managed by the Malkuth process supervisor') }}</p>
 
     <div class="status" :class="statusClass">
-      {{ statusMessage || t('status_landing', 'Redirecting shortly') }}
+      {{ statusText }}
     </div>
 
     <template v-if="!showLandingOnly">
@@ -72,13 +72,16 @@
     </p>
     <p class="version-line">v{{ version }}</p>
 
-    <div class="vtty-tooltip" v-if="vttyVisible" :style="vttyStyle">
-      <div class="vtty-title">{{ vttyName }}</div>
-      <div class="vtty-screen">
-        <div v-if="!vttyLog.length" class="vtty-loading">Loading...</div>
-        <pre v-else>{{ vttyLog.join('\n') }}</pre>
+
+    <Teleport to="body">
+      <div class="vtty-tooltip" v-if="vttyVisible" :style="vttyStyle">
+        <div class="vtty-title">{{ vttyName }}</div>
+        <div class="vtty-screen">
+          <div v-if="!vttyLog.length" class="vtty-loading">Loading...</div>
+          <pre v-else>{{ vttyLog.join('\n') }}</pre>
+        </div>
       </div>
-    </div>
+    </Teleport>
   </div>
 </template>
 
@@ -117,6 +120,12 @@ const statusClass = computed(() => {
   if (state.value === 'offline') return 'status--working'
   if (state.value === 'building') return 'status--working'
   return 'status--landing'
+})
+const statusText = computed(() => {
+  if (state.value === 'ready') return t('status_ready', 'All services running.')
+  if (state.value === 'building') return t('status_building', 'Building')
+  if (state.value === 'offline') return t('status_offline', 'Service is offline')
+  return t('status_landing', 'Redirecting shortly')
 })
 
 function probe() {

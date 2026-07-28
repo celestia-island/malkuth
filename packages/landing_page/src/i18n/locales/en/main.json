@@ -5,6 +5,7 @@
   "status_building": "The service is currently being rebuilt. Please wait a moment",
   "status_starting": "The service is starting up",
   "status_ready": "All services are running normally.",
+  "status_offline": "Service is offline",
   "proxy_label": "Proxy",
   "watch_label": "Watching",
   "binaries_title": "Supervised Binaries",
