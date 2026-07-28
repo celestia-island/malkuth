@@ -474,10 +474,21 @@
           if (countdownSpan) { countdownSpan.textContent = "\u2014"; }
           return;
         }
-        if (countdownSpan) {
-          countdownSpan.textContent = data.nonce ? "(" + data.nonce + ")" : "\u2014";
+        if (data.state === "building") {
+          if (countdownSpan && data.progress) {
+            countdownSpan.textContent = data.progress;
+          } else if (countdownSpan) {
+            countdownSpan.textContent = "\u2014";
+          }
+          if (btn) { btn.style.display = "inline-block"; }
         }
-        if (btn) { btn.style.display = "inline-block"; btn.textContent = "{{ refresh_label }}"; }
+        if (data.state === "landing" || data.state === "starting") {
+          if (countdownSpan) {
+            var n = data.nonce || 1;
+            countdownSpan.textContent = n > 0 ? "(" + n + ")" : "3";
+          }
+          if (btn) { btn.style.display = "inline-block"; btn.textContent = "{{ refresh_label }}"; }
+        }
       })
       .catch(function() {});
   }

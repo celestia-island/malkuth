@@ -292,6 +292,7 @@ fn serve_probe(lang: &str, state: &InfoState, req: &Request) -> Response {
         "state": probe_state,
         "nonce": nonce + 1,
         "message": message,
+        "progress": null,
     })
     .to_string();
 
