@@ -365,4 +365,4 @@ Sentinel — 기기 내, 프로세스 수준의 단순화 버전으로. 이론(�
   추상화로 통일).
 ---
 *영문 정본(canonical): `docs/en/design/platform/supervision-and-rolling-update.md`.
-다른 언어(zht/ja/fr/es/ru)의 번역은 i18n 대기 중입니다.*
+다른 언어(zh-Hant/ja/fr/es/ru)의 번역은 i18n 대기 중입니다.*

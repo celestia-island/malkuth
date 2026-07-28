@@ -29,7 +29,7 @@
     "refresh_label": "Refresh Now",
     "footer": "Powered by Malkuth — a composable service-supervision toolkit for Rust"
   },
-  "zhs": {
+  "zh-Hans": {
     "title": "Malkuth — 服务管理器",
     "heading": "Malkuth",
     "tagline": "此端口由 Malkuth 进程管理器接管",
@@ -59,7 +59,7 @@
     "refresh_label": "立即刷新",
     "footer": "由 Malkuth 驱动 — Rust 可组合服务监管工具包"
   },
-  "zht": {
+  "zh-Hant": {
     "title": "Malkuth — 服務管理器",
     "heading": "Malkuth",
     "tagline": "此埠號由 Malkuth 行程管理器接管",

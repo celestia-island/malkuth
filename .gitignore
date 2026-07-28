@@ -8,6 +8,7 @@ __pycache__/
 *.pyc
 
 dist/
+node_modules/
 
 # celestia-devtools: staged-on-demand shared justfile recipes (just fetch)
 /.just/

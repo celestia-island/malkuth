@@ -367,8 +367,8 @@ systemd، والـ Pod في K8s). الفوائد:
    `pglite-proxy` في shittim-chest تحت تجريد `Worker` الموحَّد:
    اتُّفق على نعم (توحيد في تجريد عامل واحد عبر المشاريع الثلاثة جميعاً).
 ---
-*الترجمة: `docs/zhs/design/supervision-and-rolling-update.md`
-هي النسخة المقابلة بالصينية المبسّطة. كما تُرجمت لغات أخرى (zht/ja/ko/fr/es/ru/ar)
+*الترجمة: `docs/zh-Hans/design/supervision-and-rolling-update.md`
+هي النسخة المقابلة بالصينية المبسّطة. كما تُرجمت لغات أخرى (zh-Hant/ja/ko/fr/es/ru/ar)
 (انظر `docs/<lang>/design/`).*
 
 ---
