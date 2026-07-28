@@ -277,10 +277,7 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
             ctx.insert("copy_hint", "");
             ctx.insert("copied_msg", "");
             ctx.insert("copy_fail_msg", "");
-            ctx.insert(
-                "logo_base64",
-                &format!("data:image/webp;base64,{}", base64_encode(LOGO_BYTES)),
-            );
+            ctx.insert("logo_base64", &base64_encode(LOGO_BYTES));
             match tera::Tera::one_off(TEMPLATE, &ctx, false) {
                 Ok(html) => return Html(html).into_response(),
                 Err(e) => {
