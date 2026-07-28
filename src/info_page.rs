@@ -142,14 +142,9 @@ struct InfoState {
 
 static LANDING_PAGE_DIR: std::sync::LazyLock<Option<include_dir::Dir<'static>>> =
     std::sync::LazyLock::new(|| {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/target/landing_page");
-        if std::path::Path::new(path).join("index.html").is_file() {
-            Some(include_dir::include_dir!(
-                "$CARGO_MANIFEST_DIR/target/landing_page"
-            ))
-        } else {
-            None
-        }
+        Some(include_dir::include_dir!(
+            "$CARGO_MANIFEST_DIR/target/landing_page"
+        ))
     });
 
 fn build_spa_init(state: &InfoState, lang: &str) -> serde_json::Value {
