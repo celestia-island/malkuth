@@ -1,4 +1,5 @@
 import './styles/main.scss'
+import './i18n'
 import { createApp } from 'vue'
 import { createRouter, createWebHistory } from 'vue-router'
 import App from './App.vue'

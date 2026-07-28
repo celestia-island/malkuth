@@ -4,8 +4,8 @@
       <template #header>
         <div class="header-content">
           <HLogo size="lg" :src="logoBase64 || undefined" alt="Malkuth" />
-          <h1 class="header-title">{{ i18n.heading }}</h1>
-          <p class="tagline">{{ i18n.tagline }}</p>
+          <h1 class="header-title">{{ t('heading', 'Malkuth') }}</h1>
+          <p class="tagline">{{ t('tagline') }}</p>
         </div>
       </template>
 
@@ -15,11 +15,11 @@
 
       <section class="info" v-if="!showLandingOnly">
         <div class="info-row" v-if="proxyEndpoint">
-          <span class="info-label">{{ i18n.proxy_label }}</span>
+          <span class="info-label">{{ t('proxy_label', 'Proxy') }}</span>
           <span class="info-value">{{ proxyEndpoint }}</span>
         </div>
         <div class="info-row" v-if="watchPaths.length">
-          <span class="info-label">{{ i18n.watch_label }}</span>
+          <span class="info-label">{{ t('watch_label', 'Watching') }}</span>
           <div class="watch-list">
             <span class="watch-item" v-for="p in watchPaths" :key="p"
               :data-path="p" @click="copy(p)">
@@ -30,7 +30,7 @@
       </section>
 
       <section class="binaries" v-if="binaries.length">
-        <div class="binaries-title">{{ i18n.binaries_title }}</div>
+        <div class="binaries-title">{{ t('binaries_title', 'Supervised Binaries') }}</div>
         <div class="binary-row" v-for="b in binaries" :key="b.name">
           <HTooltip :text="'Click to copy: ' + b.name" placement="top">
             <span class="binary-name" @click="copy(b.name)" @mouseenter="showVtty($event, b.name)" @mouseleave="hideVtty">
@@ -48,13 +48,13 @@
       </section>
 
       <div class="retry-hint" v-if="state === 'landing' || state === 'starting'">
-        {{ i18n.redirect_before }}
+        {{ t('redirect_before', 'Redirecting in') }}
         <span class="countdown" :style="{ color: '#ffa500' }">{{ countdown }}</span>
-        <span class="countdown-unit">{{ i18n.redirect_after }}</span>
+        <span class="countdown-unit">{{ t('redirect_after', 'seconds') }}</span>
       </div>
 
       <HButton v-if="showRefresh" variant="outline" block @click="doRefresh">
-        {{ i18n.refresh_label }}
+        {{ t('refresh_label', 'Refresh Now') }}
       </HButton>
 
       <template #footer>
@@ -79,7 +79,9 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
-import { HButton, HCard, HBadge, HLogo, HTooltip, HSpinner, type BadgeVariant } from '@celestia-island/hikari'
+import { HButton, HCard, HBadge, HLogo, HTooltip, HSpinner, useI18n, type BadgeVariant } from '@celestia-island/hikari'
+
+const { t } = useI18n()
 
 const state = ref<'landing' | 'building' | 'ready' | 'offline' | 'starting'>('landing')
 const countdown = ref(3)
@@ -96,8 +98,6 @@ const vttyVisible = ref(false)
 const vttyName = ref('')
 const vttyLog = ref<string[]>([])
 const vttyStyle = ref({})
-
-const i18n = ref<Record<string, string>>({})
 
 let timer: any = null
 let pollTimer: any = null
@@ -149,9 +149,15 @@ function startCountdown() {
 function showVtty(ev: MouseEvent, name: string) {
   vttyName.value = name
   vttyVisible.value = true
+  const mw = 840
+  let left = ev.clientX
+  if (left + mw > window.innerWidth - 16) {
+    left = window.innerWidth - mw - 16
+  }
+  if (left < 8) left = 8
   vttyStyle.value = {
-    left: Math.max(8, ev.clientX) + 'px',
-    top: (ev.clientY + 16) + 'px',
+    left: left + 'px',
+    top: Math.min(ev.clientY + 16, window.innerHeight - 500) + 'px',
   }
   probe()
 }

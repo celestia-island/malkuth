@@ -1,0 +1,106 @@
+.hk-progress-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: 100%;
+}
+
+.hk-progress-bar-label {
+  font-size: var(--text-2xs);
+  color: rgb(var(--color-muted));
+  line-height: 1;
+}
+
+.hk-progress-bar-track {
+  width: 100%;
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: rgb(var(--color-muted) / 15%);
+  overflow: hidden;
+  position: relative;
+}
+
+.hk-progress-bar[data-size="xs"] .hk-progress-bar-track {
+  height: 2px;
+}
+
+.hk-progress-bar[data-size="md"] .hk-progress-bar-track {
+  height: 6px;
+}
+
+.hk-progress-bar-secondary {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  opacity: 0.3;
+
+  &-loading {
+    background: rgb(var(--color-primary));
+  }
+
+  &-done {
+    background: rgb(var(--color-success));
+  }
+
+  &-error {
+    background: rgb(var(--color-error));
+  }
+}
+
+.hk-progress-bar-fill {
+  position: relative;
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+
+  &-loading {
+    background: rgb(var(--color-primary));
+  }
+
+  &-done {
+    background: rgb(var(--color-success));
+  }
+
+  &-error {
+    background: rgb(var(--color-error));
+  }
+}
+
+.hk-progress-bar-indeterminate {
+  height: 100%;
+  width: 40%;
+  border-radius: var(--radius-full);
+  position: absolute;
+  animation: hk-progress-indeterminate 1.4s ease-in-out infinite;
+
+  &-loading {
+    background: rgb(var(--color-primary));
+  }
+
+  &-done {
+    background: rgb(var(--color-success));
+    animation: none;
+    width: 100%;
+  }
+
+  &-error {
+    background: rgb(var(--color-error));
+    animation: none;
+    width: 100%;
+  }
+}
+
+@keyframes hk-progress-indeterminate {
+  0% {
+    left: -40%;
+  }
+  60% {
+    left: 100%;
+  }
+  100% {
+    left: 100%;
+  }
+}

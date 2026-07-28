@@ -42,7 +42,7 @@ leader-follower = ["lease"]
 schema = ["dep:schemars"]
 
 # ── CLI binary ─────────────────────────────────────────────────
-cli = ["dep:clap", "dep:notify", "dep:tracing-subscriber", "dep:chrono", "dep:toml", "dep:axum", "dep:tera", "dep:sha2", "dep:reqwest", "dep:kou"]
+cli = ["dep:clap", "dep:notify", "dep:tracing-subscriber", "dep:chrono", "dep:toml", "dep:axum", "dep:tera", "dep:sha2", "dep:reqwest", "dep:kou", "dep:include_dir"]
 
 # ── MCP server ─────────────────────────────────────────────────
 # Standalone MCP (Model Context Protocol) server exposing supervision + probe
@@ -82,6 +82,7 @@ rmcp = { version = "^1", optional = true, features = ["server", "transport-io", 
 # HTTP client for the probe tool (healthz/readyz checks).
 reqwest = { version = "^0.13", optional = true, default-features = false, features = ["rustls"] }
 kou = { path = "../kou", optional = true }
+include_dir = { version = "^0.7", optional = true }
 regex = { version = "^1", optional = true }
 
 [target.'cfg(unix)'.dependencies]
