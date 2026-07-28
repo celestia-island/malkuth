@@ -313,12 +313,27 @@ fn serve_probe(lang: &str, state: &InfoState, req: &Request) -> Response {
     };
 
     let progress = state.build_progress.lock().ok().and_then(|g| g.clone());
+    let log: Vec<String> = state
+        .build_log
+        .lock()
+        .ok()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    let vtty_name = state
+        .binaries
+        .first()
+        .map(|b| b.name.as_str())
+        .unwrap_or("");
 
     let json = serde_json::json!({
         "state": probe_state,
         "nonce": nonce + 1,
         "message": message,
         "progress": progress,
+        "vttys": [{
+            "name": vtty_name,
+            "log": log,
+        }],
     })
     .to_string();
 

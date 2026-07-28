@@ -620,43 +620,45 @@
     });
   });
 
-  // Attach VTTY tooltips to binary name on hover
+  // Extend binary-name tooltip to include VTTY content
   document.querySelectorAll(".binary-name").forEach(function(el) {
+    var origEnter = el.onmouseenter;
     var icon = el.querySelector(".vtty-icon");
-    if (!icon) return;
-    var name = icon.getAttribute("data-vtty-name");
+    var name = icon ? icon.getAttribute("data-vtty-name") : "";
+    el._vttyName = name;
+    // Override the showPortalTooltip for binary-name to include VTTY
+    var origShow = showPortalTooltip;
     el.addEventListener("mouseenter", function(ev) {
-      var tip = document.createElement("div");
-      tip.className = "vtty-tooltip portable-tooltip";
-      tip.innerHTML = "Loading...";
-      tip.style.position = "fixed";
-      tip.style.zIndex = "999999";
-      document.body.appendChild(tip);
-      el._vttyTip = tip;
-      var rect = el.getBoundingClientRect();
-      tip.style.left = Math.max(8, rect.left) + "px";
-      tip.style.top = (rect.bottom + 4) + "px";
-      (function update() {
-        if (!el._vttyTip) return;
+      if (!name) return;
+      var content = "<div style='text-align:center;color:var(--accent);font-weight:600;margin-bottom:6px'>" + name + "</div>";
+      content += "<div class='vtty-screen' id='vtty-" + name + "' style='width:640px;height:320px;background:#0c0c18;border:1px solid var(--accent);border-radius:4px;padding:6px;font-family:monospace;font-size:11px;line-height:1.25;color:#a0a0c0;overflow:hidden;white-space:pre-wrap;margin-bottom:4px'>No output yet</div>";
+      content += "<div class='tooltip-hint' style='text-align:center'>Click to copy</div>";
+      showPortalTooltip(el, content);
+      // Start polling
+      (function pollVtty() {
+        if (!el._vttyPolling) return;
+        var screen = document.getElementById("vtty-" + name);
+        if (!screen) return;
         fetch("/", { headers: { "X-Malkuth-Probe": "1" } })
           .then(function(r) { return r.json(); })
           .then(function(d) {
-            if (!el._vttyTip) return;
+            var lines = [];
             if (d.vttys) {
               var v = d.vttys.find(function(x) { return x.name === name; });
-              if (v && v.log) {
-                el._vttyTip.textContent = v.log.join("\n") || "No output yet";
-              }
-            } else if (d.progress) {
-              el._vttyTip.textContent = d.progress;
+              if (v && v.log) lines = v.log;
+            }
+            if (lines.length > 0) {
+              screen.textContent = lines.join("\n");
             }
           })
           .catch(function() {});
-        setTimeout(update, 2000);
+        setTimeout(pollVtty, 2000);
       })();
+      el._vttyPolling = true;
     });
     el.addEventListener("mouseleave", function() {
-      if (el._vttyTip) { el._vttyTip.remove(); el._vttyTip = null; }
+      el._vttyPolling = false;
+      hidePortalTooltip();
     });
   });
 
