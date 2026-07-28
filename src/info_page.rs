@@ -218,16 +218,34 @@ fn read_nonce(req: &Request) -> u8 {
 }
 
 /// JSON probe endpoint for polling landing page.
-fn serve_probe(lang: &str, _state: &InfoState, req: &Request) -> Response {
+fn serve_probe(lang: &str, state: &InfoState, req: &Request) -> Response {
     let nonce = read_nonce(req);
+
+    let backend_up = state
+        .serve_backend
+        .as_ref()
+        .and_then(|url| {
+            let addr = url
+                .trim_start_matches("http://")
+                .trim_start_matches("https://")
+                .to_string();
+            std::net::TcpStream::connect_timeout(
+                &addr.parse().ok()?,
+                std::time::Duration::from_millis(500),
+            )
+            .ok()
+        })
+        .is_some();
 
     let (probe_state, msg) = if nonce >= 3 {
         (
             "offline",
             get_i18n(lang)
-                .get("status_building")
+                .get("status_starting")
                 .map_or("Service temporarily unavailable", |v| v.as_str()),
         )
+    } else if nonce > 0 && backend_up {
+        ("ready", "")
     } else if nonce > 0 {
         ("building", "")
     } else {
@@ -305,10 +323,7 @@ fn serve_landing(lang: &str, state: &InfoState, nonce: u8) -> Response {
                 .map_or("Redirecting shortly", |v| v.as_str())
         },
     );
-    ctx.insert(
-        "task_label",
-        i18n.get("task").map_or("Current Task", |v| v.as_str()),
-    );
+    ctx.insert("task_label", "");
     ctx.insert(
         "redirect_before",
         i18n.get("redirect_before")

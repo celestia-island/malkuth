@@ -391,12 +391,14 @@
   <h1>{{ heading }}</h1>
   <p class="tagline">{{ tagline }}</p>
   <div class="status {% if landing %}status--landing{% elif ready %}status--ready{% else %}status--working{% endif %}">
-    {{ status_text }}
-  </div>
-  <div class="info-row">
-    <span class="info-label">{{ task_label }}</span>
-    <span class="info-value">{{ task }}</span>
-  </div>
+     {{ status_text }}
+   </div>
+   {% if task_label %}
+   <div class="info-row">
+     <span class="info-label">{{ task_label }}</span>
+     <span class="info-value">{{ task }}</span>
+   </div>
+   {% endif %}
   {% if proxy_endpoint %}
   <div class="info-row">
     <span class="info-label">{{ proxy_label }}</span>
@@ -469,10 +471,12 @@
           clearInterval(timer);
           if (hintEl) { hintEl.innerHTML = ""; }
           if (btn) { btn.style.display = "inline-block"; btn.textContent = "{{ refresh_label }}"; }
+          if (countdownSpan) { countdownSpan.textContent = "\u2014"; }
           return;
         }
-        if (isLanding && countdownSpan) { countdownSpan.remove(); isLanding = false; }
-        if (countdownUnit) { countdownUnit.remove(); }
+        if (countdownSpan) {
+          countdownSpan.textContent = data.nonce ? "(" + data.nonce + ")" : "\u2014";
+        }
         if (btn) { btn.style.display = "inline-block"; btn.textContent = "{{ refresh_label }}"; }
       })
       .catch(function() {});
