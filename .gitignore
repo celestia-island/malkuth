@@ -13,3 +13,6 @@ node_modules/
 # celestia-devtools: staged-on-demand shared justfile recipes (just fetch)
 /.just/
 /celestia-devtools.just
+packages/*/node_modules
+packages/*/pnpm-lock.yaml
+packages/*/pnpm-workspace.yaml
