@@ -93,6 +93,7 @@ const { t } = useI18n()
 
 const state = ref<'landing' | 'building' | 'ready' | 'offline' | 'starting'>('landing')
 const countdown = ref(3)
+const redirectAttempts = ref(0)
 const statusMessage = ref('')
 const showRefresh = ref(false)
 const showLandingOnly = ref(false)
@@ -155,6 +156,8 @@ function startCountdown() {
     countdown.value--
     if (countdown.value <= 0) {
       clearInterval(countdownTimer)
+      const attempts = redirectAttempts.value + 1
+      localStorage.setItem('__malkuth_redirect_attempts', String(attempts))
       document.cookie = '__malkuth_nonce=1; max-age=1800; path=/'
       location.reload()
     }
@@ -174,7 +177,18 @@ function loadInit() {
   state.value = s as any
   statusMessage.value = init.message || ''
 
+  const stored = parseInt(localStorage.getItem('__malkuth_redirect_attempts') || '0', 10)
+  redirectAttempts.value = stored
+
+  if (stored >= 3) {
+    state.value = 'offline'
+    showRefresh.value = true
+    localStorage.removeItem('__malkuth_redirect_attempts')
+    return
+  }
+
   if (s === 'ready') {
+    localStorage.removeItem('__malkuth_redirect_attempts')
     startCountdown()
   } else if (s === 'building') {
     document.cookie = '__malkuth_nonce=1; max-age=1800; path=/'

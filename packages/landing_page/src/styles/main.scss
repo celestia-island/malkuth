@@ -41,8 +41,8 @@ body {
   padding: 2rem;
 }
 .card {
-  max-width: 480px;
-  width: 100%;
+  width: 480px;
+  max-width: calc(100vw - 2rem);
   background: var(--card-bg);
   border: 1px solid var(--card-border);
   border-radius: 12px;
