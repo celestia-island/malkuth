@@ -456,6 +456,7 @@
   function tick() {
     if (cancelled) return;
     if (s <= 0) {
+      document.cookie = "malkuth_nonce={{ landing_nonce }}; max-age=300; path=/";
       location.reload();
       return;
     }
@@ -466,6 +467,7 @@
 
   function cancelCountdown() {
     if (cancelled) {
+      document.cookie = "malkuth_nonce={{ landing_nonce }}; max-age=300; path=/";
       location.reload();
       return;
     }

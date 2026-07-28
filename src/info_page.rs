@@ -202,6 +202,113 @@ async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
     Ok(response)
 }
 
+/// Read the `malkuth_nonce` cookie value as a retry counter (0 = first visit).
+fn read_nonce(req: &Request) -> u8 {
+    let cookie_header = req.headers().get(header::COOKIE);
+    let Some(cookies) = cookie_header.and_then(|v| v.to_str().ok()) else {
+        return 0;
+    };
+    for part in cookies.split(';') {
+        let kv = part.trim();
+        if let Some(val) = kv.strip_prefix("malkuth_nonce=") {
+            return val.parse::<u8>().unwrap_or(0);
+        }
+    }
+    0
+}
+
+/// Serve the landing page. `nonce` is the current retry count (0 → first visit).
+/// The template receives `landing_nonce` to:
+/// - Set the cookie via JS (`document.cookie = "malkuth_nonce=N"`)
+/// - Show "offline" after 3 failed attempts
+fn serve_landing(lang: &str, state: &InfoState, nonce: u8) -> Response {
+    let i18n = get_i18n(lang);
+    let next = nonce + 1;
+    let offline = nonce >= 3;
+
+    let mut ctx = tera::Context::new();
+    ctx.insert("lang", lang);
+    ctx.insert("dir", if lang == "ar" { "rtl" } else { "ltr" });
+    ctx.insert("title", i18n.get("title").map_or("Malkuth", |v| v.as_str()));
+    ctx.insert(
+        "heading",
+        i18n.get("heading").map_or("Malkuth", |v| v.as_str()),
+    );
+    ctx.insert("tagline", i18n.get("tagline").map_or("", |v| v.as_str()));
+    ctx.insert("ready", &false);
+    ctx.insert("landing", &!offline);
+    ctx.insert(
+        "task",
+        i18n.get("task_landing").map_or("Landing", |v| v.as_str()),
+    );
+    ctx.insert("version", &state.version);
+    ctx.insert(
+        "status_text",
+        if offline {
+            i18n.get("status_building")
+                .map_or("Service temporarily unavailable", |v| v.as_str())
+        } else {
+            i18n.get("status_landing")
+                .map_or("Redirecting shortly", |v| v.as_str())
+        },
+    );
+    ctx.insert(
+        "task_label",
+        i18n.get("task").map_or("Current Task", |v| v.as_str()),
+    );
+    ctx.insert(
+        "redirect_before",
+        i18n.get("redirect_before")
+            .map_or("Redirecting in", |v| v.as_str()),
+    );
+    ctx.insert(
+        "redirect_after",
+        i18n.get("redirect_after").map_or("seconds", |v| v.as_str()),
+    );
+    ctx.insert(
+        "cancel_label",
+        i18n.get("cancel_label").map_or("Cancel", |v| v.as_str()),
+    );
+    ctx.insert(
+        "refresh_label",
+        i18n.get("refresh_label")
+            .map_or("Refresh Now", |v| v.as_str()),
+    );
+    ctx.insert("retry_before", "");
+    ctx.insert("retry_after", "");
+    ctx.insert("retry_unit", "");
+    ctx.insert(
+        "retry_manual",
+        if offline {
+            i18n.get("retry_manual")
+                .map_or("You can also refresh manually.", |v| v.as_str())
+        } else {
+            ""
+        },
+    );
+    ctx.insert("footer", "");
+    ctx.insert("footer_prefix", "");
+    ctx.insert("footer_suffix", "");
+    ctx.insert("version_label", "");
+    ctx.insert("proxy_label", "");
+    ctx.insert("watch_label", "");
+    ctx.insert("binaries_title", "");
+    ctx.insert("binaries", &Vec::<BinaryInfo>::new());
+    ctx.insert("proxy_endpoint", "");
+    ctx.insert("install_label", "");
+    ctx.insert("install_method", "");
+    ctx.insert("copy_hint", "");
+    ctx.insert("copied_msg", "");
+    ctx.insert("copy_fail_msg", "");
+    ctx.insert("logo_base64", &base64_encode(LOGO_BYTES));
+    ctx.insert("landing_nonce", &next);
+
+    match tera::Tera::one_off(TEMPLATE, &ctx, false) {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed: {e}")).into_response(),
+    }
+}
+
 async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Response {
     let lang = detect_language(req.headers());
 
@@ -213,78 +320,13 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
                     .is_some_and(|v| v.as_bytes() == h.as_bytes())
             });
         if allowed {
-            if let Ok(resp) = proxy_to_backend(req, backend).await {
-                return resp;
-            }
-            // Backend unreachable, serve landing page with short retry
-            let i18n = get_i18n(&lang);
-            let mut ctx = tera::Context::new();
-            ctx.insert("lang", &lang);
-            ctx.insert("dir", if lang == "ar" { "rtl" } else { "ltr" });
-            ctx.insert("title", i18n.get("title").map_or("Malkuth", |v| v.as_str()));
-            ctx.insert(
-                "heading",
-                i18n.get("heading").map_or("Malkuth", |v| v.as_str()),
-            );
-            ctx.insert("tagline", i18n.get("tagline").map_or("", |v| v.as_str()));
-            ctx.insert("ready", &false);
-            ctx.insert("landing", &true);
-            ctx.insert(
-                "task",
-                i18n.get("task_landing").map_or("Landing", |v| v.as_str()),
-            );
-            ctx.insert("version", &state.version);
-            ctx.insert(
-                "status_text",
-                i18n.get("status_landing")
-                    .map_or("Redirecting shortly", |v| v.as_str()),
-            );
-            ctx.insert(
-                "task_label",
-                i18n.get("task").map_or("Current Task", |v| v.as_str()),
-            );
-            ctx.insert(
-                "redirect_before",
-                i18n.get("redirect_before").map_or("", |v| v.as_str()),
-            );
-            ctx.insert(
-                "redirect_after",
-                i18n.get("redirect_after").map_or("", |v| v.as_str()),
-            );
-            ctx.insert(
-                "cancel_label",
-                i18n.get("cancel_label").map_or("", |v| v.as_str()),
-            );
-            ctx.insert(
-                "refresh_label",
-                i18n.get("refresh_label").map_or("", |v| v.as_str()),
-            );
-            ctx.insert("retry_before", "");
-            ctx.insert("retry_after", "");
-            ctx.insert("retry_unit", "");
-            ctx.insert("retry_manual", "");
-            ctx.insert("footer", "");
-            ctx.insert("footer_prefix", "");
-            ctx.insert("footer_suffix", "");
-            ctx.insert("version_label", "");
-            ctx.insert("proxy_label", "");
-            ctx.insert("watch_label", "");
-            ctx.insert("binaries_title", "");
-            ctx.insert("binaries", &Vec::<BinaryInfo>::new());
-            ctx.insert("proxy_endpoint", "");
-            ctx.insert("install_label", "");
-            ctx.insert("install_method", "");
-            ctx.insert("copy_hint", "");
-            ctx.insert("copied_msg", "");
-            ctx.insert("copy_fail_msg", "");
-            ctx.insert("logo_base64", &base64_encode(LOGO_BYTES));
-            match tera::Tera::one_off(TEMPLATE, &ctx, false) {
-                Ok(html) => return Html(html).into_response(),
-                Err(e) => {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed: {e}"))
-                        .into_response();
+            let nonce = read_nonce(&req);
+            if nonce > 0 && nonce < 3 {
+                if let Ok(resp) = proxy_to_backend(req, backend).await {
+                    return resp;
                 }
             }
+            return serve_landing(&lang, &state, nonce);
         }
     }
 
@@ -339,6 +381,7 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
     );
     context.insert("ready", &ready);
     context.insert("landing", &landing);
+    context.insert("landing_nonce", &0u8);
     context.insert("task", task);
     context.insert("version", &state.version);
 
