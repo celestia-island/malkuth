@@ -94,12 +94,17 @@ fn detect_install_method() -> &'static str {
 }
 
 /// Build an axum Router that serves the Malkuth info page on every request.
+/// When `serve_backend` is set, the handler acts as an HTTP reverse proxy:
+/// - Backend reachable (TCP connect succeeds) → forward the request
+/// - Backend unreachable → render the info/landing page
 pub fn info_router(
     version: impl Into<String>,
     status: InfoStatus,
     watch_paths: Vec<String>,
     proxy_endpoint: Option<String>,
     binaries: Vec<BinaryInfo>,
+    serve_backend: Option<String>,
+    serve_hosts: Vec<String>,
 ) -> Router<()> {
     let state = InfoState {
         version: version.into(),
@@ -107,6 +112,8 @@ pub fn info_router(
         watch_paths,
         proxy_endpoint,
         binaries,
+        serve_backend,
+        serve_hosts,
     };
     Router::new()
         .route("/", get(info_page))
@@ -121,9 +128,167 @@ struct InfoState {
     watch_paths: Vec<String>,
     proxy_endpoint: Option<String>,
     binaries: Vec<BinaryInfo>,
+    serve_backend: Option<String>,
+    serve_hosts: Vec<String>,
+}
+
+async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
+    let uri = req.uri();
+    let path = uri.path_and_query().map_or("/", |pq| pq.as_str());
+    let url = format!("{}{}", backend.trim_end_matches('/'), path);
+
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(std::time::Duration::from_millis(500))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|_| ())?;
+
+    let (parts, body) = req.into_parts();
+    let method = parts.method;
+    let headers = parts.headers;
+
+    let body_bytes = axum::body::to_bytes(body, usize::MAX)
+        .await
+        .map_err(|_| ())?;
+
+    let mut backend_req = match method.as_str() {
+        "GET" => client.get(&url),
+        "POST" => client.post(&url),
+        "PUT" => client.put(&url),
+        "DELETE" => client.delete(&url),
+        "PATCH" => client.patch(&url),
+        "HEAD" => client.head(&url),
+        _ => client.get(&url),
+    };
+
+    for (name, value) in headers.iter() {
+        let lower = name.as_str().to_lowercase();
+        if lower != "host" && lower != "connection" && lower != "transfer-encoding" {
+            backend_req = backend_req.header(name.as_str(), value.as_bytes());
+        }
+    }
+
+    if !body_bytes.is_empty() {
+        backend_req = backend_req.body(body_bytes.to_vec());
+    }
+
+    let resp = backend_req.send().await.map_err(|_| ())?;
+
+    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::OK);
+    let resp_headers: Vec<(String, Vec<u8>)> = resp
+        .headers()
+        .iter()
+        .filter(|(n, _)| {
+            let lower = n.as_str().to_lowercase();
+            lower != "transfer-encoding" && lower != "connection"
+        })
+        .map(|(n, v)| (n.as_str().to_string(), v.as_bytes().to_vec()))
+        .collect();
+    let resp_body = resp.bytes().await.map_err(|_| ())?;
+
+    let mut response = Response::new(axum::body::Body::from(resp_body));
+    *response.status_mut() = status;
+
+    for (name, value) in resp_headers {
+        if let (Ok(n), Ok(v)) = (
+            header::HeaderName::from_bytes(name.as_bytes()),
+            header::HeaderValue::from_bytes(&value),
+        ) {
+            response.headers_mut().insert(n, v);
+        }
+    }
+
+    Ok(response)
 }
 
 async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Response {
+    let lang = detect_language(req.headers());
+
+    if let Some(ref backend) = state.serve_backend {
+        let allowed = state.serve_hosts.is_empty()
+            || state.serve_hosts.iter().any(|h| {
+                req.headers()
+                    .get(header::HOST)
+                    .is_some_and(|v| v.as_bytes() == h.as_bytes())
+            });
+        if allowed {
+            if let Ok(resp) = proxy_to_backend(req, backend).await {
+                return resp;
+            }
+            // Backend unreachable, serve landing page with short retry
+            let i18n = get_i18n(&lang);
+            let mut ctx = tera::Context::new();
+            ctx.insert("lang", &lang);
+            ctx.insert("dir", if lang == "ar" { "rtl" } else { "ltr" });
+            ctx.insert("title", i18n.get("title").map_or("Malkuth", |v| v.as_str()));
+            ctx.insert(
+                "heading",
+                i18n.get("heading").map_or("Malkuth", |v| v.as_str()),
+            );
+            ctx.insert("tagline", i18n.get("tagline").map_or("", |v| v.as_str()));
+            ctx.insert("ready", &false);
+            ctx.insert("landing", &true);
+            ctx.insert(
+                "task",
+                i18n.get("task_landing").map_or("Landing", |v| v.as_str()),
+            );
+            ctx.insert("version", &state.version);
+            ctx.insert(
+                "status_text",
+                i18n.get("status_landing")
+                    .map_or("Redirecting shortly", |v| v.as_str()),
+            );
+            ctx.insert(
+                "task_label",
+                i18n.get("task").map_or("Current Task", |v| v.as_str()),
+            );
+            ctx.insert(
+                "redirect_before",
+                i18n.get("redirect_before").map_or("", |v| v.as_str()),
+            );
+            ctx.insert(
+                "redirect_after",
+                i18n.get("redirect_after").map_or("", |v| v.as_str()),
+            );
+            ctx.insert(
+                "cancel_label",
+                i18n.get("cancel_label").map_or("", |v| v.as_str()),
+            );
+            ctx.insert(
+                "refresh_label",
+                i18n.get("refresh_label").map_or("", |v| v.as_str()),
+            );
+            ctx.insert("retry_before", "");
+            ctx.insert("retry_after", "");
+            ctx.insert("retry_unit", "");
+            ctx.insert("retry_manual", "");
+            ctx.insert("footer", "");
+            ctx.insert("footer_prefix", "");
+            ctx.insert("footer_suffix", "");
+            ctx.insert("version_label", "");
+            ctx.insert("proxy_label", "");
+            ctx.insert("watch_label", "");
+            ctx.insert("binaries_title", "");
+            ctx.insert("binaries", &Vec::<BinaryInfo>::new());
+            ctx.insert("proxy_endpoint", "");
+            ctx.insert("install_label", "");
+            ctx.insert("install_method", "");
+            ctx.insert("copy_hint", "");
+            ctx.insert("copied_msg", "");
+            ctx.insert("copy_fail_msg", "");
+            ctx.insert("logo_base64", &base64_encode(LOGO_BYTES));
+            match tera::Tera::one_off(TEMPLATE, &ctx, false) {
+                Ok(html) => return Html(html).into_response(),
+                Err(e) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed: {e}"))
+                        .into_response();
+                }
+            }
+        }
+    }
+
+    // Normal (non-serve) rendering below
     let lang = detect_language(req.headers());
     let i18n = get_i18n(&lang);
 
