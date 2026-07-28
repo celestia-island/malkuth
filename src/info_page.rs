@@ -97,6 +97,7 @@ fn detect_install_method() -> &'static str {
 /// When `serve_backend` is set, the handler acts as an HTTP reverse proxy:
 /// - Backend reachable (TCP connect succeeds) → forward the request
 /// - Backend unreachable → render the info/landing page
+#[allow(clippy::too_many_arguments)]
 pub fn info_router(
     version: impl Into<String>,
     status: InfoStatus,
@@ -105,6 +106,7 @@ pub fn info_router(
     binaries: Vec<BinaryInfo>,
     serve_backend: Option<String>,
     serve_hosts: Vec<String>,
+    build_progress: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 ) -> Router<()> {
     let state = InfoState {
         version: version.into(),
@@ -114,6 +116,7 @@ pub fn info_router(
         binaries,
         serve_backend,
         serve_hosts,
+        build_progress,
     };
     Router::new()
         .route("/", get(info_page))
@@ -130,6 +133,7 @@ struct InfoState {
     binaries: Vec<BinaryInfo>,
     serve_backend: Option<String>,
     serve_hosts: Vec<String>,
+    build_progress: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
@@ -242,7 +246,7 @@ fn read_nonce(req: &Request) -> u8 {
 fn serve_probe(lang: &str, state: &InfoState, req: &Request) -> Response {
     let nonce = read_nonce(req);
 
-    let backend_up = state.serve_backend.as_ref().map_or(false, |url| {
+    let backend_up = state.serve_backend.as_ref().is_some_and(|url| {
         let host_port = url
             .trim_start_matches("http://")
             .trim_start_matches("https://");
@@ -305,11 +309,13 @@ fn serve_probe(lang: &str, state: &InfoState, req: &Request) -> Response {
         msg.to_string()
     };
 
+    let progress = state.build_progress.lock().ok().and_then(|g| g.clone());
+
     let json = serde_json::json!({
         "state": probe_state,
         "nonce": nonce + 1,
         "message": message,
-        "progress": null,
+        "progress": progress,
     })
     .to_string();
 
@@ -331,7 +337,7 @@ fn serve_landing(lang: &str, state: &InfoState, nonce: u8) -> Response {
     let offline = nonce >= 3;
 
     // Probe backend for initial state
-    let initial_backend_up = state.serve_backend.as_ref().map_or(false, |url| {
+    let initial_backend_up = state.serve_backend.as_ref().is_some_and(|url| {
         let hp = url
             .trim_start_matches("http://")
             .trim_start_matches("https://");
