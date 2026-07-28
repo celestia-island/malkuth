@@ -439,11 +439,13 @@
 (function(){
   var probeTime = 2000;
   var timer = null;
+  var countdownTimer = null;
+  var countdownRemaining = 3;
   var statusEl = document.querySelector(".status");
   var hintEl = document.getElementById("retryHint");
   var btn = document.getElementById("cancelBtn");
   var countdownSpan = document.getElementById("countdown");
-  var countdownUnit = document.getElementById("countdownUnit");
+  var countdownUnitEl = document.getElementById("countdownUnit");
   var isLanding = {% if landing %}true{% else %}false{% endif %};
 
   // Remove clip-path after accordion animation so tooltips aren't clipped
@@ -453,6 +455,20 @@
       card.style.clipPath = "none";
       card.style.overflow = "visible";
     }, { once: true });
+  }
+
+  function startCountdown() {
+    function tick() {
+      if (countdownSpan) countdownSpan.textContent = countdownRemaining;
+      if (countdownRemaining <= 0) {
+        document.cookie = "__malkuth_nonce=1; max-age=1800; path=/";
+        location.reload();
+        return;
+      }
+      countdownRemaining--;
+      countdownTimer = setTimeout(tick, 1000);
+    }
+    tick();
   }
 
   function poll() {
@@ -475,18 +491,12 @@
           return;
         }
         if (data.state === "building") {
-          if (countdownSpan && data.progress) {
-            countdownSpan.textContent = data.progress;
-          } else if (countdownSpan) {
-            countdownSpan.textContent = "\u2014";
+          if (countdownSpan) {
+            countdownSpan.textContent = data.progress || "\u2014";
           }
           if (btn) { btn.style.display = "inline-block"; }
         }
-        if (data.state === "landing" || data.state === "starting") {
-          if (countdownSpan) {
-            var n = data.nonce || 1;
-            countdownSpan.textContent = n > 0 ? "(" + n + ")" : "3";
-          }
+        if (data.state === "starting") {
           if (btn) { btn.style.display = "inline-block"; btn.textContent = "{{ refresh_label }}"; }
         }
       })
@@ -494,7 +504,7 @@
   }
 
   if (isLanding) {
-    poll();
+    startCountdown();
     timer = setInterval(poll, probeTime);
   }
 

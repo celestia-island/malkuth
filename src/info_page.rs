@@ -184,8 +184,14 @@ async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
     }
 
     let resp = backend_req.send().await.map_err(|_| ())?;
+    let status_code = resp.status().as_u16();
 
-    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::OK);
+    // Treat 4xx/5xx as backend-unhealthy → fall back to landing
+    if status_code >= 400 {
+        return Err(());
+    }
+
+    let status = StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK);
     let resp_headers: Vec<(String, Vec<u8>)> = resp
         .headers()
         .iter()
