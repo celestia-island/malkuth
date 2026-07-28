@@ -217,6 +217,59 @@ fn read_nonce(req: &Request) -> u8 {
     0
 }
 
+/// JSON probe endpoint for polling landing page.
+fn serve_probe(lang: &str, _state: &InfoState, req: &Request) -> Response {
+    let nonce = read_nonce(req);
+
+    let (probe_state, msg) = if nonce >= 3 {
+        (
+            "offline",
+            get_i18n(lang)
+                .get("status_building")
+                .map_or("Service temporarily unavailable", |v| v.as_str()),
+        )
+    } else if nonce > 0 {
+        ("building", "")
+    } else {
+        ("landing", "")
+    };
+
+    let message = if msg.is_empty() {
+        let i18n = get_i18n(lang);
+        match probe_state {
+            "landing" => i18n
+                .get("status_landing")
+                .map_or("Redirecting shortly", |v| v.as_str())
+                .to_string(),
+            "building" => i18n
+                .get("status_building")
+                .map_or("Building...", |v| v.as_str())
+                .to_string(),
+            "ready" => i18n
+                .get("status_ready")
+                .map_or("All services running.", |v| v.as_str())
+                .to_string(),
+            _ => msg.to_string(),
+        }
+    } else {
+        msg.to_string()
+    };
+
+    let json = serde_json::json!({
+        "state": probe_state,
+        "nonce": nonce + 1,
+        "message": message,
+    })
+    .to_string();
+
+    let mut resp = Response::new(axum::body::Body::from(json));
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/json"),
+    );
+    resp
+}
+
 /// Serve the landing page. `nonce` is the current retry count (0 → first visit).
 /// The template receives `landing_nonce` to:
 /// - Set the cookie via JS (`document.cookie = "malkuth_nonce=N"`)
@@ -311,6 +364,10 @@ fn serve_landing(lang: &str, state: &InfoState, nonce: u8) -> Response {
 
 async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Response {
     let lang = detect_language(req.headers());
+
+    if req.headers().get("x-malkuth-probe").is_some() {
+        return serve_probe(&lang, &state, &req);
+    }
 
     if let Some(ref backend) = state.serve_backend {
         let allowed = state.serve_hosts.is_empty()
