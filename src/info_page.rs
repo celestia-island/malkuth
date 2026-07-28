@@ -97,6 +97,7 @@ fn detect_install_method() -> &'static str {
 /// When `serve_backend` is set, the handler acts as an HTTP reverse proxy:
 /// - Backend reachable (TCP connect succeeds) → forward the request
 /// - Backend unreachable → render the info/landing page
+#[allow(clippy::too_many_arguments)]
 pub fn info_router(
     version: impl Into<String>,
     status: InfoStatus,
@@ -105,6 +106,8 @@ pub fn info_router(
     binaries: Vec<BinaryInfo>,
     serve_backend: Option<String>,
     serve_hosts: Vec<String>,
+    build_progress: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    build_log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 ) -> Router<()> {
     let state = InfoState {
         version: version.into(),
@@ -114,6 +117,8 @@ pub fn info_router(
         binaries,
         serve_backend,
         serve_hosts,
+        build_progress,
+        build_log,
     };
     Router::new()
         .route("/", get(info_page))
@@ -130,6 +135,8 @@ struct InfoState {
     binaries: Vec<BinaryInfo>,
     serve_backend: Option<String>,
     serve_hosts: Vec<String>,
+    build_progress: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    build_log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
@@ -164,7 +171,17 @@ async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
 
     for (name, value) in headers.iter() {
         let lower = name.as_str().to_lowercase();
-        if lower != "host" && lower != "connection" && lower != "transfer-encoding" {
+        if lower == "cookie" {
+            if let Ok(cookies) = value.to_str() {
+                let cleaned: Vec<&str> = cookies
+                    .split(';')
+                    .filter(|c| !c.trim().starts_with("__malkuth_nonce="))
+                    .collect();
+                if !cleaned.is_empty() {
+                    backend_req = backend_req.header(name.as_str(), cleaned.join(";").as_bytes());
+                }
+            }
+        } else if lower != "host" && lower != "connection" && lower != "transfer-encoding" {
             backend_req = backend_req.header(name.as_str(), value.as_bytes());
         }
     }
@@ -174,8 +191,14 @@ async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
     }
 
     let resp = backend_req.send().await.map_err(|_| ())?;
+    let status_code = resp.status().as_u16();
 
-    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::OK);
+    // Treat 4xx/5xx as backend-unhealthy → fall back to landing
+    if status_code >= 400 {
+        return Err(());
+    }
+
+    let status = StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK);
     let resp_headers: Vec<(String, Vec<u8>)> = resp
         .headers()
         .iter()
@@ -190,6 +213,11 @@ async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
     let mut response = Response::new(axum::body::Body::from(resp_body));
     *response.status_mut() = status;
 
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        header::HeaderValue::from_static("__malkuth_nonce=1; max-age=1800; path=/"),
+    );
+
     for (name, value) in resp_headers {
         if let (Ok(n), Ok(v)) = (
             header::HeaderName::from_bytes(name.as_bytes()),
@@ -202,8 +230,270 @@ async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
     Ok(response)
 }
 
+/// Read the `__malkuth_nonce` cookie value as a retry counter (0 = first visit).
+fn read_nonce(req: &Request) -> u8 {
+    let cookie_header = req.headers().get(header::COOKIE);
+    let Some(cookies) = cookie_header.and_then(|v| v.to_str().ok()) else {
+        return 0;
+    };
+    for part in cookies.split(';') {
+        let kv = part.trim();
+        if let Some(val) = kv.strip_prefix("__malkuth_nonce=") {
+            return val.parse::<u8>().unwrap_or(0);
+        }
+    }
+    0
+}
+
+/// JSON probe endpoint for polling landing page.
+fn serve_probe(lang: &str, state: &InfoState, req: &Request) -> Response {
+    let nonce = read_nonce(req);
+
+    let backend_up = state.serve_backend.as_ref().is_some_and(|url| {
+        let host_port = url
+            .trim_start_matches("http://")
+            .trim_start_matches("https://");
+        let addr: std::net::SocketAddr = match host_port.parse().ok() {
+            Some(a) => a,
+            None => return false,
+        };
+        let mut stream = match std::net::TcpStream::connect_timeout(
+            &addr,
+            std::time::Duration::from_millis(500),
+        ) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        use std::io::{Read, Write};
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+        let req = format!("GET / HTTP/1.0\r\nHost: {}\r\n\r\n", host_port);
+        if stream.write_all(req.as_bytes()).is_err() {
+            return false;
+        }
+        let mut buf = [0u8; 64];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let head = std::str::from_utf8(&buf[..n]).unwrap_or("");
+        head.contains(" 200 ") || head.contains(" 3")
+    });
+
+    let (probe_state, msg) = if nonce >= 3 {
+        (
+            "offline",
+            get_i18n(lang)
+                .get("status_starting")
+                .map_or("Service temporarily unavailable", |v| v.as_str()),
+        )
+    } else if nonce > 0 && backend_up {
+        ("ready", "")
+    } else if nonce > 0 {
+        ("building", "")
+    } else {
+        ("landing", "")
+    };
+
+    let message = if msg.is_empty() {
+        let i18n = get_i18n(lang);
+        match probe_state {
+            "landing" => i18n
+                .get("status_landing")
+                .map_or("Redirecting shortly", |v| v.as_str())
+                .to_string(),
+            "building" => i18n
+                .get("status_building")
+                .map_or("Building...", |v| v.as_str())
+                .to_string(),
+            "ready" => i18n
+                .get("status_ready")
+                .map_or("All services running.", |v| v.as_str())
+                .to_string(),
+            _ => msg.to_string(),
+        }
+    } else {
+        msg.to_string()
+    };
+
+    let progress = state.build_progress.lock().ok().and_then(|g| g.clone());
+    let log: Vec<String> = state
+        .build_log
+        .lock()
+        .ok()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    let vtty_name = state
+        .binaries
+        .first()
+        .map(|b| b.name.as_str())
+        .unwrap_or("");
+
+    let json = serde_json::json!({
+        "state": probe_state,
+        "nonce": nonce + 1,
+        "message": message,
+        "progress": progress,
+        "vttys": [{
+            "name": vtty_name,
+            "log": log,
+        }],
+    })
+    .to_string();
+
+    let mut resp = Response::new(axum::body::Body::from(json));
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/json"),
+    );
+    resp
+}
+
+/// Serve the landing page. `nonce` is the current retry count (0 → first visit).
+/// The template receives `landing_nonce` to:
+/// - Set the cookie via JS (`document.cookie = "__malkuth_nonce=N"`)
+/// - Show "offline" after 3 failed attempts
+fn serve_landing(lang: &str, state: &InfoState, nonce: u8) -> Response {
+    let i18n = get_i18n(lang);
+    let next = nonce + 1;
+    let offline = nonce >= 3;
+
+    // Probe backend for initial state
+    let initial_backend_up = state.serve_backend.as_ref().is_some_and(|url| {
+        let hp = url
+            .trim_start_matches("http://")
+            .trim_start_matches("https://");
+        let addr: std::net::SocketAddr = match hp.parse().ok() {
+            Some(a) => a,
+            None => return false,
+        };
+        let mut s = match std::net::TcpStream::connect_timeout(
+            &addr,
+            std::time::Duration::from_millis(500),
+        ) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        use std::io::{Read, Write};
+        let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+        let _ = s.write_all(format!("GET / HTTP/1.0\r\nHost: {}\r\n\r\n", hp).as_bytes());
+        let mut buf = [0u8; 64];
+        let n = s.read(&mut buf).unwrap_or(0);
+        std::str::from_utf8(&buf[..n])
+            .unwrap_or("")
+            .contains(" 200 ")
+            || std::str::from_utf8(&buf[..n]).unwrap_or("").contains(" 3")
+    });
+    let init_state: &str = if offline {
+        "offline"
+    } else if initial_backend_up {
+        "ready"
+    } else {
+        "building"
+    };
+    let init_msg = match init_state {
+        "ready" => i18n
+            .get("status_landing")
+            .map_or("Redirecting shortly", |v| v.as_str()),
+        "building" => i18n
+            .get("status_building")
+            .map_or("Building...", |v| v.as_str()),
+        _ => i18n
+            .get("status_starting")
+            .map_or("Service temporarily unavailable", |v| v.as_str()),
+    };
+
+    let mut ctx = tera::Context::new();
+    ctx.insert("lang", lang);
+    ctx.insert("dir", if lang == "ar" { "rtl" } else { "ltr" });
+    ctx.insert("title", i18n.get("title").map_or("Malkuth", |v| v.as_str()));
+    ctx.insert(
+        "heading",
+        i18n.get("heading").map_or("Malkuth", |v| v.as_str()),
+    );
+    ctx.insert("tagline", i18n.get("tagline").map_or("", |v| v.as_str()));
+    ctx.insert("ready", &initial_backend_up);
+    ctx.insert("landing", &!offline);
+    ctx.insert(
+        "task",
+        i18n.get("task_landing").map_or("Landing", |v| v.as_str()),
+    );
+    ctx.insert("version", &state.version);
+    ctx.insert("status_text", init_msg);
+    ctx.insert("initial_state", init_state);
+    ctx.insert("task_label", "");
+    ctx.insert(
+        "redirect_before",
+        i18n.get("redirect_before")
+            .map_or("Redirecting in", |v| v.as_str()),
+    );
+    ctx.insert(
+        "redirect_after",
+        i18n.get("redirect_after").map_or("seconds", |v| v.as_str()),
+    );
+    ctx.insert(
+        "cancel_label",
+        i18n.get("cancel_label").map_or("Cancel", |v| v.as_str()),
+    );
+    ctx.insert(
+        "refresh_label",
+        i18n.get("refresh_label")
+            .map_or("Refresh Now", |v| v.as_str()),
+    );
+    ctx.insert("retry_before", "");
+    ctx.insert("retry_after", "");
+    ctx.insert("retry_unit", "");
+    ctx.insert(
+        "retry_manual",
+        if offline {
+            i18n.get("retry_manual")
+                .map_or("You can also refresh manually.", |v| v.as_str())
+        } else {
+            ""
+        },
+    );
+    ctx.insert("footer", "");
+    ctx.insert("footer_prefix", "");
+    ctx.insert("footer_suffix", "");
+    ctx.insert("version_label", "");
+    ctx.insert(
+        "binaries_title",
+        i18n.get("binaries_title")
+            .map_or("Supervised Binaries", |v| v.as_str()),
+    );
+    ctx.insert("binaries", &state.binaries);
+    ctx.insert(
+        "proxy_endpoint",
+        state.proxy_endpoint.as_deref().unwrap_or(""),
+    );
+    ctx.insert(
+        "proxy_label",
+        i18n.get("proxy_label").unwrap_or(&"Proxy".to_string()),
+    );
+    ctx.insert(
+        "watch_label",
+        i18n.get("watch_label").unwrap_or(&"Watching".to_string()),
+    );
+
+    if !state.watch_paths.is_empty() {
+        ctx.insert("watch_paths", &state.watch_paths);
+    }
+    ctx.insert("install_label", "");
+    ctx.insert("install_method", "");
+    ctx.insert("copy_hint", "");
+    ctx.insert("copied_msg", "");
+    ctx.insert("copy_fail_msg", "");
+    ctx.insert("logo_base64", &base64_encode(LOGO_BYTES));
+    ctx.insert("landing_nonce", &next);
+
+    match tera::Tera::one_off(TEMPLATE, &ctx, false) {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed: {e}")).into_response(),
+    }
+}
+
 async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Response {
     let lang = detect_language(req.headers());
+
+    if req.headers().get("x-malkuth-probe").is_some() {
+        return serve_probe(&lang, &state, &req);
+    }
 
     if let Some(ref backend) = state.serve_backend {
         let allowed = state.serve_hosts.is_empty()
@@ -213,78 +503,13 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
                     .is_some_and(|v| v.as_bytes() == h.as_bytes())
             });
         if allowed {
-            if let Ok(resp) = proxy_to_backend(req, backend).await {
-                return resp;
-            }
-            // Backend unreachable, serve landing page with short retry
-            let i18n = get_i18n(&lang);
-            let mut ctx = tera::Context::new();
-            ctx.insert("lang", &lang);
-            ctx.insert("dir", if lang == "ar" { "rtl" } else { "ltr" });
-            ctx.insert("title", i18n.get("title").map_or("Malkuth", |v| v.as_str()));
-            ctx.insert(
-                "heading",
-                i18n.get("heading").map_or("Malkuth", |v| v.as_str()),
-            );
-            ctx.insert("tagline", i18n.get("tagline").map_or("", |v| v.as_str()));
-            ctx.insert("ready", &false);
-            ctx.insert("landing", &true);
-            ctx.insert(
-                "task",
-                i18n.get("task_landing").map_or("Landing", |v| v.as_str()),
-            );
-            ctx.insert("version", &state.version);
-            ctx.insert(
-                "status_text",
-                i18n.get("status_landing")
-                    .map_or("Redirecting shortly", |v| v.as_str()),
-            );
-            ctx.insert(
-                "task_label",
-                i18n.get("task").map_or("Current Task", |v| v.as_str()),
-            );
-            ctx.insert(
-                "redirect_before",
-                i18n.get("redirect_before").map_or("", |v| v.as_str()),
-            );
-            ctx.insert(
-                "redirect_after",
-                i18n.get("redirect_after").map_or("", |v| v.as_str()),
-            );
-            ctx.insert(
-                "cancel_label",
-                i18n.get("cancel_label").map_or("", |v| v.as_str()),
-            );
-            ctx.insert(
-                "refresh_label",
-                i18n.get("refresh_label").map_or("", |v| v.as_str()),
-            );
-            ctx.insert("retry_before", "");
-            ctx.insert("retry_after", "");
-            ctx.insert("retry_unit", "");
-            ctx.insert("retry_manual", "");
-            ctx.insert("footer", "");
-            ctx.insert("footer_prefix", "");
-            ctx.insert("footer_suffix", "");
-            ctx.insert("version_label", "");
-            ctx.insert("proxy_label", "");
-            ctx.insert("watch_label", "");
-            ctx.insert("binaries_title", "");
-            ctx.insert("binaries", &Vec::<BinaryInfo>::new());
-            ctx.insert("proxy_endpoint", "");
-            ctx.insert("install_label", "");
-            ctx.insert("install_method", "");
-            ctx.insert("copy_hint", "");
-            ctx.insert("copied_msg", "");
-            ctx.insert("copy_fail_msg", "");
-            ctx.insert("logo_base64", &base64_encode(LOGO_BYTES));
-            match tera::Tera::one_off(TEMPLATE, &ctx, false) {
-                Ok(html) => return Html(html).into_response(),
-                Err(e) => {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed: {e}"))
-                        .into_response();
+            let nonce = read_nonce(&req);
+            if nonce > 0 && nonce < 3 {
+                if let Ok(resp) = proxy_to_backend(req, backend).await {
+                    return resp;
                 }
             }
+            return serve_landing(&lang, &state, nonce);
         }
     }
 
@@ -339,6 +564,8 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
     );
     context.insert("ready", &ready);
     context.insert("landing", &landing);
+    context.insert("landing_nonce", &0u8);
+    context.insert("initial_state", "");
     context.insert("task", task);
     context.insert("version", &state.version);
 

@@ -356,6 +356,44 @@
     cursor: pointer;
     position: relative;
   }
+  .vtty-icon {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 6px;
+    color: var(--accent);
+    cursor: pointer;
+    opacity: 0.6;
+    transition: opacity 0.2s;
+    vertical-align: middle;
+  }
+  .vtty-icon:hover { opacity: 0.9; }
+  .vtty-screen { white-space: pre-wrap !important; }
+  @keyframes vttyDots {
+    0%, 20% { opacity: 0; }
+    50% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+  .vtty-loading {
+    display: flex; align-items: center; gap: 1px;
+    animation: vttyDots 1.5s infinite;
+  }
+  .vtty-tooltip {
+    position: fixed;
+    z-index: 999999;
+    background: #0c0c18;
+    border: 1px solid #7c8aff;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: monospace;
+    font-size: 12px;
+    line-height: 1.3;
+    color: #a0a0c0;
+    max-width: 640px;
+    max-height: 400px;
+    overflow: auto;
+    white-space: pre;
+    box-shadow: 0 0 16px rgba(124,138,255,0.2);
+  }
   .binary-name-full,
   .binary-time-full,
   .binary-hash-full {
@@ -391,12 +429,14 @@
   <h1>{{ heading }}</h1>
   <p class="tagline">{{ tagline }}</p>
   <div class="status {% if landing %}status--landing{% elif ready %}status--ready{% else %}status--working{% endif %}">
-    {{ status_text }}
-  </div>
-  <div class="info-row">
-    <span class="info-label">{{ task_label }}</span>
-    <span class="info-value">{{ task }}</span>
-  </div>
+     {{ status_text }}
+   </div>
+   {% if task_label %}
+   <div class="info-row">
+     <span class="info-label">{{ task_label }}</span>
+     <span class="info-value">{{ task }}</span>
+   </div>
+   {% endif %}
   {% if proxy_endpoint %}
   <div class="info-row">
     <span class="info-label">{{ proxy_label }}</span>
@@ -418,13 +458,13 @@
     <div class="binaries-title">{{ binaries_title }}</div>
     {% for b in binaries %}
     <div class="binary-row">
-      <span class="binary-name" data-copy="{{ b.name }}"><span>{{ b.name }}</span><span class="binary-name-full">{{ b.name }}<br><span class="tooltip-hint" data-copy-hint="{{ copy_hint }}"></span></span></span>
+      <span class="binary-name" data-copy="{{ b.name }}"><span>{{ b.name }}</span><span class="vtty-icon" data-vtty-name="{{ b.name }}"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></span><span class="binary-name-full">{{ b.name }}<br><span class="tooltip-hint" data-copy-hint="{{ copy_hint }}"></span></span></span>
       <span class="binary-detail"><span class="binary-time" data-copy="{{ b.compile_time }}">{{ b.compile_time }}<span class="binary-time-full">{{ b.compile_time }}<br><span class="tooltip-hint" data-copy-hint="{{ copy_hint }}"></span></span></span> · <span class="binary-hash" data-copy="{{ b.hash }}"><span class="binary-hash-short">{{ b.hash_short }}</span><span class="binary-hash-full">{{ b.hash }}<br><span class="tooltip-hint" data-copy-hint="{{ copy_hint }}"></span></span></span></span>
     </div>
     {% endfor %}
   </div>
   {% endif %}
-  <p class="retry-hint" id="retryHint">{% if landing %}{{ redirect_before }}{% else %}{{ retry_before }}{% endif %}<span class="countdown" id="countdown" style="--countdown-color: {% if ready %}#2ed573{% else %}#ffa500{% endif %}">{% if landing %}3{% else %}10{% endif %}</span><span class="countdown-unit" id="countdownUnit">{% if landing %}{{ redirect_after }}{% else %} {{ retry_unit }}{{ retry_after }}{% endif %}</span></p>
+  <p class="retry-hint" id="retryHint">{% if landing %}{{ redirect_before }}{% else %}{{ retry_before }}{% endif %}<span class="countdown" id="countdown" style="--countdown-color: #ffa500">{% if landing %}3{% else %}10{% endif %}</span><span class="countdown-unit" id="countdownUnit">{% if landing %}{{ redirect_after }}{% else %} {{ retry_unit }}{{ retry_after }}{% endif %}</span></p>
   <div class="cancel-row"><button class="cancel-btn" id="cancelBtn">{{ cancel_label }}</button></div>
   <p class="footer">{{ footer_prefix }}<a href="https://github.com/celestia-island/malkuth" target="_blank" rel="noopener">Malkuth</a>{{ footer_suffix }}</p>
   {% if install_method %}
@@ -435,14 +475,17 @@
 </div>
 <script>
 (function(){
-  var start = {% if landing %}3{% else %}10{% endif %};
-  var s = start;
-  var e = document.getElementById("countdown");
-  var u = document.getElementById("countdownUnit");
-  var h = document.getElementById("retryHint");
-  var btn = document.getElementById("cancelBtn");
+  var probeTime = 2000;
   var timer = null;
-  var cancelled = false;
+  var countdownTimer = null;
+  var countdownRemaining = 3;
+  var statusEl = document.querySelector(".status");
+  var hintEl = document.getElementById("retryHint");
+  var btn = document.getElementById("cancelBtn");
+  var countdownSpan = document.getElementById("countdown");
+  var countdownUnitEl = document.getElementById("countdownUnit");
+  var isLanding = {% if landing %}true{% else %}false{% endif %};
+  var initState = "{% if initial_state %}{{ initial_state }}{% else %}landing{% endif %}";
 
   // Remove clip-path after accordion animation so tooltips aren't clipped
   var card = document.querySelector(".card");
@@ -453,36 +496,82 @@
     }, { once: true });
   }
 
-  function tick() {
-    if (cancelled) return;
-    if (s <= 0) {
-      location.reload();
-      return;
+  function startCountdown() {
+    function tick() {
+      if (countdownSpan) countdownSpan.textContent = countdownRemaining;
+      if (countdownRemaining <= 0) {
+        document.cookie = "__malkuth_nonce=1; max-age=1800; path=/";
+        location.reload();
+        return;
+      }
+      countdownRemaining--;
+      countdownTimer = setTimeout(tick, 1000);
     }
-    e.textContent = s;
-    s--;
-    timer = setTimeout(tick, 1000);
+    tick();
   }
 
-  function cancelCountdown() {
-    if (cancelled) {
-      location.reload();
-      return;
-    }
-    cancelled = true;
-    clearTimeout(timer);
-    e.textContent = "\u2014";
-    u.textContent = "";
-    h.textContent = "{{ retry_manual }}";
-    btn.textContent = "{{ refresh_label }}";
-    btn.classList.add("cancel-btn--refresh");
+  function poll() {
+    fetch("/", { headers: { "X-Malkuth-Probe": "1" } })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (statusEl && data.message) {
+          statusEl.textContent = data.message;
+        }
+        if (data.state === "ready") {
+          document.cookie = "__malkuth_nonce=1; max-age=1800; path=/";
+          location.reload();
+          return;
+        }
+        if (data.state === "offline") {
+          clearInterval(timer);
+          if (hintEl) { hintEl.innerHTML = ""; }
+          if (btn) { btn.style.display = "inline-block"; btn.textContent = "{{ refresh_label }}"; }
+          if (countdownSpan) { countdownSpan.textContent = "\u2014"; }
+          return;
+        }
+        if (data.state === "building") {
+          if (statusEl && data.message) {
+            statusEl.textContent = data.message;
+          }
+          if (hintEl && data.progress) {
+            hintEl.innerHTML = "<span class=\"build-log\">" + data.progress + "</span>";
+          } else if (hintEl) {
+            hintEl.innerHTML = "";
+          }
+          if (countdownSpan) {
+            countdownSpan.textContent = data.progress || "\u2014";
+          }
+          if (btn) { btn.style.display = "inline-block"; btn.textContent = "{{ refresh_label }}"; }
+        }
+        if (data.state === "starting") {
+          if (btn) { btn.style.display = "inline-block"; btn.textContent = "{{ refresh_label }}"; }
+        }
+      })
+      .catch(function() {});
+  }
+
+  if (initState === "ready") {
+    startCountdown();
+    timer = setInterval(poll, probeTime);
+  } else if (initState === "building") {
+    document.cookie = "__malkuth_nonce=1; max-age=1800; path=/";
+    if (hintEl) { hintEl.innerHTML = ""; }
+    if (countdownSpan) { countdownSpan.textContent = "\u2014"; }
+    if (countdownUnitEl) { countdownUnitEl.textContent = ""; }
+    if (btn) { btn.style.display = "inline-block"; btn.textContent = "{{ refresh_label }}"; }
+    poll();
+    timer = setInterval(poll, probeTime);
+  } else if (initState === "offline") {
+    if (countdownSpan) { countdownSpan.textContent = "\u2014"; }
+    if (btn) { btn.style.display = "inline-block"; btn.textContent = "{{ refresh_label }}"; }
   }
 
   if (btn) {
-    btn.onclick = cancelCountdown;
+    btn.onclick = function() {
+      document.cookie = "__malkuth_nonce=1; max-age=1800; path=/";
+      location.reload();
+    };
   }
-
-  tick();
 
   // ── Tooltip portal ─────────────────────────────────────
   var portal = null;
@@ -538,6 +627,53 @@
     el.addEventListener("mouseenter", function(ev) {
       showPortalTooltip(el, tt.querySelector(".tooltip-path").outerHTML + "<br>" + tt.querySelector(".tooltip-hint").outerHTML);
       ev.stopPropagation();
+    });
+  });
+
+  // Extend binary-name tooltip to include VTTY content
+  document.querySelectorAll(".binary-name").forEach(function(el) {
+    var origEnter = el.onmouseenter;
+    var icon = el.querySelector(".vtty-icon");
+    var name = icon ? icon.getAttribute("data-vtty-name") : "";
+    el._vttyName = name;
+    // Override the showPortalTooltip for binary-name to include VTTY
+    var origShow = showPortalTooltip;
+    el.addEventListener("mouseenter", function(ev) {
+      if (!name) return;
+      var content = "<div style='text-align:center;color:var(--accent);font-weight:600;margin-bottom:6px'>" + name + "</div>";
+      content += "<div class='vtty-screen' id='vtty-" + name + "' style='width:720px;height:384px;background:#0c0c18;border:1px solid var(--accent);border-radius:4px;padding:8px;font-family:monospace;font-size:11px;line-height:1.3;color:#a0a0c0;overflow:hidden;white-space:pre-wrap;margin-bottom:4px;display:flex;align-items:center;justify-content:center'>";
+      content += "<span class='vtty-loading' style='color:var(--accent);opacity:0.6;font-size:13px'>Loading";
+      content += "<span class='vtty-dots'>.</span>";
+      content += "</span></div>";
+      content += "<div class='tooltip-hint' style='text-align:center'>Click to copy</div>";
+      showPortalTooltip(el, content);
+      // Start polling
+      (function pollVtty() {
+        if (!el._vttyPolling) return;
+        var screen = document.getElementById("vtty-" + name);
+        if (!screen) return;
+        fetch("/", { headers: { "X-Malkuth-Probe": "1" } })
+          .then(function(r) { return r.json(); })
+          .then(function(d) {
+            var lines = [];
+            if (d.vttys) {
+              var v = d.vttys.find(function(x) { return x.name === name; });
+              if (v && v.log) lines = v.log;
+            }
+            if (lines.length > 0) {
+              screen.style.display = "block";
+              screen.style.textAlign = "left";
+              screen.textContent = lines.join("\n");
+            }
+          })
+          .catch(function() {});
+        setTimeout(pollVtty, 2000);
+      })();
+      el._vttyPolling = true;
+    });
+    el.addEventListener("mouseleave", function() {
+      el._vttyPolling = false;
+      hidePortalTooltip();
     });
   });
 
