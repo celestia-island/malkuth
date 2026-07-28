@@ -200,6 +200,11 @@ async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
     let mut response = Response::new(axum::body::Body::from(resp_body));
     *response.status_mut() = status;
 
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        header::HeaderValue::from_static("__malkuth_nonce=1; max-age=1800; path=/"),
+    );
+
     for (name, value) in resp_headers {
         if let (Ok(n), Ok(v)) = (
             header::HeaderName::from_bytes(name.as_bytes()),
