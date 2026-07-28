@@ -508,6 +508,8 @@
     startCountdown();
     timer = setInterval(poll, probeTime);
   } else if (initState === "building") {
+    if (countdownSpan) { countdownSpan.textContent = "\u2014"; }
+    if (countdownUnitEl) { countdownUnitEl.textContent = ""; }
     poll();
     timer = setInterval(poll, probeTime);
   } else if (initState === "offline") {
