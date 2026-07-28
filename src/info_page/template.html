@@ -357,13 +357,14 @@
     position: relative;
   }
   .vtty-icon {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
     margin-left: 6px;
     color: var(--accent);
-    font-size: 0.8rem;
     cursor: pointer;
     opacity: 0.6;
     transition: opacity 0.2s;
+    vertical-align: middle;
   }
   .vtty-icon:hover { opacity: 0.9; }
   .vtty-tooltip {
@@ -447,7 +448,7 @@
     <div class="binaries-title">{{ binaries_title }}</div>
     {% for b in binaries %}
     <div class="binary-row">
-      <span class="binary-name" data-copy="{{ b.name }}"><span>{{ b.name }}</span><span class="vtty-icon" data-vtty-name="{{ b.name }}">▸</span><span class="binary-name-full">{{ b.name }}<br><span class="tooltip-hint" data-copy-hint="{{ copy_hint }}"></span></span></span>
+      <span class="binary-name" data-copy="{{ b.name }}"><span>{{ b.name }}</span><span class="vtty-icon" data-vtty-name="{{ b.name }}"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></span><span class="binary-name-full">{{ b.name }}<br><span class="tooltip-hint" data-copy-hint="{{ copy_hint }}"></span></span></span>
       <span class="binary-detail"><span class="binary-time" data-copy="{{ b.compile_time }}">{{ b.compile_time }}<span class="binary-time-full">{{ b.compile_time }}<br><span class="tooltip-hint" data-copy-hint="{{ copy_hint }}"></span></span></span> · <span class="binary-hash" data-copy="{{ b.hash }}"><span class="binary-hash-short">{{ b.hash_short }}</span><span class="binary-hash-full">{{ b.hash }}<br><span class="tooltip-hint" data-copy-hint="{{ copy_hint }}"></span></span></span></span>
     </div>
     {% endfor %}
@@ -619,41 +620,43 @@
     });
   });
 
-  // Attach VTTY tooltips to binary-name vtty-icon
-  document.querySelectorAll(".vtty-icon").forEach(function(el) {
-    el.addEventListener("click", function(ev) {
-      ev.stopPropagation();
-      var tip = document.querySelector(".portal-tooltip") || el.querySelector(".portal-tooltip");
-      if (tip) { tip.remove(); return; }
-      var content = document.createElement("div");
-      content.className = "vtty-tooltip";
-      content.innerHTML = "Loading VTTY...";
-      content.setAttribute("data-vtty-name", el.getAttribute("data-vtty-name"));
-      el.parentElement.appendChild(content);
-      // Position near the icon
+  // Attach VTTY tooltips to binary name on hover
+  document.querySelectorAll(".binary-name").forEach(function(el) {
+    var icon = el.querySelector(".vtty-icon");
+    if (!icon) return;
+    var name = icon.getAttribute("data-vtty-name");
+    el.addEventListener("mouseenter", function(ev) {
+      var tip = document.createElement("div");
+      tip.className = "vtty-tooltip portable-tooltip";
+      tip.innerHTML = "Loading...";
+      tip.style.position = "fixed";
+      tip.style.zIndex = "999999";
+      document.body.appendChild(tip);
+      el._vttyTip = tip;
       var rect = el.getBoundingClientRect();
-      content.style.left = Math.max(8, rect.left) + "px";
-      content.style.top = (rect.bottom + 4) + "px";
-      content.style.width = "640px";
-      // Poll for build log
-      var name = el.getAttribute("data-vtty-name");
+      tip.style.left = Math.max(8, rect.left) + "px";
+      tip.style.top = (rect.bottom + 4) + "px";
       (function update() {
-        if (!content.parentElement) return;
+        if (!el._vttyTip) return;
         fetch("/", { headers: { "X-Malkuth-Probe": "1" } })
           .then(function(r) { return r.json(); })
           .then(function(d) {
+            if (!el._vttyTip) return;
             if (d.vttys) {
               var v = d.vttys.find(function(x) { return x.name === name; });
               if (v && v.log) {
-                content.textContent = v.log.join("\n") || "No output yet";
+                el._vttyTip.textContent = v.log.join("\n") || "No output yet";
               }
             } else if (d.progress) {
-              content.textContent = d.progress;
+              el._vttyTip.textContent = d.progress;
             }
           })
           .catch(function() {});
         setTimeout(update, 2000);
       })();
+    });
+    el.addEventListener("mouseleave", function() {
+      if (el._vttyTip) { el._vttyTip.remove(); el._vttyTip = null; }
     });
   });
 
