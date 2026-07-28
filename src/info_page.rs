@@ -242,21 +242,32 @@ fn read_nonce(req: &Request) -> u8 {
 fn serve_probe(lang: &str, state: &InfoState, req: &Request) -> Response {
     let nonce = read_nonce(req);
 
-    let backend_up = state
-        .serve_backend
-        .as_ref()
-        .and_then(|url| {
-            let addr = url
-                .trim_start_matches("http://")
-                .trim_start_matches("https://")
-                .to_string();
-            std::net::TcpStream::connect_timeout(
-                &addr.parse().ok()?,
-                std::time::Duration::from_millis(500),
-            )
-            .ok()
-        })
-        .is_some();
+    let backend_up = state.serve_backend.as_ref().map_or(false, |url| {
+        let host_port = url
+            .trim_start_matches("http://")
+            .trim_start_matches("https://");
+        let addr: std::net::SocketAddr = match host_port.parse().ok() {
+            Some(a) => a,
+            None => return false,
+        };
+        let mut stream = match std::net::TcpStream::connect_timeout(
+            &addr,
+            std::time::Duration::from_millis(500),
+        ) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        use std::io::{Read, Write};
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+        let req = format!("GET / HTTP/1.0\r\nHost: {}\r\n\r\n", host_port);
+        if stream.write_all(req.as_bytes()).is_err() {
+            return false;
+        }
+        let mut buf = [0u8; 64];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let head = std::str::from_utf8(&buf[..n]).unwrap_or("");
+        head.contains(" 200 ") || head.contains(" 3")
+    });
 
     let (probe_state, msg) = if nonce >= 3 {
         (
@@ -380,11 +391,28 @@ fn serve_landing(lang: &str, state: &InfoState, nonce: u8) -> Response {
     ctx.insert("footer_prefix", "");
     ctx.insert("footer_suffix", "");
     ctx.insert("version_label", "");
-    ctx.insert("proxy_label", "");
-    ctx.insert("watch_label", "");
-    ctx.insert("binaries_title", "");
-    ctx.insert("binaries", &Vec::<BinaryInfo>::new());
-    ctx.insert("proxy_endpoint", "");
+    ctx.insert(
+        "binaries_title",
+        i18n.get("binaries_title")
+            .map_or("Supervised Binaries", |v| v.as_str()),
+    );
+    ctx.insert("binaries", &state.binaries);
+    ctx.insert(
+        "proxy_endpoint",
+        state.proxy_endpoint.as_deref().unwrap_or(""),
+    );
+    ctx.insert(
+        "proxy_label",
+        i18n.get("proxy_label").unwrap_or(&"Proxy".to_string()),
+    );
+    ctx.insert(
+        "watch_label",
+        i18n.get("watch_label").unwrap_or(&"Watching".to_string()),
+    );
+
+    if !state.watch_paths.is_empty() {
+        ctx.insert("watch_paths", &state.watch_paths);
+    }
     ctx.insert("install_label", "");
     ctx.insert("install_method", "");
     ctx.insert("copy_hint", "");
