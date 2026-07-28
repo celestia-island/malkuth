@@ -420,5 +420,5 @@ Selección de features por proyecto (`malkuth`):
 ---
 *Traducción: la fuente canónica en inglés es
 `docs/en/design/platform/supervision-and-rolling-update.md`. Existe
-además la versión en chino simplificado (`docs/zhs/...`). El resto de
-idiomas (zht/ja/ko/fr/ru) están pendientes de i18n.*
+además la versión en chino simplificado (`docs/zh-Hans/...`). El resto de
+idiomas (zh-Hant/ja/ko/fr/ru) están pendientes de i18n.*

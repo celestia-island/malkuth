@@ -404,4 +404,4 @@ primary/replica, Redis Sentinel — как внутри-машинная, про
   (объединить в единую абстракцию воркера во всех трёх проектах).
 ---
 *Перевод: канонический источник — `docs/en/design/platform/supervision-and-rolling-update.md`
-(английский). Переводы на другие языки (zhs/zht/ja/ko/fr/es) ожидают i18n.*
+(английский). Переводы на другие языки (zh-Hans/zh-Hant/ja/ko/fr/es) ожидают i18n.*
