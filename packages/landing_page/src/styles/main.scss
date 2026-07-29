@@ -202,14 +202,13 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 
 /* ── VTTY hover tooltip (binary icon terminal preview) ── */
 .vtty-tooltip {
+  display: none;
   z-index: 99997;
   background: var(--terminal-bg);
   border: 1px solid rgba(255,140,66,0.2);
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0,0,0,0.5), 0 0 12px rgba(255,140,66,0.06);
-  animation: tooltip-in 0.15s ease-out;
   overflow: hidden;
-  display: flex;
   flex-direction: column;
   pointer-events: none;
 }

@@ -106,7 +106,7 @@
           <template v-else>{{ t('vtty_no_output', 'No output yet') }}</template>
         </div>
       </div>
-      <div v-if="hoveredBinary" class="vtty-tooltip" :style="hoverTooltipStyle">
+      <div v-show="hoveredBinary" class="vtty-tooltip" :style="hoverTooltipStyle">
         <div class="vtty-tooltip-header">
           <span class="vtty-tooltip-name">{{ hoveredBinary }}</span>
         </div>
