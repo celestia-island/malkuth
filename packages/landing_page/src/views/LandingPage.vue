@@ -29,11 +29,10 @@
 
     <div class="binaries" v-if="binaries.length">
       <div class="binaries-title">{{ t('binaries_title', 'Supervised Binaries') }}</div>
-      <div class="binary-row" v-for="b in binaries" :key="b.name">
-        <span class="binary-name"
-          :data-tooltip="b.name + '\n' + t('click_to_copy', 'Click to copy')"
-          @click="copy(b.name)"
-        >
+      <div class="binary-row" v-for="b in binaries" :key="b.name"
+        @mouseenter="hoverBinary(b.name)" @mouseleave="hoverBinary(null)"
+      >
+        <span class="binary-name">
           <span>{{ b.name }}</span>
           <span class="vtty-icon" @click.stop="showBinaryVtty($event, b.name)">
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
@@ -52,6 +51,17 @@
             <span class="binary-hash-short">{{ b.hash_short }}</span>
           </span>
         </span>
+        <div v-if="hoveredBinary === b.name" class="vtty-tooltip" @click.stop>
+          <div class="vtty-tooltip-header">
+            <span class="vtty-tooltip-name">{{ b.name }}</span>
+          </div>
+          <div class="vtty-tooltip-terminal">
+            <div v-if="hoverLog.length === 0" class="vtty-spinner">
+              <div class="spinner-ring"></div>
+            </div>
+            <pre v-else>{{ hoverLog.join('\n') }}</pre>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -61,13 +71,13 @@
       <span class="countdown-unit">{{ t('redirect_after', 'seconds') }}</span>
     </p>
     <div class="cancel-row">
-      <label class="toggle" v-if="state === 'ready' || state === 'landing' || state === 'starting'">
-        <input type="checkbox" v-model="redirectEnabled" @change="onRedirectToggle" />
-        <span class="toggle-track">
-          <span class="toggle-thumb"></span>
-        </span>
-        <span class="toggle-label">{{ t('auto_redirect', 'Auto-redirect') }}</span>
-      </label>
+      <button
+        v-if="state === 'ready' || state === 'landing' || state === 'starting'"
+        class="btn btn-ghost btn-sm"
+        @click="cancelRedirect"
+      >
+        {{ t('cancel_label', 'Cancel') }}
+      </button>
       <button
         v-if="showRefresh"
         class="btn btn-sm btn-primary"
@@ -98,8 +108,7 @@
           <pre v-else>{{ vttyLog.join('\n') }}</pre>
         </div>
         <div class="vtty-footer">
-          <template v-if="!vttyPolled">{{ t('vtty_connecting', 'Connecting...') }}</template>
-          <template v-else-if="vttyLog.length">{{ t('vtty_connected', 'Connected') }}</template>
+          <template v-if="vttyLog.length">{{ t('vtty_connected', 'Connected') }}</template>
           <template v-else>{{ t('vtty_no_output', 'No output yet') }}</template>
         </div>
       </div>
@@ -126,10 +135,8 @@ const messages: Record<string, Record<string, string>> = {
     redirect_after: 'seconds',
     cancel_label: 'Cancel',
     refresh_label: 'Refresh Now',
-    auto_redirect: 'Auto-redirect',
     vtty_loading: 'Loading...',
     vtty_no_output: 'No output yet',
-    vtty_connecting: 'Connecting...',
     vtty_connected: 'Connected',
     vtty_close: 'Close',
     click_to_copy: 'Click to copy',
@@ -150,10 +157,8 @@ const messages: Record<string, Record<string, string>> = {
     redirect_after: '秒后跳转',
     cancel_label: '取消跳转',
     refresh_label: '立即刷新',
-    auto_redirect: '自动跳转',
     vtty_loading: '加载中...',
     vtty_no_output: '暂无输出',
-    vtty_connecting: '连接中...',
     vtty_connected: '已连接',
     vtty_close: '关闭',
     click_to_copy: '点击以复制',
@@ -187,9 +192,9 @@ const watchPaths = ref<string[]>([])
 const binaries = ref<any[]>([])
 const vttyName = ref('')
 const vttyLog = ref<string[]>([])
-const vttyPolled = ref(false)
 const vttyVisible = ref(false)
-const redirectEnabled = ref(true)
+const hoveredBinary = ref<string | null>(null)
+const hoverLog = ref<string[]>([])
 
 const cardRef = ref<HTMLElement>()
 
@@ -227,7 +232,6 @@ function probe() {
       if (d.vttys?.length) {
         vttyLog.value = d.vttys[0].log || []
       }
-      vttyPolled.value = true
     }).catch(() => {})
 }
 
@@ -314,25 +318,40 @@ function toast(_msg: string) {
 function showBinaryVtty(_ev: MouseEvent, name: string) {
   vttyName.value = name
   vttyLog.value = []
-  vttyPolled.value = false
   vttyVisible.value = true
   probe()
+}
+
+const hoverCache: Record<string, string[]> = {}
+let hoverTimer: any = null
+
+function hoverBinary(name: string | null) {
+  clearTimeout(hoverTimer)
+  if (!name) {
+    hoverTimer = setTimeout(() => { hoveredBinary.value = null }, 150)
+    return
+  }
+  hoveredBinary.value = name
+  if (hoverCache[name]) {
+    hoverLog.value = hoverCache[name]
+  } else {
+    hoverLog.value = []
+    fetch('/', { headers: { 'X-Malkuth-Probe': '1' } })
+      .then(r => r.json())
+      .then(d => {
+        const logs = d.vttys?.[0]?.log || []
+        hoverCache[name] = logs
+        if (hoveredBinary.value === name) hoverLog.value = logs
+      }).catch(() => {})
+  }
 }
 
 function cancelRedirect() {
   clearInterval(countdownTimer)
   clearInterval(pollTimer)
   showRefresh.value = true
-}
-
-function onRedirectToggle() {
-  if (!redirectEnabled.value) {
-    cancelRedirect()
-  } else {
-    showRefresh.value = false
-    countdown.value = 3
-    startCountdown()
-  }
+  state.value = 'building'
+  document.cookie = '__malkuth_nonce=1; max-age=1800; path=/'
 }
 
 function doRefresh() {
