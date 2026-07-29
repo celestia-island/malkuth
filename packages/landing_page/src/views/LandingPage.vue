@@ -30,11 +30,11 @@
     <div class="binaries" v-if="binaries.length">
       <div class="binaries-title">{{ t('binaries_title', 'Supervised Binaries') }}</div>
       <div class="binary-row" v-for="b in binaries" :key="b.name">
-        <span class="binary-name"
-          :data-tooltip="b.name + '\n' + t('click_to_copy', 'Click to copy')"
-          @click="copy(b.name)"
-        >
-          <span>{{ b.name }}</span>
+        <div class="binary-name-cell">
+          <span class="binary-name"
+            :data-tooltip="b.name + '\n' + t('click_to_copy', 'Click to copy')"
+            @click="copy(b.name)"
+          >{{ b.name }}</span>
           <span class="vtty-icon"
             @click.stop="showBinaryVtty($event, b.name)"
             @mouseenter="hoverVttyIcon($event, b.name)"
@@ -42,7 +42,7 @@
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
           </span>
-        </span>
+        </div>
         <span class="binary-detail">
           <span class="binary-time"
             :data-tooltip="b.compile_time + '\n' + t('click_to_copy', 'Click to copy')"
