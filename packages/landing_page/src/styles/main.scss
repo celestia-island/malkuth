@@ -128,7 +128,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 }
 .vtty-header .vtty-name {
   color: var(--accent); font-weight: 600; font-size: 0.8125rem;
-  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
 }
 .vtty-close {
   background: none; border: none; cursor: pointer;
@@ -142,7 +142,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   max-width: calc(94vw - 32px);
   background: rgba(0,0,0,0.3);
   border: 1px solid rgba(255,140,66,0.08);
-  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
   font-size: 13px; line-height: 1.35;
   color: #a0a0c0;
   margin: 16px;
@@ -150,9 +150,16 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   padding: 10px;
   border-radius: 4px;
   flex-shrink: 0;
+  scrollbar-width: none;
+  position: relative;
+  &::-webkit-scrollbar { display: none; }
 }
 .vtty-terminal pre {
   margin: 0; white-space: pre-wrap; word-break: break-all;
+  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
+}
+.vtty-terminal code {
+  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
 }
 .vtty-spinner {
   display: flex; align-items: center; justify-content: center;
@@ -216,14 +223,14 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   color: var(--accent);
   font-weight: 600;
   font-size: 0.6875rem;
-  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
 }
 .malkuth-tooltip-terminal {
   width: 80ch;
   height: 24em;
   background: rgba(0,0,0,0.3);
   border: 1px solid rgba(255,140,66,0.08);
-  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
   font-size: 13px;
   line-height: 1.35;
   color: #a0a0c0;
@@ -231,9 +238,15 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   overflow: auto;
   padding: 8px;
   border-radius: 4px;
+  scrollbar-width: none;
+  &::-webkit-scrollbar { display: none; }
 }
 .malkuth-tooltip-terminal pre {
   margin: 0; white-space: pre-wrap; word-break: break-all;
+  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
+}
+.malkuth-tooltip-terminal code {
+  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
 }
 @keyframes tooltip-in { from { opacity: 0; } to { opacity: 1; } }
 
@@ -264,3 +277,38 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   transform: translateY(-1px);
 }
 .btn-primary:active { transform: translateY(0); }
+
+/* ── Terminal scroll indicator ── */
+.terminal-scroll-bar {
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.55);
+  pointer-events: auto;
+  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
+  white-space: nowrap;
+}
+.terminal-copy-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  font-size: 0.6rem;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-family: inherit;
+  transition: background 0.2s, color 0.2s;
+}
+.terminal-copy-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.8);
+}
