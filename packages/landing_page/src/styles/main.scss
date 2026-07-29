@@ -185,7 +185,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   position: relative;
   width: 80ch;
   height: 24em;
-  background: rgba(0,0,0,0.3);
+  background: var(--bg);
   border: 1px solid rgba(255,140,66,0.08);
   font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
   font-size: 13px;
@@ -205,6 +205,8 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   text-align: left;
   padding: 0;
 }
+.xterm-viewport::-webkit-scrollbar { display: none; }
+.xterm-viewport { scrollbar-width: none; }
 .malkuth-tooltip-terminal .vtty-spinner {
   position: absolute;
   inset: 0;
