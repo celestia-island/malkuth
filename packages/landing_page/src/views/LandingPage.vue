@@ -363,6 +363,12 @@ function loadInit() {
   state.value = s as any
   statusMessage.value = init.message || ''
 
+  const nonce = parseInt(getCookie('__malkuth_nonce') || '0', 10)
+  if (nonce >= 1) {
+    showRefresh.value = true
+    return
+  }
+
   if (s === 'ready' || s === 'landing') {
     startCountdown()
   } else if (s === 'building') {
@@ -371,6 +377,11 @@ function loadInit() {
   } else {
     showRefresh.value = true
   }
+}
+
+function getCookie(name: string): string | null {
+  const match = document.cookie.match(new RegExp('(^|; )' + name + '=([^;]*)'))
+  return match ? decodeURIComponent(match[2]) : null
 }
 
 onMounted(() => {
@@ -492,11 +503,10 @@ function cancelRedirect() {
   clearInterval(pollTimer)
   showRefresh.value = true
   state.value = 'building'
-  document.cookie = '__malkuth_nonce=1; max-age=1800; path=/'
 }
 
 function doRefresh() {
-  document.cookie = '__malkuth_nonce=1; max-age=1800; path=/'
+  document.cookie = '__malkuth_nonce=; max-age=0; path=/'
   location.reload()
 }
 
