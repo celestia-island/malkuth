@@ -541,7 +541,7 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
             });
         if allowed {
             let nonce = read_nonce(&req);
-            if nonce > 0 && nonce < 3 {
+            if nonce == 1 {
                 if let Ok(resp) = proxy_to_backend(req, backend).await {
                     return resp;
                 }
