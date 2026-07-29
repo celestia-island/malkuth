@@ -345,8 +345,6 @@ function startCountdown() {
     countdown.value--
     if (countdown.value <= 0) {
       clearInterval(countdownTimer)
-      const attempts = redirectAttempts.value + 1
-      localStorage.setItem('__malkuth_redirect_attempts', String(attempts))
       document.cookie = '__malkuth_nonce=1; max-age=1800; path=/'
       location.reload()
     }
@@ -365,27 +363,13 @@ function loadInit() {
   state.value = s as any
   statusMessage.value = init.message || ''
 
-  const stored = parseInt(localStorage.getItem('__malkuth_redirect_attempts') || '0', 10)
-  redirectAttempts.value = stored
-
-  if (stored >= 3) {
-    state.value = 'offline'
-    showRefresh.value = true
-    localStorage.removeItem('__malkuth_redirect_attempts')
-    return
-  }
-
-  if (s === 'ready') {
-    localStorage.removeItem('__malkuth_redirect_attempts')
+  if (s === 'ready' || s === 'landing') {
     startCountdown()
   } else if (s === 'building') {
-    document.cookie = '__malkuth_nonce=1; max-age=1800; path=/'
     showRefresh.value = true
     pollTimer = setInterval(probe, 2000)
-  } else if (s === 'offline') {
-    showRefresh.value = true
   } else {
-    startCountdown()
+    showRefresh.value = true
   }
 }
 
