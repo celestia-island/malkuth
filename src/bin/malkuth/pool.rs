@@ -12,10 +12,11 @@ use std::{
     collections::HashMap,
     net::SocketAddr,
     process::Stdio,
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex},
     time::{Duration, Instant},
 };
 use tokio::{
+    io::{AsyncBufReadExt, BufReader},
     net::TcpStream,
     process::{Child, Command},
     sync::{Mutex, Notify},
@@ -45,6 +46,7 @@ pub struct PodManager {
     /// Per-pod restart trigger.
     restart: HashMap<usize, Arc<Notify>>,
     drain_secs: u64,
+    runtime_log: Arc<StdMutex<Vec<String>>>,
 }
 
 impl PodManager {
@@ -56,6 +58,7 @@ impl PodManager {
         proxy: Option<Arc<ProxyState>>,
         ports: HashMap<usize, u16>,
         drain_secs: u64,
+        runtime_log: Arc<StdMutex<Vec<String>>>,
     ) -> Self {
         let restart = ports
             .keys()
@@ -71,6 +74,7 @@ impl PodManager {
             ports,
             restart,
             drain_secs,
+            runtime_log,
         }
     }
 
@@ -156,11 +160,53 @@ impl PodManager {
         cmd.env(&self.port_env, port.to_string());
         cmd.env("MALKUTH_POD_ID", format!("pod-{id}"));
         cmd.stdin(Stdio::null());
-        cmd.stdout(Stdio::inherit());
-        cmd.stderr(Stdio::inherit());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
         cmd.kill_on_drop(true);
         info!(pod = id, port, program, "spawning pod");
-        cmd.spawn()
+        let mut child = cmd.spawn()?;
+
+        let max_lines = 500usize;
+        let bin_name = program.to_string();
+
+        if let Some(stdout) = child.stdout.take() {
+            let log = Arc::clone(&self.runtime_log);
+            let name = bin_name.clone();
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stdout).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let t = line.trim().to_string();
+                    if !t.is_empty() {
+                        if let Ok(mut g) = log.lock() {
+                            g.push(format!("[{name}] {t}"));
+                            if g.len() > max_lines {
+                                g.remove(0);
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        if let Some(stderr) = child.stderr.take() {
+            let log = Arc::clone(&self.runtime_log);
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let t = line.trim().to_string();
+                    if !t.is_empty() {
+                        if let Ok(mut g) = log.lock() {
+                            g.push(format!("[{bin_name}] {t}"));
+                            if g.len() > max_lines {
+                                g.remove(0);
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        Ok(child)
     }
 
     /// Try to TCP-connect to `port` until success or the readiness timeout.

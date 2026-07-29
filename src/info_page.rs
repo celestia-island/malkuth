@@ -110,6 +110,7 @@ pub fn info_router(
     serve_hosts: Vec<String>,
     build_progress: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     build_log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    runtime_log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 ) -> Router<()> {
     let state = InfoState {
         version: version.into(),
@@ -121,6 +122,7 @@ pub fn info_router(
         serve_hosts,
         build_progress,
         build_log,
+        runtime_log,
     };
     Router::new()
         .route("/", get(info_page))
@@ -139,6 +141,7 @@ struct InfoState {
     serve_hosts: Vec<String>,
     build_progress: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     build_log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    runtime_log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 fn build_spa_init(state: &InfoState, lang: &str) -> serde_json::Value {
@@ -353,12 +356,23 @@ fn serve_probe(lang: &str, state: &InfoState, req: &Request) -> Response {
     };
 
     let progress = state.build_progress.lock().ok().and_then(|g| g.clone());
-    let log: Vec<String> = state
+    let runtime_log: Vec<String> = state
+        .runtime_log
+        .lock()
+        .ok()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    let build_log: Vec<String> = state
         .build_log
         .lock()
         .ok()
         .map(|g| g.clone())
         .unwrap_or_default();
+    let log: Vec<String> = if !runtime_log.is_empty() {
+        runtime_log
+    } else {
+        build_log
+    };
     let vtty_name = state
         .binaries
         .first()
