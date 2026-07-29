@@ -13,7 +13,8 @@
   --footer-hover: rgba(212, 212, 232, 0.55);
   --accent: #ff8c42;
   --accent-dim: rgba(255, 140, 66, 0.15);
-  --terminal-bg: #0c0c18;
+  --tooltip-bg: #0e0e1e;
+  --tooltip-fg: #d4d4e8;
 }
 @media (prefers-color-scheme: light) {
   :root {
@@ -29,6 +30,8 @@
     --retry: rgba(30, 30, 50, 0.35);
     --footer: rgba(30, 30, 50, 0.2);
     --footer-hover: rgba(30, 30, 50, 0.5);
+    --tooltip-bg: #ffffff;
+    --tooltip-fg: #333340;
   }
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -112,6 +115,34 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .vtty-icon { display: inline-flex; align-items: center; margin-left: 6px; color: inherit; cursor: pointer; opacity: 0.6; transition: opacity 0.2s; vertical-align: middle; }
 .vtty-icon:hover { opacity: 0.9; }
 
+.vtty-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+  font-size: 0.65rem;
+  color: var(--label);
+  transition: all 0.2s;
+  margin-left: 4px;
+  user-select: none;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.vtty-badge:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: var(--value);
+}
+.vtty-badge.is-pinned {
+  background: rgba(255, 140, 66, 0.1);
+  border-color: rgba(255, 140, 66, 0.25);
+  color: var(--accent);
+}
+
 .binary-detail { color: var(--label); font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace; font-size: 0.6875rem; text-align: right; }
 .binary-time { cursor: pointer; }
 .binary-hash { color: rgba(46, 213, 115, 0.7); cursor: pointer; position: relative; }
@@ -141,7 +172,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   opacity: 0.6;
 }
 .malkuth-tooltip.is-terminal {
-  background: var(--terminal-bg);
+  background: var(--tooltip-bg);
   border-color: rgba(255,140,66,0.2);
   padding: 0;
   max-width: none;
@@ -227,10 +258,12 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .malkuth-tooltip-footer {
   position: absolute;
   bottom: 2px;
+  left: 2px;
   right: 2px;
   z-index: 10;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 6px;
   background: rgba(0, 0, 0, 0.55);
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -242,16 +275,57 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
   white-space: nowrap;
 }
+.footer-pin-area {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  font-style: italic;
+  transition: color 0.2s;
+  flex-shrink: 0;
+}
+.footer-pin-area:hover {
+  color: rgba(255, 255, 255, 0.85);
+}
+.footer-pin-area svg {
+  flex-shrink: 0;
+}
+.footer-unpin-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  font-size: 0.6rem;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: inherit;
+  transition: background 0.2s, color 0.2s;
+  flex-shrink: 0;
+}
+.footer-unpin-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.8);
+}
+.footer-info {
+  flex: 1;
+  text-align: center;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .malkuth-tooltip-footer .terminal-copy-btn {
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.12);
   color: rgba(255, 255, 255, 0.55);
   cursor: pointer;
   font-size: 0.6rem;
-  padding: 1px 6px;
+  padding: 3px 5px;
   border-radius: 3px;
-  font-family: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   transition: background 0.2s, color 0.2s;
+  flex-shrink: 0;
 }
 .malkuth-tooltip-footer .terminal-copy-btn:hover {
   background: rgba(255, 255, 255, 0.15);

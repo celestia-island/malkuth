@@ -37,12 +37,20 @@
             @mouseleave="hideTooltip"
             @click="copy(b.name)"
           >{{ b.name }}</span>
-          <span class="vtty-icon"
-            @click.stop="pinVttyTooltip($event, b.name)"
-            @mouseenter="hoverVttyIcon($event, b.name)"
+          <span class="vtty-badge"
+            :class="{ 'is-pinned': tooltipPinned && pinnedBinaryName === b.name }"
+            @click.stop="togglePin($event, b.name)"
+            @mouseenter="hoverVttyBadge($event, b.name)"
             @mouseleave="hoverVttyLeave"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            <template v-if="tooltipPinned && pinnedBinaryName === b.name">
+              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.7V5h1a2 2 0 0 0 2-2H6a2 2 0 0 0 2 2h1v5.7a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17z"/></svg>
+              <span>{{ t('vtty_pinned', 'Pinned') }}</span>
+            </template>
+            <template v-else>
+              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+              <span>{{ t('vtty_label', 'Terminal') }}</span>
+            </template>
           </span>
         </div>
         <span class="binary-detail">
@@ -119,8 +127,15 @@
               <div class="spinner-ring"></div>
             </div>
             <div class="malkuth-tooltip-footer" v-if="(tooltip.log || []).length">
-              <span>│ {{ tooltipScrollLine }}/{{ (tooltip.log || []).length }} lines │ {{ formatTime(tooltipFirstTime) }} → {{ formatTime(tooltipLastTime) }} │</span>
-              <button class="terminal-copy-btn" @click.stop="copyTooltipTerminal">Copy</button>
+              <span class="footer-pin-area" @click.stop="togglePinFromFooter">
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.7V5h1a2 2 0 0 0 2-2H6a2 2 0 0 0 2 2h1v5.7a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17z"/></svg>
+                <span>{{ tooltipPinned ? t('vtty_pinned', 'Pinned') : t('vtty_click_to_pin', 'Click to pin') }}</span>
+              </span>
+              <button v-if="tooltipPinned" class="footer-unpin-btn" @click.stop="unpinTooltip">{{ t('vtty_unpin', 'Unpin') }}</button>
+              <span class="footer-info">│ {{ tooltipScrollLine }}/{{ (tooltip.log || []).length }} lines │ {{ formatTime(tooltipFirstTime) }} → {{ formatTime(tooltipLastTime) }} │</span>
+              <button class="terminal-copy-btn" @click.stop="copyTooltipTerminal">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              </button>
             </div>
           </div>
         </template>
@@ -156,6 +171,10 @@ const messages: Record<string, Record<string, string>> = {
     vtty_close: 'Close',
     click_to_copy: 'Click to copy',
     copied_msg: 'Copied to clipboard',
+    vtty_label: 'Terminal',
+    vtty_click_to_pin: 'Click to pin',
+    vtty_pinned: 'Pinned',
+    vtty_unpin: 'Unpin',
   },
   zhs: {
     heading: 'Malkuth',
@@ -178,6 +197,10 @@ const messages: Record<string, Record<string, string>> = {
     vtty_close: '关闭',
     click_to_copy: '点击以复制',
     copied_msg: '已复制到剪贴板',
+    vtty_label: '终端',
+    vtty_click_to_pin: '点击固定',
+    vtty_pinned: '已固定',
+    vtty_unpin: '取消固定',
   },
 }
 
@@ -207,6 +230,7 @@ const watchPaths = ref<string[]>([])
 const binaries = ref<any[]>([])
 
 const tooltipPinned = ref(false)
+const pinnedBinaryName = ref<string | null>(null)
 const tooltipFirstTime = ref(0)
 const tooltipLastTime = ref(0)
 const tooltipScrollLine = ref(1)
@@ -232,49 +256,49 @@ function getXtermOptions() {
   const dark = !window.matchMedia('(prefers-color-scheme: light)').matches
   return {
     theme: dark ? {
-      background: '#0e0e1e',
-      foreground: '#d4d4e8',
-      cursor: '#ff8c42',
-      cursorAccent: '#0e0e1e',
-      selectionBackground: '#ff8c4240',
-      black: '#0c0c18',
-      red: '#cd0000',
-      green: '#00cd00',
-      yellow: '#cdcd00',
-      blue: '#0000ee',
-      magenta: '#cd00cd',
-      cyan: '#00cdcd',
-      white: '#e5e5e5',
-      brightBlack: '#666666',
-      brightRed: '#ff0000',
-      brightGreen: '#00ff00',
-      brightYellow: '#ffff00',
-      brightBlue: '#5c5cff',
-      brightMagenta: '#ff00ff',
-      brightCyan: '#00ffff',
+      background: '#282c34',
+      foreground: '#dcdfe4',
+      cursor: '#528bff',
+      cursorAccent: '#282c34',
+      selectionBackground: '#528bff40',
+      black: '#282c34',
+      red: '#e06c75',
+      green: '#98c379',
+      yellow: '#e5c07b',
+      blue: '#61afef',
+      magenta: '#c678dd',
+      cyan: '#56b6c2',
+      white: '#dcdfe4',
+      brightBlack: '#5c6370',
+      brightRed: '#e06c75',
+      brightGreen: '#98c379',
+      brightYellow: '#e5c07b',
+      brightBlue: '#61afef',
+      brightMagenta: '#c678dd',
+      brightCyan: '#56b6c2',
       brightWhite: '#ffffff',
     } : {
-      background: '#f5f5f0',
-      foreground: '#333340',
-      cursor: '#ff8c42',
-      cursorAccent: '#f5f5f0',
-      selectionBackground: '#ff8c4240',
-      black: '#e0e0d8',
-      red: '#cd0000',
-      green: '#00cd00',
-      yellow: '#cdcd00',
-      blue: '#0000ee',
-      magenta: '#cd00cd',
-      cyan: '#00cdcd',
-      white: '#1a1a1a',
-      brightBlack: '#888888',
-      brightRed: '#ff0000',
-      brightGreen: '#00ff00',
-      brightYellow: '#ffff00',
-      brightBlue: '#5c5cff',
-      brightMagenta: '#ff00ff',
-      brightCyan: '#00ffff',
-      brightWhite: '#000000',
+      background: '#fafafa',
+      foreground: '#383a42',
+      cursor: '#0084ff',
+      cursorAccent: '#fafafa',
+      selectionBackground: '#0084ff40',
+      black: '#fafafa',
+      red: '#e45649',
+      green: '#50a14f',
+      yellow: '#986801',
+      blue: '#4078f2',
+      magenta: '#a626a4',
+      cyan: '#0184bc',
+      white: '#383a42',
+      brightBlack: '#a0a1a7',
+      brightRed: '#e45649',
+      brightGreen: '#50a14f',
+      brightYellow: '#986801',
+      brightBlue: '#4078f2',
+      brightMagenta: '#a626a4',
+      brightCyan: '#0184bc',
+      brightWhite: '#090a0b',
     },
     cols: 80,
     rows: 24,
@@ -461,7 +485,7 @@ function hoverTooltipLeave() {
 
 const hoverCache: Record<string, string[]> = {}
 
-function hoverVttyIcon(ev: MouseEvent, name: string) {
+function hoverVttyBadge(ev: MouseEvent, name: string) {
   clearTimeout(hideTimer)
   const el = ev.currentTarget as HTMLElement
   tooltip.value = {
@@ -517,15 +541,33 @@ function hoverVttyLeave() {
   }, 200)
 }
 
-function pinVttyTooltip(_ev: MouseEvent, _name: string) {
+function togglePin(ev: MouseEvent, name: string) {
+  if (tooltipPinned.value && pinnedBinaryName.value === name) {
+    unpinTooltip()
+    return
+  }
+  pinnedBinaryName.value = name
   tooltipPinned.value = true
   cancelRedirect()
+  clearTimeout(hideTimer)
+  hoverVttyBadge(ev, name)
 }
 
 function unpinTooltip() {
   tooltipPinned.value = false
+  pinnedBinaryName.value = null
   disposeTooltipXterm()
   tooltip.value = null
+}
+
+function togglePinFromFooter() {
+  if (tooltipPinned.value) {
+    unpinTooltip()
+  } else {
+    pinnedBinaryName.value = tooltip.value?.binaryName || null
+    tooltipPinned.value = true
+    cancelRedirect()
+  }
 }
 
 function cancelRedirect() {
