@@ -112,7 +112,11 @@
       </div>
       <div v-if="tooltip" class="malkuth-tooltip" :class="{ 'is-terminal': tooltip.kind === 'terminal' }" :style="tooltipStyle">
         <template v-if="tooltip.kind === 'text'">
-          {{ tooltip.content }}
+          <span v-if="tooltip.content.includes('\n')">
+            {{ tooltip.content.substring(0, tooltip.content.lastIndexOf('\n')) }}<br/>
+            <i class="tooltip-copy-hint">{{ tooltip.content.substring(tooltip.content.lastIndexOf('\n') + 1) }}</i>
+          </span>
+          <span v-else>{{ tooltip.content }}</span>
         </template>
         <template v-else-if="tooltip.kind === 'terminal'">
           <div class="malkuth-tooltip-header">

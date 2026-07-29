@@ -196,6 +196,10 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   pointer-events: none;
   animation: tooltip-in 0.15s ease-out;
 }
+
+.tooltip-copy-hint {
+  opacity: 0.6;
+}
 .malkuth-tooltip.is-terminal {
   background: var(--terminal-bg);
   border-color: rgba(255,140,66,0.2);
