@@ -546,6 +546,9 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
                     return resp;
                 }
             }
+            if !LANDING_PAGE_HTML.starts_with("<html><body><h1>Malkuth</h1>") {
+                return serve_spa(&state, &lang);
+            }
             return serve_landing(&lang, &state).await;
         }
     }
