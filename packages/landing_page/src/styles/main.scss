@@ -142,12 +142,15 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   max-width: calc(94vw - 32px);
   background: rgba(0,0,0,0.3);
   border: 1px solid rgba(255,140,66,0.08);
-  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
+  font-family: "Cascadia Code","Fira Code","JetBrains Mono","SF Mono",Consolas,"Courier New",monospace;
   font-size: 13px; line-height: 1.35;
   color: #a0a0c0;
   margin: 16px;
+  overflow: auto;
+  padding: 10px;
   border-radius: 4px;
   flex-shrink: 0;
+  scrollbar-width: none;
   position: relative;
 }
 .vtty-spinner {
@@ -167,6 +170,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   text-align: center; font-size: 0.6875rem; color: rgba(255,255,255,0.3);
   flex-shrink: 0;
 }
+.vtty-terminal .xterm { text-align: left; padding: 0; }
 
 .binary-detail { color: var(--label); font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace; font-size: 0.6875rem; text-align: right; }
 .binary-time { cursor: pointer; }
