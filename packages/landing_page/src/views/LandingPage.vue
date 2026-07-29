@@ -29,12 +29,17 @@
 
     <div class="binaries" v-if="binaries.length">
       <div class="binaries-title">{{ t('binaries_title', 'Supervised Binaries') }}</div>
-      <div class="binary-row" v-for="b in binaries" :key="b.name"
-        @mouseenter="hoverBinary(b.name)" @mouseleave="hoverBinary(null)"
-      >
-        <span class="binary-name">
+      <div class="binary-row" v-for="b in binaries" :key="b.name">
+        <span class="binary-name"
+          :data-tooltip="b.name + '\n' + t('click_to_copy', 'Click to copy')"
+          @click="copy(b.name)"
+        >
           <span>{{ b.name }}</span>
-          <span class="vtty-icon" @click.stop="showBinaryVtty($event, b.name)">
+          <span class="vtty-icon"
+            @click.stop="showBinaryVtty($event, b.name)"
+            @mouseenter="hoverVttyIcon($event, b.name)"
+            @mouseleave="hoverVttyLeave"
+          >
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
           </span>
         </span>
@@ -51,17 +56,6 @@
             <span class="binary-hash-short">{{ b.hash_short }}</span>
           </span>
         </span>
-        <div v-if="hoveredBinary === b.name" class="vtty-tooltip" @click.stop>
-          <div class="vtty-tooltip-header">
-            <span class="vtty-tooltip-name">{{ b.name }}</span>
-          </div>
-          <div class="vtty-tooltip-terminal">
-            <div v-if="hoverLog.length === 0" class="vtty-spinner">
-              <div class="spinner-ring"></div>
-            </div>
-            <pre v-else>{{ hoverLog.join('\n') }}</pre>
-          </div>
-        </div>
       </div>
     </div>
 
@@ -110,6 +104,17 @@
         <div class="vtty-footer">
           <template v-if="vttyLog.length">{{ t('vtty_connected', 'Connected') }}</template>
           <template v-else>{{ t('vtty_no_output', 'No output yet') }}</template>
+        </div>
+      </div>
+      <div v-if="hoveredBinary" class="vtty-tooltip" :style="hoverTooltipStyle">
+        <div class="vtty-tooltip-header">
+          <span class="vtty-tooltip-name">{{ hoveredBinary }}</span>
+        </div>
+        <div class="vtty-tooltip-terminal">
+          <div v-if="hoverLog.length === 0" class="vtty-spinner">
+            <div class="spinner-ring"></div>
+          </div>
+          <pre v-else>{{ hoverLog.join('\n') }}</pre>
         </div>
       </div>
     </Teleport>
@@ -195,6 +200,7 @@ const vttyLog = ref<string[]>([])
 const vttyVisible = ref(false)
 const hoveredBinary = ref<string | null>(null)
 const hoverLog = ref<string[]>([])
+const hoverTooltipStyle = ref<Record<string, string>>({})
 
 const cardRef = ref<HTMLElement>()
 
@@ -324,14 +330,21 @@ function showBinaryVtty(_ev: MouseEvent, name: string) {
 
 const hoverCache: Record<string, string[]> = {}
 let hoverTimer: any = null
+let hoverIconEl: HTMLElement | null = null
 
-function hoverBinary(name: string | null) {
+function hoverVttyIcon(ev: MouseEvent, name: string) {
   clearTimeout(hoverTimer)
-  if (!name) {
-    hoverTimer = setTimeout(() => { hoveredBinary.value = null }, 150)
-    return
-  }
+  hoverIconEl = ev.currentTarget as HTMLElement
   hoveredBinary.value = name
+
+  const rect = hoverIconEl.getBoundingClientRect()
+  hoverTooltipStyle.value = {
+    position: 'fixed',
+    top: (rect.top - 8) + 'px',
+    left: (rect.right + 8) + 'px',
+    transform: 'translateY(-100%)',
+  }
+
   if (hoverCache[name]) {
     hoverLog.value = hoverCache[name]
   } else {
@@ -344,6 +357,10 @@ function hoverBinary(name: string | null) {
         if (hoveredBinary.value === name) hoverLog.value = logs
       }).catch(() => {})
   }
+}
+
+function hoverVttyLeave() {
+  hoverTimer = setTimeout(() => { hoveredBinary.value = null }, 200)
 }
 
 function cancelRedirect() {
