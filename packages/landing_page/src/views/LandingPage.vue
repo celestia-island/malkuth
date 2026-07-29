@@ -16,14 +16,14 @@
       <div class="info-row" v-if="watchPaths.length">
         <span class="info-label">{{ t('watch_label', 'Watching') }}</span>
         <div class="watch-list">
-          <HTooltip v-for="p in watchPaths" :key="p"
-            :text="`${p}\n${t('click_to_copy', 'Click to copy')}`"
-            placement="top" :delay="200" :max-width="'420px'"
+          <span v-for="p in watchPaths" :key="p"
+            class="watch-item"
+            @mouseenter="showTextTooltip($event, p + '\n' + t('click_to_copy', 'Click to copy'))"
+            @mouseleave="hideTooltip"
+            @click="copy(p)"
           >
-            <span class="watch-item" @click="copy(p)">
-              <span class="watch-text">{{ p }}</span>
-            </span>
-          </HTooltip>
+            <span class="watch-text">{{ p }}</span>
+          </span>
         </div>
       </div>
     </template>
@@ -31,30 +31,34 @@
     <div class="binaries" v-if="binaries.length">
       <div class="binaries-title">{{ t('binaries_title', 'Supervised Binaries') }}</div>
       <div class="binary-row" v-for="b in binaries" :key="b.name">
-        <HTooltip :text="`${b.name}\n${t('click_to_copy', 'Click to copy')}`"
-          placement="top" :delay="200" :max-width="'420px'"
-        >
-          <span class="binary-name" @click="copy(b.name)">
-            <span>{{ b.name }}</span>
-            <span class="vtty-icon" @click.stop="showBinaryVtty($event, b.name)">
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-            </span>
+        <div class="binary-name-cell">
+          <span class="binary-name"
+            @mouseenter="showTextTooltip($event, b.name + '\n' + t('click_to_copy', 'Click to copy'))"
+            @mouseleave="hideTooltip"
+            @click="copy(b.name)"
+          >{{ b.name }}</span>
+          <span class="vtty-icon"
+            @click.stop="showBinaryVtty($event, b.name)"
+            @mouseenter="hoverVttyIcon($event, b.name)"
+            @mouseleave="hoverVttyLeave"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
           </span>
-        </HTooltip>
+        </div>
         <span class="binary-detail">
-          <HTooltip :text="`${b.compile_time}\n${t('click_to_copy', 'Click to copy')}`"
-            placement="top" :delay="200" :max-width="'420px'"
-          >
-            <span class="binary-time" @click="copy(b.compile_time)">{{ b.compile_time }}</span>
-          </HTooltip>
+          <span class="binary-time"
+            @mouseenter="showTextTooltip($event, b.compile_time + '\n' + t('click_to_copy', 'Click to copy'))"
+            @mouseleave="hideTooltip"
+            @click="copy(b.compile_time)"
+          >{{ b.compile_time }}</span>
           ·
-          <HTooltip :text="`${b.hash}\n${t('click_to_copy', 'Click to copy')}`"
-            placement="top" :delay="200" :max-width="'420px'"
+          <span class="binary-hash"
+            @mouseenter="showTextTooltip($event, b.hash + '\n' + t('click_to_copy', 'Click to copy'))"
+            @mouseleave="hideTooltip"
+            @click="copy(b.hash)"
           >
-            <span class="binary-hash" @click="copy(b.hash)">
-              <span class="binary-hash-short">{{ b.hash_short }}</span>
-            </span>
-          </HTooltip>
+            <span class="binary-hash-short">{{ b.hash_short }}</span>
+          </span>
         </span>
       </div>
     </div>
@@ -65,22 +69,20 @@
       <span class="countdown-unit">{{ t('redirect_after', 'seconds') }}</span>
     </p>
     <div class="cancel-row">
-      <HButton
+      <button
         v-if="state === 'ready' || state === 'landing' || state === 'starting'"
-        variant="ghost"
-        size="sm"
+        class="btn btn-ghost btn-sm"
         @click="cancelRedirect"
       >
         {{ t('cancel_label', 'Cancel') }}
-      </HButton>
-      <HButton
+      </button>
+      <button
         v-if="showRefresh"
-        :variant="state === 'ready' || state === 'offline' ? 'outline' : 'ghost'"
-        size="sm"
+        class="btn btn-sm btn-primary"
         @click="doRefresh"
       >
         {{ t('refresh_label', 'Refresh Now') }}
-      </HButton>
+      </button>
     </div>
 
     <p class="footer">
@@ -91,11 +93,42 @@
     <Teleport to="body">
       <div class="vtty-backdrop" v-if="vttyVisible" @click="vttyVisible = false" />
       <div class="vtty-panel" v-if="vttyVisible" @click.stop>
-        <div class="vtty-title">{{ vttyName }}</div>
-        <div class="vtty-screen">
-          <div v-if="!vttyLog.length" class="vtty-loading">{{ t('vtty_loading', 'Loading...') }}</div>
+        <div class="vtty-header">
+          <span class="vtty-name">{{ vttyName }}</span>
+          <button class="vtty-close" @click="vttyVisible = false" :aria-label="t('vtty_close', 'Close')">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="vtty-terminal">
+          <div v-if="vttyLog.length === 0" class="vtty-spinner">
+            <div class="spinner-ring"></div>
+          </div>
           <pre v-else>{{ vttyLog.join('\n') }}</pre>
         </div>
+        <div class="vtty-footer">
+          <template v-if="vttyLog.length">{{ t('vtty_connected', 'Connected') }}</template>
+          <template v-else>{{ t('vtty_no_output', 'No output yet') }}</template>
+        </div>
+      </div>
+      <div v-if="tooltip" class="malkuth-tooltip" :class="{ 'is-terminal': tooltip.kind === 'terminal' }" :style="tooltipStyle">
+        <template v-if="tooltip.kind === 'text'">
+          <span v-if="tooltip.content.includes('\n')">
+            {{ tooltip.content.substring(0, tooltip.content.lastIndexOf('\n')) }}<br/>
+            <i class="tooltip-copy-hint">{{ tooltip.content.substring(tooltip.content.lastIndexOf('\n') + 1) }}</i>
+          </span>
+          <span v-else>{{ tooltip.content }}</span>
+        </template>
+        <template v-else-if="tooltip.kind === 'terminal'">
+          <div class="malkuth-tooltip-header">
+            <span class="malkuth-tooltip-name">{{ tooltip.binaryName }}</span>
+          </div>
+          <div class="malkuth-tooltip-terminal">
+            <div v-if="(tooltip.log || []).length === 0" class="vtty-spinner">
+              <div class="spinner-ring"></div>
+            </div>
+            <pre v-else>{{ (tooltip.log || []).join('\n') }}</pre>
+          </div>
+        </template>
       </div>
     </Teleport>
   </div>
@@ -103,9 +136,66 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useI18n, HTooltip, HButton } from '@celestia-island/hikari'
 
-const { t } = useI18n()
+const messages: Record<string, Record<string, string>> = {
+  en: {
+    heading: 'Malkuth',
+    tagline: 'This port is managed by the Malkuth process supervisor',
+    status_landing: 'Redirecting shortly',
+    status_building: 'The service is currently being rebuilt. Please wait a moment',
+    status_starting: 'The service is starting up',
+    status_ready: 'All services are running normally.',
+    status_offline: 'Service is offline',
+    proxy_label: 'Proxy',
+    watch_label: 'Watching',
+    binaries_title: 'Supervised Binaries',
+    redirect_before: 'Redirecting in',
+    redirect_after: 'seconds',
+    cancel_label: 'Cancel',
+    refresh_label: 'Refresh Now',
+    vtty_loading: 'Loading...',
+    vtty_no_output: 'No output yet',
+    vtty_connected: 'Connected',
+    vtty_close: 'Close',
+    click_to_copy: 'Click to copy',
+    copied_msg: 'Copied to clipboard',
+  },
+  zhs: {
+    heading: 'Malkuth',
+    tagline: '此端口由 Malkuth 进程管理器接管',
+    status_landing: '即将跳转',
+    status_building: '服务正在重新构建中，请稍候',
+    status_starting: '服务正在启动中',
+    status_ready: '所有服务运行正常。',
+    status_offline: '服务已离线',
+    proxy_label: '代理',
+    watch_label: '监听',
+    binaries_title: '受监管二进制',
+    redirect_before: '将在',
+    redirect_after: '秒后跳转',
+    cancel_label: '取消跳转',
+    refresh_label: '立即刷新',
+    vtty_loading: '加载中...',
+    vtty_no_output: '暂无输出',
+    vtty_connected: '已连接',
+    vtty_close: '关闭',
+    click_to_copy: '点击以复制',
+    copied_msg: '已复制到剪贴板',
+  },
+}
+
+function resolveLocale(): string {
+  const full = (navigator.language || 'en').toLowerCase()
+  if (full.startsWith('zh-cn') || full.startsWith('zh-sg') || full.startsWith('zh-my')) return 'zhs'
+  if (full.startsWith('zh-tw') || full.startsWith('zh-hk') || full.startsWith('zh-mo')) return 'zht'
+  if (full.split('-')[0] === 'zh') return 'zhs'
+  return 'en'
+}
+
+function t(key: string, fallback: string): string {
+  const lang = resolveLocale()
+  return messages[lang]?.[key] || messages.en?.[key] || fallback
+}
 
 const state = ref<'landing' | 'building' | 'ready' | 'offline' | 'starting'>('landing')
 const countdown = ref(3)
@@ -121,6 +211,14 @@ const binaries = ref<any[]>([])
 const vttyName = ref('')
 const vttyLog = ref<string[]>([])
 const vttyVisible = ref(false)
+interface TooltipState {
+  kind: 'text' | 'terminal'
+  el: HTMLElement
+  content: string
+  binaryName?: string
+  log?: string[]
+}
+const tooltip = ref<TooltipState | null>(null)
 
 const cardRef = ref<HTMLElement>()
 
@@ -138,6 +236,16 @@ const statusText = computed(() => {
   if (state.value === 'building') return t('status_building', 'Building')
   if (state.value === 'offline') return t('status_offline', 'Service is offline')
   return t('status_landing', 'Redirecting shortly')
+})
+
+const tooltipStyle = computed(() => {
+  if (!tooltip.value) return {}
+  const rect = tooltip.value.el.getBoundingClientRect()
+  return {
+    left: (rect.left + rect.width / 2) + 'px',
+    top: (rect.top - 12) + 'px',
+    transform: 'translate(-50%, -100%)',
+  }
 })
 
 function probe() {
@@ -241,11 +349,65 @@ function toast(_msg: string) {
   (el as any)._timer = setTimeout(() => el!.classList.remove('show'), 2000)
 }
 
-function showBinaryVtty(ev: MouseEvent, name: string) {
+function showBinaryVtty(_ev: MouseEvent, name: string) {
   vttyName.value = name
   vttyLog.value = []
   vttyVisible.value = true
   probe()
+}
+
+function showTextTooltip(ev: MouseEvent, content: string) {
+  tooltip.value = {
+    kind: 'text',
+    el: ev.currentTarget as HTMLElement,
+    content,
+  }
+}
+
+let hideTimer: any = null
+
+function hideTooltip() {
+  if (tooltip.value?.kind === 'text') {
+    tooltip.value = null
+    return
+  }
+  clearTimeout(hideTimer)
+  hideTimer = setTimeout(() => {
+    tooltip.value = null
+  }, 200)
+}
+
+const hoverCache: Record<string, string[]> = {}
+
+function hoverVttyIcon(ev: MouseEvent, name: string) {
+  clearTimeout(hideTimer)
+  const el = ev.currentTarget as HTMLElement
+  tooltip.value = {
+    kind: 'terminal',
+    el,
+    content: '',
+    binaryName: name,
+    log: hoverCache[name] || [],
+  }
+
+  if (!hoverCache[name]) {
+    fetch('/', { headers: { 'X-Malkuth-Probe': '1' } })
+      .then(r => r.json())
+      .then(d => {
+        const logs = d.vttys?.[0]?.log || []
+        hoverCache[name] = logs
+        if (tooltip.value?.kind === 'terminal' && tooltip.value.binaryName === name) {
+          tooltip.value = { ...tooltip.value, log: logs }
+        }
+      }).catch(() => {})
+  }
+}
+
+function hoverVttyLeave() {
+  clearTimeout(hideTimer)
+  hideTimer = setTimeout(() => {
+    tooltip.value = null
+  }, 200)
 }
 
 function cancelRedirect() {

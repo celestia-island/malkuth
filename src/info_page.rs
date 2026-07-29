@@ -8,6 +8,8 @@ use axum::{
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+include!(concat!(env!("OUT_DIR"), "/landing_page_html.rs"));
+
 const LOGO_BYTES: &[u8] = include_bytes!("info_page/logo.webp");
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -122,7 +124,6 @@ pub fn info_router(
     };
     Router::new()
         .route("/", get(info_page))
-        .route("/assets/{*path}", get(serve_asset_file))
         .fallback(get(info_page))
         .with_state(state)
 }
@@ -139,13 +140,6 @@ struct InfoState {
     build_progress: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     build_log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
-
-static LANDING_PAGE_DIR: std::sync::LazyLock<Option<include_dir::Dir<'static>>> =
-    std::sync::LazyLock::new(|| {
-        Some(include_dir::include_dir!(
-            "$CARGO_MANIFEST_DIR/target/landing_page"
-        ))
-    });
 
 fn build_spa_init(state: &InfoState, lang: &str) -> serde_json::Value {
     let i18n = get_i18n(lang);
@@ -178,63 +172,11 @@ fn build_spa_init(state: &InfoState, lang: &str) -> serde_json::Value {
 }
 
 fn serve_spa(state: &InfoState, lang: &str) -> Response {
-    let Some(dist) = LANDING_PAGE_DIR.as_ref() else {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "SPA dist not found").into_response();
-    };
-    let Some(index) = dist.get_file("index.html") else {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "SPA index.html missing").into_response();
-    };
-    let html = std::str::from_utf8(index.contents()).unwrap_or("");
     let init_data = build_spa_init(state, lang);
     let init_json = serde_json::to_string(&init_data).unwrap_or_default();
     let init_script = format!("<script>window.__MALKUTH_INIT__ = {};</script>", init_json);
-    let result = html.replacen("</head>", &format!("{init_script}</head>"), 1);
+    let result = LANDING_PAGE_HTML.replacen("</head>", &format!("{init_script}</head>"), 1);
     Html(result).into_response()
-}
-
-async fn serve_asset_file(
-    _state: axum::extract::State<InfoState>,
-    path: axum::extract::Path<String>,
-) -> Response {
-    let Some(dist) = LANDING_PAGE_DIR.as_ref() else {
-        return (StatusCode::NOT_FOUND, "Not found").into_response();
-    };
-    if path.contains("..") {
-        return (StatusCode::NOT_FOUND, "Not found").into_response();
-    }
-    let asset_path = format!("assets/{}", path.as_str());
-    let Some(file) = dist.get_file(&asset_path) else {
-        return (StatusCode::NOT_FOUND, "Not found").into_response();
-    };
-    let content_type = guess_mime(&asset_path);
-    let mut resp = Response::new(axum::body::Body::from(file.contents().to_vec()));
-    resp.headers_mut().insert(
-        header::CONTENT_TYPE,
-        header::HeaderValue::from_static(content_type),
-    );
-    resp
-}
-
-fn guess_mime(path: &str) -> &'static str {
-    match std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-    {
-        "js" | "mjs" => "application/javascript",
-        "css" => "text/css",
-        "html" => "text/html",
-        "json" => "application/json",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "svg" => "image/svg+xml",
-        "woff" => "font/woff",
-        "woff2" => "font/woff2",
-        "ico" => "image/x-icon",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        _ => "application/octet-stream",
-    }
 }
 
 async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
@@ -593,7 +535,7 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
         return serve_probe(&lang, &state, &req);
     }
 
-    if LANDING_PAGE_DIR.is_some() {
+    if !LANDING_PAGE_HTML.starts_with("<html><body><h1>Malkuth</h1>") {
         return serve_spa(&state, &lang);
     }
 
