@@ -11,12 +11,6 @@
   --retry: rgba(212, 212, 232, 0.4);
   --footer: rgba(212, 212, 232, 0.25);
   --footer-hover: rgba(212, 212, 232, 0.55);
-  /* hikari color aliases (mirrors shittim-chest's theme.scss) */
-  --c-primary-intense: rgb(var(--color-primary, 122 162 247) / 40%);
-  --c-primary-strong: rgb(var(--color-primary, 122 162 247) / 40%);
-  --c-primary-light: rgb(var(--color-primary, 122 162 247) / 15%);
-  --shadow-button: 0 4px 14px rgb(var(--color-primary, 122 162 247) / 35%);
-  --shadow-button-danger: 0 4px 14px rgb(var(--color-error, 247 118 142) / 35%);
 }
 @media (prefers-color-scheme: light) {
   :root {
@@ -112,9 +106,6 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .binary-name { font-weight: 600; color: var(--value); text-align: left; cursor: pointer; position: relative; }
 .vtty-icon { display: inline-flex; align-items: center; margin-left: 6px; color: inherit; cursor: pointer; opacity: 0.6; transition: opacity 0.2s; vertical-align: middle; }
 .vtty-icon:hover { opacity: 0.9; }
-.binary-name-full, .binary-time-full, .binary-hash-full { display: none !important; }
-.watch-item > .tooltip { display: none !important; }
-
 .vtty-backdrop {
   position: fixed; inset: 0; z-index: 999998; background: rgba(0,0,0,0.3);
 }
@@ -141,3 +132,43 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .binary-time { cursor: pointer; }
 .binary-hash { color: rgba(46, 213, 115, 0.7); cursor: pointer; position: relative; }
 .binary-hash-short { display: inline; }
+
+/* ── CSS-only tooltips ── */
+[data-tooltip] { position: relative; }
+[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1a1a30;
+  color: #d4d4e8;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 0.7rem;
+  white-space: pre-wrap;
+  z-index: 99999;
+  pointer-events: none;
+  border: 1px solid rgba(255,255,255,0.1);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+  max-width: 420px;
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* ── Button components (replaces HButton) ── */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; cursor: pointer; font-family: inherit;
+  transition: all 0.2s ease; text-decoration: none; line-height: 1;
+  border-radius: 6px; font-weight: 500; margin: 0 4px;
+}
+.btn-sm { padding: 5px 14px; font-size: 0.75rem; }
+.btn-ghost {
+  background: transparent; color: var(--label);
+}
+.btn-ghost:hover { color: var(--value); background: rgba(255,255,255,0.05); }
+.btn-outline {
+  background: transparent; border: 1px solid rgba(255,255,255,0.15); color: var(--value);
+}
+.btn-outline:hover { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.25); }
