@@ -11,12 +11,9 @@
   --retry: rgba(212, 212, 232, 0.4);
   --footer: rgba(212, 212, 232, 0.25);
   --footer-hover: rgba(212, 212, 232, 0.55);
-  /* hikari color aliases (mirrors shittim-chest's theme.scss) */
-  --c-primary-intense: rgb(var(--color-primary, 122 162 247) / 40%);
-  --c-primary-strong: rgb(var(--color-primary, 122 162 247) / 40%);
-  --c-primary-light: rgb(var(--color-primary, 122 162 247) / 15%);
-  --shadow-button: 0 4px 14px rgb(var(--color-primary, 122 162 247) / 35%);
-  --shadow-button-danger: 0 4px 14px rgb(var(--color-error, 247 118 142) / 35%);
+  --accent: #ff8c42;
+  --accent-dim: rgba(255, 140, 66, 0.15);
+  --terminal-bg: #0c0c18;
 }
 @media (prefers-color-scheme: light) {
   :root {
@@ -56,6 +53,7 @@ body {
   text-align: center;
   backdrop-filter: blur(12px);
   animation: accordionOpen 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  overflow: visible;
 }
 @keyframes accordionOpen {
   0% { clip-path: inset(32% 0 42% 0); opacity: 0.6; }
@@ -109,35 +107,160 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .binaries-title { font-size: 0.75rem; color: var(--label); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
 .binary-row { display: grid; grid-template-columns: minmax(70px, auto) 1fr; gap: 8px 12px; padding: 6px 0; border-bottom: 1px solid var(--divider); font-size: 0.75rem; align-items: baseline; }
 .binary-row:last-child { border-bottom: none; }
-.binary-name { font-weight: 600; color: var(--value); text-align: left; cursor: pointer; position: relative; }
+.binary-name-cell { display: flex; align-items: center; gap: 6px; }
+.binary-name { font-weight: 600; color: var(--value); cursor: pointer; position: relative; }
 .vtty-icon { display: inline-flex; align-items: center; margin-left: 6px; color: inherit; cursor: pointer; opacity: 0.6; transition: opacity 0.2s; vertical-align: middle; }
 .vtty-icon:hover { opacity: 0.9; }
-.binary-name-full, .binary-time-full, .binary-hash-full { display: none !important; }
-.watch-item > .tooltip { display: none !important; }
-
 .vtty-backdrop {
-  position: fixed; inset: 0; z-index: 999998; background: rgba(0,0,0,0.3);
+  position: fixed; inset: 0; z-index: 999998; background: rgba(0,0,0,0.35);
+  backdrop-filter: blur(4px);
 }
 .vtty-panel {
   position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  z-index: 999999; background: #0c0c18; border: 1px solid rgba(124,138,255,0.3);
-  border-radius: 8px; padding: 16px 20px; box-shadow: 0 4px 24px rgba(0,0,0,0.5);
-  width: min(80ch, 94vw);
+  z-index: 999999; background: var(--terminal-bg); border: 1px solid rgba(255,140,66,0.2);
+  border-radius: 12px; box-shadow: 0 8px 48px rgba(0,0,0,0.6), 0 0 24px rgba(255,140,66,0.06);
+  display: flex; flex-direction: column; overflow: hidden;
 }
-.vtty-title { text-align: center; color: #7c8aff; font-weight: 600; font-size: 0.8125rem; margin-bottom: 10px; }
-.vtty-screen {
-  height: 420px; overflow: auto; font-family: monospace; font-size: 12px;
-  line-height: 1.35; color: #a0a0c0; background: rgba(0,0,0,0.2);
-  border: 1px solid rgba(255,255,255,0.06); border-radius: 4px; padding: 10px;
-  white-space: pre-wrap;
+.vtty-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px; border-bottom: 1px solid rgba(255,255,255,0.06);
+  flex-shrink: 0;
 }
-.vtty-loading {
-  display: flex; align-items: center; justify-content: center; height: 100%;
-  color: #7c8aff; opacity: 0.6;
+.vtty-header .vtty-name {
+  color: var(--accent); font-weight: 600; font-size: 0.8125rem;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
 }
-.vtty-screen pre { margin: 0; white-space: pre-wrap; }
+.vtty-close {
+  background: none; border: none; cursor: pointer;
+  color: rgba(255,255,255,0.3); padding: 4px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 4px; transition: color 0.2s, background 0.2s;
+}
+.vtty-close:hover { color: #fff; background: rgba(255,255,255,0.1); }
+.vtty-terminal {
+  width: 80ch; height: 24em;
+  max-width: calc(94vw - 32px);
+  background: rgba(0,0,0,0.3);
+  border: 1px solid rgba(255,140,66,0.08);
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 13px; line-height: 1.35;
+  color: #a0a0c0;
+  margin: 16px;
+  overflow: auto;
+  padding: 10px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.vtty-terminal pre {
+  margin: 0; white-space: pre-wrap; word-break: break-all;
+}
+.vtty-spinner {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 100%;
+}
+.spinner-ring {
+  width: 32px; height: 32px;
+  border: 3px solid rgba(255,140,66,0.15);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: vtty-spin 0.8s linear infinite;
+}
+@keyframes vtty-spin { to { transform: rotate(360deg); } }
+.vtty-footer {
+  padding: 8px 16px; border-top: 1px solid rgba(255,255,255,0.06);
+  text-align: center; font-size: 0.6875rem; color: rgba(255,255,255,0.3);
+  flex-shrink: 0;
+}
 
 .binary-detail { color: var(--label); font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace; font-size: 0.6875rem; text-align: right; }
 .binary-time { cursor: pointer; }
 .binary-hash { color: rgba(46, 213, 115, 0.7); cursor: pointer; position: relative; }
 .binary-hash-short { display: inline; }
+
+/* ── Unified tooltip (Teleported to body, TS-anchored) ── */
+.malkuth-tooltip {
+  position: fixed;
+  z-index: 99997;
+  background: #16162a;
+  color: #d4d4e8;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.7rem;
+  white-space: pre;
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  max-width: 520px;
+  text-align: center;
+  line-height: 1.5;
+  pointer-events: none;
+  animation: tooltip-in 0.15s ease-out;
+}
+
+.tooltip-copy-hint {
+  opacity: 0.6;
+}
+.malkuth-tooltip.is-terminal {
+  background: var(--terminal-bg);
+  border-color: rgba(255,140,66,0.2);
+  padding: 0;
+  max-width: none;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5), 0 0 12px rgba(255,140,66,0.06);
+}
+.malkuth-tooltip-header {
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  flex-shrink: 0;
+}
+.malkuth-tooltip-name {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 0.6875rem;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+}
+.malkuth-tooltip-terminal {
+  width: 80ch;
+  height: 24em;
+  background: rgba(0,0,0,0.3);
+  border: 1px solid rgba(255,140,66,0.08);
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 13px;
+  line-height: 1.35;
+  color: #a0a0c0;
+  margin: 8px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 4px;
+}
+.malkuth-tooltip-terminal pre {
+  margin: 0; white-space: pre-wrap; word-break: break-all;
+}
+@keyframes tooltip-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* ── Button components ── */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; cursor: pointer; font-family: inherit;
+  transition: all 0.25s ease; text-decoration: none; line-height: 1;
+  border-radius: 6px; font-weight: 500; margin: 0 4px;
+}
+.btn-sm { padding: 6px 18px; font-size: 0.8125rem; }
+.btn-ghost {
+  background: transparent; color: var(--label);
+}
+.btn-ghost:hover { color: var(--value); background: rgba(255,255,255,0.05); }
+.btn-outline {
+  background: transparent; border: 1px solid rgba(255,255,255,0.15); color: var(--value);
+}
+.btn-outline:hover {
+  background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.3);
+  box-shadow: 0 0 12px var(--accent-dim);
+}
+.btn-primary {
+  background: var(--accent); color: #fff; box-shadow: 0 2px 8px rgba(255,140,66,0.3);
+}
+.btn-primary:hover {
+  background: #e67835; box-shadow: 0 4px 16px rgba(255,140,66,0.45);
+  transform: translateY(-1px);
+}
+.btn-primary:active { transform: translateY(0); }
