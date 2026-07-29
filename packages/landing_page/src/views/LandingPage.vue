@@ -308,6 +308,7 @@ function getXtermOptions() {
     allowTransparency: false,
     disableStdin: true,
     cursorBlink: false,
+    cursorStyle: 'block' as const,
     scrollback: 10000,
   }
 }

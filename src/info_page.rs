@@ -133,7 +133,11 @@ pub fn info_router(
             loop {
                 let up = check_backend_alive(&host_port);
                 let mut w = state_arc.write().await;
-                *w = if up { BackendState::Up } else { BackendState::Down };
+                *w = if up {
+                    BackendState::Up
+                } else {
+                    BackendState::Down
+                };
                 drop(w);
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
@@ -179,10 +183,7 @@ fn check_backend_alive(host_port: &str) -> bool {
         Some(a) => a,
         None => return false,
     };
-    let mut stream = match std::net::TcpStream::connect_timeout(
-        &addr,
-        Duration::from_millis(500),
-    ) {
+    let mut stream = match std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
         Ok(s) => s,
         Err(_) => return false,
     };

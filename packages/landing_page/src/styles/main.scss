@@ -216,15 +216,13 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   position: relative;
   width: 80ch;
   height: 24em;
-  background: var(--bg);
-  border: 1px solid rgba(255,140,66,0.08);
+  background: transparent;
   font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
   font-size: 13px;
   line-height: 1.35;
   color: #a0a0c0;
   margin: 8px;
   overflow: hidden;
-  border-radius: 4px;
   text-align: left;
 }
 .malkuth-tooltip-xterm {
@@ -236,6 +234,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   text-align: left;
   padding: 0;
 }
+.malkuth-tooltip-xterm .xterm-screen { padding: 6px 10px; }
 .xterm-viewport::-webkit-scrollbar { display: none; }
 .xterm-viewport { scrollbar-width: none; }
 .malkuth-tooltip-terminal .vtty-spinner {
@@ -258,19 +257,18 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .malkuth-tooltip-footer {
   position: absolute;
   bottom: 2px;
-  left: 2px;
-  right: 2px;
+  left: 8px;
+  right: 8px;
   z-index: 10;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  background: rgba(0, 0, 0, 0.55);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 4px;
-  padding: 2px 8px;
+  background: var(--tooltip-bg, #181818);
+  border-top: 1px solid rgba(255,140,66,0.08);
+  padding: 3px 8px;
   font-size: 0.65rem;
-  color: rgba(255, 255, 255, 0.55);
+  color: var(--tooltip-fg, rgba(255,255,255,0.55));
   pointer-events: auto;
   font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
   white-space: nowrap;
