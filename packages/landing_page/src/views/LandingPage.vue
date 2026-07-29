@@ -18,7 +18,8 @@
         <div class="watch-list">
           <span v-for="p in watchPaths" :key="p"
             class="watch-item"
-            :data-tooltip="p + '\n' + t('click_to_copy', 'Click to copy')"
+            @mouseenter="showTextTooltip($event, p + '\n' + t('click_to_copy', 'Click to copy'))"
+            @mouseleave="hideTooltip"
             @click="copy(p)"
           >
             <span class="watch-text">{{ p }}</span>
@@ -32,7 +33,8 @@
       <div class="binary-row" v-for="b in binaries" :key="b.name">
         <div class="binary-name-cell">
           <span class="binary-name"
-            :data-tooltip="b.name + '\n' + t('click_to_copy', 'Click to copy')"
+            @mouseenter="showTextTooltip($event, b.name + '\n' + t('click_to_copy', 'Click to copy'))"
+            @mouseleave="hideTooltip"
             @click="copy(b.name)"
           >{{ b.name }}</span>
           <span class="vtty-icon"
@@ -45,12 +47,14 @@
         </div>
         <span class="binary-detail">
           <span class="binary-time"
-            :data-tooltip="b.compile_time + '\n' + t('click_to_copy', 'Click to copy')"
+            @mouseenter="showTextTooltip($event, b.compile_time + '\n' + t('click_to_copy', 'Click to copy'))"
+            @mouseleave="hideTooltip"
             @click="copy(b.compile_time)"
           >{{ b.compile_time }}</span>
           ·
           <span class="binary-hash"
-            :data-tooltip="b.hash + '\n' + t('click_to_copy', 'Click to copy')"
+            @mouseenter="showTextTooltip($event, b.hash + '\n' + t('click_to_copy', 'Click to copy'))"
+            @mouseleave="hideTooltip"
             @click="copy(b.hash)"
           >
             <span class="binary-hash-short">{{ b.hash_short }}</span>
@@ -106,16 +110,21 @@
           <template v-else>{{ t('vtty_no_output', 'No output yet') }}</template>
         </div>
       </div>
-      <div v-show="hoveredBinary" class="vtty-tooltip" :style="hoverTooltipStyle">
-        <div class="vtty-tooltip-header">
-          <span class="vtty-tooltip-name">{{ hoveredBinary }}</span>
-        </div>
-        <div class="vtty-tooltip-terminal">
-          <div v-if="hoverLog.length === 0" class="vtty-spinner">
-            <div class="spinner-ring"></div>
+      <div v-if="tooltip" class="malkuth-tooltip" :class="{ 'is-terminal': tooltip.kind === 'terminal' }" :style="tooltipStyle">
+        <template v-if="tooltip.kind === 'text'">
+          {{ tooltip.content }}
+        </template>
+        <template v-else-if="tooltip.kind === 'terminal'">
+          <div class="malkuth-tooltip-header">
+            <span class="malkuth-tooltip-name">{{ tooltip.binaryName }}</span>
           </div>
-          <pre v-else>{{ hoverLog.join('\n') }}</pre>
-        </div>
+          <div class="malkuth-tooltip-terminal">
+            <div v-if="(tooltip.log || []).length === 0" class="vtty-spinner">
+              <div class="spinner-ring"></div>
+            </div>
+            <pre v-else>{{ (tooltip.log || []).join('\n') }}</pre>
+          </div>
+        </template>
       </div>
     </Teleport>
   </div>
@@ -198,9 +207,14 @@ const binaries = ref<any[]>([])
 const vttyName = ref('')
 const vttyLog = ref<string[]>([])
 const vttyVisible = ref(false)
-const hoveredBinary = ref<string | null>(null)
-const hoverLog = ref<string[]>([])
-const hoverTooltipStyle = ref<Record<string, string>>({})
+interface TooltipState {
+  kind: 'text' | 'terminal'
+  el: HTMLElement
+  content: string
+  binaryName?: string
+  log?: string[]
+}
+const tooltip = ref<TooltipState | null>(null)
 
 const cardRef = ref<HTMLElement>()
 
@@ -218,6 +232,16 @@ const statusText = computed(() => {
   if (state.value === 'building') return t('status_building', 'Building')
   if (state.value === 'offline') return t('status_offline', 'Service is offline')
   return t('status_landing', 'Redirecting shortly')
+})
+
+const tooltipStyle = computed(() => {
+  if (!tooltip.value) return {}
+  const rect = tooltip.value.el.getBoundingClientRect()
+  return {
+    left: (rect.left + rect.width / 2) + 'px',
+    top: (rect.top - 12) + 'px',
+    transform: 'translate(-50%, -100%)',
+  }
 })
 
 function probe() {
@@ -328,41 +352,58 @@ function showBinaryVtty(_ev: MouseEvent, name: string) {
   probe()
 }
 
+function showTextTooltip(ev: MouseEvent, content: string) {
+  tooltip.value = {
+    kind: 'text',
+    el: ev.currentTarget as HTMLElement,
+    content,
+  }
+}
+
+let hideTimer: any = null
+
+function hideTooltip() {
+  if (tooltip.value?.kind === 'text') {
+    tooltip.value = null
+    return
+  }
+  clearTimeout(hideTimer)
+  hideTimer = setTimeout(() => {
+    tooltip.value = null
+  }, 200)
+}
+
 const hoverCache: Record<string, string[]> = {}
-let hoverTimer: any = null
-let hoverIconEl: HTMLElement | null = null
 
 function hoverVttyIcon(ev: MouseEvent, name: string) {
-  clearTimeout(hoverTimer)
-  hoverIconEl = ev.currentTarget as HTMLElement
-  hoveredBinary.value = name
-
-  const rect = hoverIconEl.getBoundingClientRect()
-  const roomAbove = rect.top > 420
-  hoverTooltipStyle.value = {
-    position: 'fixed',
-    top: roomAbove ? (rect.top - 16) + 'px' : (rect.bottom + 8) + 'px',
-    left: (rect.left + rect.width / 2) + 'px',
-    transform: roomAbove ? 'translate(-50%, -100%)' : 'translate(-50%, 0)',
-    display: 'flex',
+  clearTimeout(hideTimer)
+  const el = ev.currentTarget as HTMLElement
+  tooltip.value = {
+    kind: 'terminal',
+    el,
+    content: '',
+    binaryName: name,
+    log: hoverCache[name] || [],
   }
 
-  if (hoverCache[name]) {
-    hoverLog.value = hoverCache[name]
-  } else {
-    hoverLog.value = []
+  if (!hoverCache[name]) {
     fetch('/', { headers: { 'X-Malkuth-Probe': '1' } })
       .then(r => r.json())
       .then(d => {
         const logs = d.vttys?.[0]?.log || []
         hoverCache[name] = logs
-        if (hoveredBinary.value === name) hoverLog.value = logs
+        if (tooltip.value?.kind === 'terminal' && tooltip.value.binaryName === name) {
+          tooltip.value = { ...tooltip.value, log: logs }
+        }
       }).catch(() => {})
   }
 }
 
 function hoverVttyLeave() {
-  hoverTimer = setTimeout(() => { hoveredBinary.value = null }, 200)
+  clearTimeout(hideTimer)
+  hideTimer = setTimeout(() => {
+    tooltip.value = null
+  }, 200)
 }
 
 function cancelRedirect() {

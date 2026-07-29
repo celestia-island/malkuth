@@ -177,66 +177,44 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .binary-hash { color: rgba(46, 213, 115, 0.7); cursor: pointer; position: relative; }
 .binary-hash-short { display: inline; }
 
-/* ── CSS-only tooltips (unified) ── */
-[data-tooltip] { position: relative; }
-[data-tooltip]:hover::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
+/* ── Unified tooltip (Teleported to body, TS-anchored) ── */
+.malkuth-tooltip {
+  position: fixed;
+  z-index: 99997;
   background: #16162a;
   color: #d4d4e8;
   padding: 6px 12px;
   border-radius: 6px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 0.7rem;
   white-space: pre;
-  z-index: 99999;
-  pointer-events: none;
   border: 1px solid rgba(255,255,255,0.08);
   box-shadow: 0 4px 16px rgba(0,0,0,0.5);
   max-width: 520px;
   text-align: center;
   line-height: 1.5;
+  pointer-events: none;
   animation: tooltip-in 0.15s ease-out;
 }
-@keyframes tooltip-in { from { opacity: 0; transform: translateX(-50%) translateY(4px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
-[data-tooltip]:hover::before {
-  content: "";
-  position: absolute;
-  bottom: calc(100% + 2px);
-  left: 50%;
-  transform: translateX(-50%);
-  border: 6px solid transparent;
-  border-top-color: #16162a;
-  z-index: 99999;
-  pointer-events: none;
-}
-
-/* ── VTTY hover tooltip (binary icon terminal preview) ── */
-.vtty-tooltip {
-  display: none;
-  z-index: 99997;
+.malkuth-tooltip.is-terminal {
   background: var(--terminal-bg);
-  border: 1px solid rgba(255,140,66,0.2);
-  border-radius: 8px;
+  border-color: rgba(255,140,66,0.2);
+  padding: 0;
+  max-width: none;
   box-shadow: 0 4px 16px rgba(0,0,0,0.5), 0 0 12px rgba(255,140,66,0.06);
-  overflow: hidden;
-  flex-direction: column;
-  pointer-events: none;
 }
-.vtty-tooltip-header {
+.malkuth-tooltip-header {
   padding: 6px 10px;
   border-bottom: 1px solid rgba(255,255,255,0.06);
   flex-shrink: 0;
 }
-.vtty-tooltip-name {
+.malkuth-tooltip-name {
   color: var(--accent);
   font-weight: 600;
   font-size: 0.6875rem;
   font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
 }
-.vtty-tooltip-terminal {
+.malkuth-tooltip-terminal {
   width: 80ch;
   height: 24em;
   background: rgba(0,0,0,0.3);
@@ -250,9 +228,10 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   padding: 8px;
   border-radius: 4px;
 }
-.vtty-tooltip-terminal pre {
+.malkuth-tooltip-terminal pre {
   margin: 0; white-space: pre-wrap; word-break: break-all;
 }
+@keyframes tooltip-in { from { opacity: 0; } to { opacity: 1; } }
 
 /* ── Button components ── */
 .btn {
