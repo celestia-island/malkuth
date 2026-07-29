@@ -146,20 +146,9 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   font-size: 13px; line-height: 1.35;
   color: #a0a0c0;
   margin: 16px;
-  overflow: auto;
-  padding: 10px;
   border-radius: 4px;
   flex-shrink: 0;
-  scrollbar-width: none;
   position: relative;
-  &::-webkit-scrollbar { display: none; }
-}
-.vtty-terminal pre {
-  margin: 0; white-space: pre-wrap; word-break: break-all;
-  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
-}
-.vtty-terminal code {
-  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
 }
 .vtty-spinner {
   display: flex; align-items: center; justify-content: center;

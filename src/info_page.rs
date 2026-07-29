@@ -7,6 +7,7 @@ use axum::{
 };
 use std::collections::HashMap;
 use std::sync::LazyLock;
+use std::time::Duration;
 
 include!(concat!(env!("OUT_DIR"), "/landing_page_html.rs"));
 
@@ -43,6 +44,13 @@ static I18N_DATA: LazyLock<HashMap<String, HashMap<String, String>>> = LazyLock:
 });
 
 const TEMPLATE: &str = include_str!("info_page/template.html");
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendState {
+    Unknown,
+    Up,
+    Down,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InfoStatus {
@@ -112,6 +120,26 @@ pub fn info_router(
     build_log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     runtime_log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 ) -> Router<()> {
+    let backend_state = std::sync::Arc::new(tokio::sync::RwLock::new(BackendState::Unknown));
+
+    if let Some(ref backend_url) = serve_backend {
+        let state_arc = backend_state.clone();
+        let url = backend_url.clone();
+        tokio::spawn(async move {
+            let host_port = url
+                .trim_start_matches("http://")
+                .trim_start_matches("https://")
+                .to_string();
+            loop {
+                let up = check_backend_alive(&host_port);
+                let mut w = state_arc.write().await;
+                *w = if up { BackendState::Up } else { BackendState::Down };
+                drop(w);
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        });
+    }
+
     let state = InfoState {
         version: version.into(),
         status,
@@ -123,6 +151,7 @@ pub fn info_router(
         build_progress,
         build_log,
         runtime_log,
+        backend_state,
     };
     Router::new()
         .route("/", get(info_page))
@@ -142,6 +171,31 @@ struct InfoState {
     build_progress: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     build_log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     runtime_log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    backend_state: std::sync::Arc<tokio::sync::RwLock<BackendState>>,
+}
+
+fn check_backend_alive(host_port: &str) -> bool {
+    let addr: std::net::SocketAddr = match host_port.parse().ok() {
+        Some(a) => a,
+        None => return false,
+    };
+    let mut stream = match std::net::TcpStream::connect_timeout(
+        &addr,
+        Duration::from_millis(500),
+    ) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    use std::io::{Read, Write};
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    let req = format!("GET / HTTP/1.0\r\nHost: {}\r\n\r\n", host_port);
+    if stream.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 64];
+    let n = stream.read(&mut buf).unwrap_or(0);
+    let head = std::str::from_utf8(&buf[..n]).unwrap_or("");
+    head.contains(" 200 ") || head.contains(" 3")
 }
 
 fn build_spa_init(state: &InfoState, lang: &str) -> serde_json::Value {
@@ -289,49 +343,16 @@ fn read_nonce(req: &Request) -> u8 {
 }
 
 /// JSON probe endpoint for polling landing page.
-fn serve_probe(lang: &str, state: &InfoState, req: &Request) -> Response {
-    let nonce = read_nonce(req);
+async fn serve_probe(lang: &str, state: &InfoState) -> Response {
+    let backend_state = *state.backend_state.read().await;
+    let backend_up = state.serve_backend.is_some() && backend_state == BackendState::Up;
 
-    let backend_up = state.serve_backend.as_ref().is_some_and(|url| {
-        let host_port = url
-            .trim_start_matches("http://")
-            .trim_start_matches("https://");
-        let addr: std::net::SocketAddr = match host_port.parse().ok() {
-            Some(a) => a,
-            None => return false,
-        };
-        let mut stream = match std::net::TcpStream::connect_timeout(
-            &addr,
-            std::time::Duration::from_millis(500),
-        ) {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-        use std::io::{Read, Write};
-        let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
-        let req = format!("GET / HTTP/1.0\r\nHost: {}\r\n\r\n", host_port);
-        if stream.write_all(req.as_bytes()).is_err() {
-            return false;
-        }
-        let mut buf = [0u8; 64];
-        let n = stream.read(&mut buf).unwrap_or(0);
-        let head = std::str::from_utf8(&buf[..n]).unwrap_or("");
-        head.contains(" 200 ") || head.contains(" 3")
-    });
-
-    let (probe_state, msg) = if nonce >= 3 {
-        (
-            "offline",
-            get_i18n(lang)
-                .get("status_starting")
-                .map_or("Service temporarily unavailable", |v| v.as_str()),
-        )
-    } else if nonce > 0 && backend_up {
+    let (probe_state, msg) = if !state.serve_backend.is_some() || backend_up {
         ("ready", "")
-    } else if nonce > 0 {
-        ("building", "")
-    } else {
+    } else if backend_state == BackendState::Unknown {
         ("landing", "")
+    } else {
+        ("building", "")
     };
 
     let message = if msg.is_empty() {
@@ -381,7 +402,6 @@ fn serve_probe(lang: &str, state: &InfoState, req: &Request) -> Response {
 
     let json = serde_json::json!({
         "state": probe_state,
-        "nonce": nonce + 1,
         "message": message,
         "progress": progress,
         "vttys": [{
@@ -399,45 +419,16 @@ fn serve_probe(lang: &str, state: &InfoState, req: &Request) -> Response {
     resp
 }
 
-/// Serve the landing page. `nonce` is the current retry count (0 → first visit).
-/// The template receives `landing_nonce` to:
-/// - Set the cookie via JS (`document.cookie = "__malkuth_nonce=N"`)
-/// - Show "offline" after 3 failed attempts
-fn serve_landing(lang: &str, state: &InfoState, nonce: u8) -> Response {
+/// Serve the landing page with real-time backend status from the health checker.
+async fn serve_landing(lang: &str, state: &InfoState) -> Response {
     let i18n = get_i18n(lang);
-    let next = nonce + 1;
-    let offline = nonce >= 3;
+    let backend_state = *state.backend_state.read().await;
+    let backend_up = state.serve_backend.is_some() && backend_state == BackendState::Up;
 
-    // Probe backend for initial state
-    let initial_backend_up = state.serve_backend.as_ref().is_some_and(|url| {
-        let hp = url
-            .trim_start_matches("http://")
-            .trim_start_matches("https://");
-        let addr: std::net::SocketAddr = match hp.parse().ok() {
-            Some(a) => a,
-            None => return false,
-        };
-        let mut s = match std::net::TcpStream::connect_timeout(
-            &addr,
-            std::time::Duration::from_millis(500),
-        ) {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-        use std::io::{Read, Write};
-        let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(500)));
-        let _ = s.write_all(format!("GET / HTTP/1.0\r\nHost: {}\r\n\r\n", hp).as_bytes());
-        let mut buf = [0u8; 64];
-        let n = s.read(&mut buf).unwrap_or(0);
-        std::str::from_utf8(&buf[..n])
-            .unwrap_or("")
-            .contains(" 200 ")
-            || std::str::from_utf8(&buf[..n]).unwrap_or("").contains(" 3")
-    });
-    let init_state: &str = if offline {
-        "offline"
-    } else if initial_backend_up {
+    let init_state: &str = if !state.serve_backend.is_some() || backend_up {
         "ready"
+    } else if backend_state == BackendState::Unknown {
+        "landing"
     } else {
         "building"
     };
@@ -462,8 +453,8 @@ fn serve_landing(lang: &str, state: &InfoState, nonce: u8) -> Response {
         i18n.get("heading").map_or("Malkuth", |v| v.as_str()),
     );
     ctx.insert("tagline", i18n.get("tagline").map_or("", |v| v.as_str()));
-    ctx.insert("ready", &initial_backend_up);
-    ctx.insert("landing", &!offline);
+    ctx.insert("ready", &backend_up);
+    ctx.insert("landing", &(init_state != "building"));
     ctx.insert(
         "task",
         i18n.get("task_landing").map_or("Landing", |v| v.as_str()),
@@ -493,15 +484,7 @@ fn serve_landing(lang: &str, state: &InfoState, nonce: u8) -> Response {
     ctx.insert("retry_before", "");
     ctx.insert("retry_after", "");
     ctx.insert("retry_unit", "");
-    ctx.insert(
-        "retry_manual",
-        if offline {
-            i18n.get("retry_manual")
-                .map_or("You can also refresh manually.", |v| v.as_str())
-        } else {
-            ""
-        },
-    );
+    ctx.insert("retry_manual", "");
     ctx.insert("footer", "");
     ctx.insert("footer_prefix", "");
     ctx.insert("footer_suffix", "");
@@ -534,7 +517,7 @@ fn serve_landing(lang: &str, state: &InfoState, nonce: u8) -> Response {
     ctx.insert("copied_msg", "");
     ctx.insert("copy_fail_msg", "");
     ctx.insert("logo_base64", &base64_encode(LOGO_BYTES));
-    ctx.insert("landing_nonce", &next);
+    ctx.insert("landing_nonce", &0u8);
 
     match tera::Tera::one_off(TEMPLATE, &ctx, false) {
         Ok(html) => Html(html).into_response(),
@@ -546,11 +529,7 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
     let lang = detect_language(req.headers());
 
     if req.headers().get("x-malkuth-probe").is_some() {
-        return serve_probe(&lang, &state, &req);
-    }
-
-    if !LANDING_PAGE_HTML.starts_with("<html><body><h1>Malkuth</h1>") {
-        return serve_spa(&state, &lang);
+        return serve_probe(&lang, &state).await;
     }
 
     if let Some(ref backend) = state.serve_backend {
@@ -567,12 +546,15 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
                     return resp;
                 }
             }
-            return serve_landing(&lang, &state, nonce);
+            return serve_landing(&lang, &state).await;
         }
     }
 
+    if !LANDING_PAGE_HTML.starts_with("<html><body><h1>Malkuth</h1>") {
+        return serve_spa(&state, &lang);
+    }
+
     // Normal (non-serve) rendering below
-    let lang = detect_language(req.headers());
     let i18n = get_i18n(&lang);
 
     let ready = state.status == InfoStatus::Ready;

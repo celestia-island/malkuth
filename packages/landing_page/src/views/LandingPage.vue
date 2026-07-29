@@ -99,11 +99,10 @@
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
-        <div class="vtty-terminal" ref="vttyTerminalRef" @scroll="updateScroll">
+        <div class="vtty-terminal" ref="vttyTerminalRef">
           <div v-if="vttyLog.length === 0" class="vtty-spinner">
             <div class="spinner-ring"></div>
           </div>
-          <pre v-else v-html="vttyLog.map(l => parseAnsi(l)).join('\n')"></pre>
           <div class="terminal-scroll-bar" v-if="vttyLog.length">
             <span>│ {{ scrollLine }}/{{ vttyLog.length }} lines │ {{ formatTime(vttyFirstTime) }} → {{ formatTime(vttyLastTime) }} │</span>
             <button class="terminal-copy-btn" @click.stop="copyTerminal">Copy</button>
@@ -140,6 +139,8 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { Terminal } from '@xterm/xterm'
+import '@xterm/xterm/css/xterm.css'
 
 const messages: Record<string, Record<string, string>> = {
   en: {
@@ -224,6 +225,8 @@ interface TooltipState {
 }
 const tooltip = ref<TooltipState | null>(null)
 
+let vttyTerminal: Terminal | null = null
+
 const vttyTerminalRef = ref<HTMLElement>()
 const vttyFirstTime = ref(0)
 const vttyLastTime = ref(0)
@@ -233,6 +236,56 @@ const cardRef = ref<HTMLElement>()
 
 let countdownTimer: any = null
 let pollTimer: any = null
+
+function getXtermOptions() {
+  return {
+    theme: {
+      background: '#0c0c18',
+      foreground: '#a0a0c0',
+      cursor: '#ff8c42',
+      cursorAccent: '#0c0c18',
+      selectionBackground: '#ff8c4240',
+      black: '#0c0c18',
+      red: '#cd0000',
+      green: '#00cd00',
+      yellow: '#cdcd00',
+      blue: '#0000ee',
+      magenta: '#cd00cd',
+      cyan: '#00cdcd',
+      white: '#e5e5e5',
+      brightBlack: '#666666',
+      brightRed: '#ff0000',
+      brightGreen: '#00ff00',
+      brightYellow: '#ffff00',
+      brightBlue: '#5c5cff',
+      brightMagenta: '#ff00ff',
+      brightCyan: '#00ffff',
+      brightWhite: '#ffffff',
+    },
+    cols: 80,
+    rows: 24,
+    fontSize: 13,
+    fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace',
+    allowProposedApi: false,
+    allowTransparency: false,
+    disableStdin: true,
+    cursorBlink: false,
+    scrollback: 10000,
+  }
+}
+
+function setupXterm(el: HTMLElement) {
+  destroyXterm()
+  vttyTerminal = new Terminal(getXtermOptions())
+  vttyTerminal.open(el)
+}
+
+function destroyXterm() {
+  if (vttyTerminal) {
+    vttyTerminal.dispose()
+    vttyTerminal = null
+  }
+}
 
 const statusClass = computed(() => {
   if (state.value === 'ready') return 'status--ready'
@@ -349,17 +402,22 @@ onMounted(() => {
 
 watch(vttyLog, () => {
   nextTick(() => {
-    const el = vttyTerminalRef.value
-    if (el) {
-      el.scrollTop = el.scrollHeight
-      updateScroll()
+    if (vttyTerminal) {
+      vttyTerminal.reset()
+      vttyTerminal.write(vttyLog.value.join('\r\n') + '\r\n')
     }
+    updateScroll()
   })
+})
+
+watch(vttyVisible, (val) => {
+  if (!val) destroyXterm()
 })
 
 onUnmounted(() => {
   clearInterval(countdownTimer)
   clearInterval(pollTimer)
+  destroyXterm()
 })
 
 function copy(text: string) {
@@ -384,7 +442,11 @@ function showBinaryVtty(_ev: MouseEvent, name: string) {
   scrollLine.value = 1
   vttyVisible.value = true
   cancelRedirect()
-  probe()
+  nextTick(() => {
+    const el = vttyTerminalRef.value
+    if (el) setupXterm(el)
+    probe()
+  })
 }
 
 function showTextTooltip(ev: MouseEvent, content: string) {
@@ -500,10 +562,16 @@ function parseAnsi(text: string): string {
 }
 
 function updateScroll() {
-  const el = vttyTerminalRef.value
-  if (!el) return
-  const ratio = el.scrollHeight > el.clientHeight ? el.scrollTop / (el.scrollHeight - el.clientHeight) : 0
-  scrollLine.value = Math.max(1, Math.floor(1 + ratio * (vttyLog.value.length - 1)))
+  if (vttyTerminal) {
+    const buffer = vttyTerminal.buffer.active
+    const total = vttyLog.value.length || buffer.length
+    const viewportY = buffer.viewportY
+    const baseY = buffer.baseY
+    const offset = Math.min(baseY + Math.max(0, viewportY), total - 1)
+    scrollLine.value = Math.max(1, offset + 1)
+  } else {
+    scrollLine.value = 1
+  }
 }
 
 function formatTime(ts: number): string {
