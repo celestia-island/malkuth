@@ -326,6 +326,8 @@ async fn main() {
         );
     }
 
+    let runtime_log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
     let manager = Arc::new(PodManager::new(
         args.host.clone(),
         args.port_env.clone(),
@@ -333,6 +335,7 @@ async fn main() {
         proxy_state.clone(),
         ports,
         args.drain_secs,
+        runtime_log.clone(),
     ));
     Arc::clone(&manager).run().await;
 
@@ -505,6 +508,7 @@ async fn main() {
         let serve_hosts = args.serve_host.clone();
         let bp2 = Arc::clone(&build_progress);
         let bl2 = Arc::clone(&build_log);
+        let rl2 = Arc::clone(&runtime_log);
         tokio::spawn(async move {
             let router = malkuth::info_page::info_router(
                 version,
@@ -516,6 +520,7 @@ async fn main() {
                 serve_hosts,
                 bp2,
                 bl2,
+                rl2,
             );
             let listener = match tokio::net::TcpListener::bind(addr).await {
                 Ok(l) => l,
