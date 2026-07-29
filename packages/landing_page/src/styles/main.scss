@@ -264,11 +264,11 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  background: var(--tooltip-bg, #181818);
+  background: var(--tooltip-bg);
   border-top: 1px solid rgba(255,140,66,0.08);
   padding: 3px 8px;
   font-size: 0.65rem;
-  color: var(--tooltip-fg, rgba(255,255,255,0.55));
+  color: var(--tooltip-fg);
   pointer-events: auto;
   font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
   white-space: nowrap;
@@ -283,26 +283,26 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   flex-shrink: 0;
 }
 .footer-pin-area:hover {
-  color: rgba(255, 255, 255, 0.85);
+  opacity: 0.85;
 }
 .footer-pin-area svg {
   flex-shrink: 0;
 }
 .footer-unpin-btn {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.5);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--tooltip-fg, #fff) 12%, transparent);
+  color: var(--tooltip-fg);
+  opacity: 0.55;
   cursor: pointer;
   font-size: 0.6rem;
   padding: 1px 5px;
   border-radius: 3px;
   font-family: inherit;
-  transition: background 0.2s, color 0.2s;
+  transition: opacity 0.2s;
   flex-shrink: 0;
 }
 .footer-unpin-btn:hover {
-  background: rgba(255, 255, 255, 0.15);
-  color: rgba(255, 255, 255, 0.8);
+  opacity: 0.85;
 }
 .footer-info {
   flex: 1;
@@ -312,22 +312,21 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   text-overflow: ellipsis;
 }
 .malkuth-tooltip-footer .terminal-copy-btn {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.55);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--tooltip-fg, #fff) 12%, transparent);
+  color: var(--tooltip-fg);
+  opacity: 0.55;
   cursor: pointer;
-  font-size: 0.6rem;
   padding: 3px 5px;
   border-radius: 3px;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.2s, color 0.2s;
+  transition: opacity 0.2s;
   flex-shrink: 0;
 }
 .malkuth-tooltip-footer .terminal-copy-btn:hover {
-  background: rgba(255, 255, 255, 0.15);
-  color: rgba(255, 255, 255, 0.8);
+  opacity: 0.85;
 }
 @keyframes tooltip-in { from { opacity: 0; } to { opacity: 1; } }
 

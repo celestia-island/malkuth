@@ -132,7 +132,7 @@
                 <span>{{ tooltipPinned ? t('vtty_pinned', 'Pinned') : t('vtty_click_to_pin', 'Click to pin') }}</span>
               </span>
               <button v-if="tooltipPinned" class="footer-unpin-btn" @click.stop="unpinTooltip">{{ t('vtty_unpin', 'Unpin') }}</button>
-              <span class="footer-info">│ {{ tooltipScrollLine }}/{{ (tooltip.log || []).length }} lines │ {{ formatTime(tooltipFirstTime) }} → {{ formatTime(tooltipLastTime) }} │</span>
+              <span class="footer-info">{{ tooltipScrollLine }}/{{ (tooltip.log || []).length }} {{ t('vtty_lines', 'lines') }} · {{ formatTime(tooltipFirstTime) }} → {{ formatTime(tooltipLastTime) }}</span>
               <button class="terminal-copy-btn" @click.stop="copyTooltipTerminal">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
               </button>
@@ -175,6 +175,7 @@ const messages: Record<string, Record<string, string>> = {
     vtty_click_to_pin: 'Click to pin',
     vtty_pinned: 'Pinned',
     vtty_unpin: 'Unpin',
+    vtty_lines: 'lines',
   },
   zhs: {
     heading: 'Malkuth',
@@ -201,6 +202,7 @@ const messages: Record<string, Record<string, string>> = {
     vtty_click_to_pin: '点击固定',
     vtty_pinned: '已固定',
     vtty_unpin: '取消固定',
+    vtty_lines: '行',
   },
 }
 
