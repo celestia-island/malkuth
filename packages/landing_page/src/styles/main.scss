@@ -53,6 +53,7 @@ body {
   text-align: center;
   backdrop-filter: blur(12px);
   animation: accordionOpen 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  overflow: visible;
 }
 @keyframes accordionOpen {
   0% { clip-path: inset(32% 0 42% 0); opacity: 0.6; }
@@ -176,7 +177,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .binary-hash { color: rgba(46, 213, 115, 0.7); cursor: pointer; position: relative; }
 .binary-hash-short { display: inline; }
 
-/* ── CSS-only tooltips ── */
+/* ── CSS-only tooltips (unified) ── */
 [data-tooltip] { position: relative; }
 [data-tooltip]:hover::after {
   content: attr(data-tooltip);
@@ -189,17 +190,28 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   padding: 6px 12px;
   border-radius: 6px;
   font-size: 0.7rem;
-  white-space: pre-wrap;
+  white-space: pre;
   z-index: 99999;
   pointer-events: none;
   border: 1px solid rgba(255,255,255,0.08);
   box-shadow: 0 4px 16px rgba(0,0,0,0.5);
-  max-width: 420px;
+  max-width: 520px;
   text-align: center;
   line-height: 1.5;
   animation: tooltip-in 0.15s ease-out;
 }
 @keyframes tooltip-in { from { opacity: 0; transform: translateX(-50%) translateY(4px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+[data-tooltip]:hover::before {
+  content: "";
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: #16162a;
+  z-index: 99999;
+  pointer-events: none;
+}
 
 /* ── VTTY hover tooltip (binary icon terminal preview) ── */
 .vtty-tooltip {
