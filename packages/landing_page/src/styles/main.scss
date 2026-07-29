@@ -211,6 +211,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  pointer-events: none;
 }
 .vtty-tooltip-header {
   padding: 6px 10px;

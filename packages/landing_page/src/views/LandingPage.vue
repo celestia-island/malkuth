@@ -340,9 +340,9 @@ function hoverVttyIcon(ev: MouseEvent, name: string) {
   const rect = hoverIconEl.getBoundingClientRect()
   hoverTooltipStyle.value = {
     position: 'fixed',
-    top: (rect.top - 8) + 'px',
-    left: (rect.right + 8) + 'px',
-    transform: 'translateY(-100%)',
+    top: (rect.top - 16) + 'px',
+    left: (rect.left + rect.width / 2) + 'px',
+    transform: 'translate(-50%, -100%)',
   }
 
   if (hoverCache[name]) {
