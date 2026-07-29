@@ -9,13 +9,30 @@ fn main() {
     println!("cargo:rerun-if-changed=packages/landing_page/src");
 
     if !dist.exists() && landing_dir.join("package.json").exists() {
-        let status = std::process::Command::new("pnpm")
-            .args(["build"])
-            .current_dir(landing_dir)
-            .status();
-        match status {
-            Ok(s) if s.success() => println!("cargo:warning=landing_page built successfully"),
-            _ => println!("cargo:warning=landing_page build skipped"),
+        let pnpm = std::env::var("PNPM_HOME")
+            .map(|h| format!("{}/pnpm", h))
+            .unwrap_or_else(|_| "pnpm".into());
+        // Also try common nvm paths
+        let pnpm_candidates = [
+            format!("{}/.nvm/versions/node/v24.18.0/bin/pnpm", std::env::var("HOME").unwrap_or_default()),
+            pnpm,
+        ];
+        let mut built = false;
+        for pnpm_path in &pnpm_candidates {
+            let status = std::process::Command::new(pnpm_path)
+                .args(["build"])
+                .current_dir(landing_dir)
+                .status();
+            if let Ok(s) = status {
+                if s.success() {
+                    println!("cargo:warning=landing_page built successfully with {}", pnpm_path);
+                    built = true;
+                    break;
+                }
+            }
+        }
+        if !built {
+            println!("cargo:warning=landing_page build skipped");
         }
     }
 
