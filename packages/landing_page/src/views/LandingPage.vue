@@ -99,11 +99,15 @@
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
-        <div class="vtty-terminal">
+        <div class="vtty-terminal" ref="vttyTerminalRef" @scroll="updateScroll">
           <div v-if="vttyLog.length === 0" class="vtty-spinner">
             <div class="spinner-ring"></div>
           </div>
-          <pre v-else>{{ vttyLog.join('\n') }}</pre>
+          <pre v-else v-html="vttyLog.map(l => parseAnsi(l)).join('\n')"></pre>
+          <div class="terminal-scroll-bar" v-if="vttyLog.length">
+            <span>│ {{ scrollLine }}/{{ vttyLog.length }} lines │ {{ formatTime(vttyFirstTime) }} → {{ formatTime(vttyLastTime) }} │</span>
+            <button class="terminal-copy-btn" @click.stop="copyTerminal">Copy</button>
+          </div>
         </div>
         <div class="vtty-footer">
           <template v-if="vttyLog.length">{{ t('vtty_connected', 'Connected') }}</template>
@@ -126,7 +130,7 @@
             <div v-if="(tooltip.log || []).length === 0" class="vtty-spinner">
               <div class="spinner-ring"></div>
             </div>
-            <pre v-else>{{ (tooltip.log || []).join('\n') }}</pre>
+            <pre v-else v-html="(tooltip.log || []).map(l => parseAnsi(l)).join('\n')"></pre>
           </div>
         </template>
       </div>
@@ -135,7 +139,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 
 const messages: Record<string, Record<string, string>> = {
   en: {
@@ -220,6 +224,11 @@ interface TooltipState {
 }
 const tooltip = ref<TooltipState | null>(null)
 
+const vttyTerminalRef = ref<HTMLElement>()
+const vttyFirstTime = ref(0)
+const vttyLastTime = ref(0)
+const scrollLine = ref(1)
+
 const cardRef = ref<HTMLElement>()
 
 let countdownTimer: any = null
@@ -264,7 +273,15 @@ function probe() {
         state.value = d.state
       }
       if (d.vttys?.length) {
-        vttyLog.value = d.vttys[0].log || []
+        const newLog = d.vttys[0].log || []
+        if (!vttyFirstTime.value && newLog.length > 0) {
+          vttyFirstTime.value = Date.now()
+        }
+        if (newLog.length > 0) {
+          vttyLastTime.value = Date.now()
+        }
+        vttyLog.value = newLog
+        nextTick(updateScroll)
       }
     }).catch(() => {})
 }
@@ -330,6 +347,16 @@ onMounted(() => {
   }
 })
 
+watch(vttyLog, () => {
+  nextTick(() => {
+    const el = vttyTerminalRef.value
+    if (el) {
+      el.scrollTop = el.scrollHeight
+      updateScroll()
+    }
+  })
+})
+
 onUnmounted(() => {
   clearInterval(countdownTimer)
   clearInterval(pollTimer)
@@ -352,7 +379,11 @@ function toast(_msg: string) {
 function showBinaryVtty(_ev: MouseEvent, name: string) {
   vttyName.value = name
   vttyLog.value = []
+  vttyFirstTime.value = 0
+  vttyLastTime.value = 0
+  scrollLine.value = 1
   vttyVisible.value = true
+  cancelRedirect()
   probe()
 }
 
@@ -421,5 +452,69 @@ function cancelRedirect() {
 function doRefresh() {
   document.cookie = '__malkuth_nonce=1; max-age=1800; path=/'
   location.reload()
+}
+
+function parseAnsi(text: string): string {
+  const sgrMap: Record<number, string> = {
+    0: '',
+    1: 'font-weight:bold',
+    31: 'color:#cd0000', 32: 'color:#00cd00', 33: 'color:#cdcd00',
+    34: 'color:#0000ee', 35: 'color:#cd00cd', 36: 'color:#00cdcd',
+    37: 'color:#e5e5e5',
+    90: 'color:#666666', 91: 'color:#ff0000', 92: 'color:#00ff00',
+    93: 'color:#ffff00', 94: 'color:#5c5cff', 95: 'color:#ff00ff',
+    96: 'color:#00ffff', 97: 'color:#ffffff',
+  }
+  let out = ''
+  let i = 0
+  let spanOpen = false
+  while (i < text.length) {
+    if (text[i] === '\x1b' && i + 1 < text.length && text[i + 1] === '[') {
+      let j = i + 2
+      while (j < text.length && text[j] !== 'm') j++
+      if (j === text.length) { i++; continue }
+      const codeStr = text.substring(i + 2, j)
+      const params = codeStr.split(';').map(Number)
+      i = j + 1
+      if (spanOpen) { out += '</span>'; spanOpen = false }
+      if (params.includes(0)) continue
+      let style = ''
+      for (const p of params) {
+        if (sgrMap[p]) style += sgrMap[p] + ';'
+      }
+      if (style) {
+        out += '<span style="' + style.slice(0, -1) + '">'
+        spanOpen = true
+      }
+      continue
+    }
+    if (text.startsWith('\x1b[K', i)) { i += 3; continue }
+    if (text[i] === '<') { out += '&lt;'; i++; continue }
+    if (text[i] === '>') { out += '&gt;'; i++; continue }
+    if (text[i] === '&') { out += '&amp;'; i++; continue }
+    out += text[i]
+    i++
+  }
+  if (spanOpen) out += '</span>'
+  return out
+}
+
+function updateScroll() {
+  const el = vttyTerminalRef.value
+  if (!el) return
+  const ratio = el.scrollHeight > el.clientHeight ? el.scrollTop / (el.scrollHeight - el.clientHeight) : 0
+  scrollLine.value = Math.max(1, Math.floor(1 + ratio * (vttyLog.value.length - 1)))
+}
+
+function formatTime(ts: number): string {
+  if (!ts) return '--:--:--'
+  return new Date(ts).toTimeString().slice(0, 8)
+}
+
+function copyTerminal() {
+  const text = vttyLog.value.join('\n')
+  navigator.clipboard?.writeText(text).then(() => {
+    toast(t('copied_msg', 'Copied to clipboard'))
+  }).catch(() => {})
 }
 </script>
