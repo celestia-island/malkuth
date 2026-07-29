@@ -61,16 +61,16 @@
       <span class="countdown-unit">{{ t('redirect_after', 'seconds') }}</span>
     </p>
     <div class="cancel-row">
-      <button
-        v-if="state === 'ready' || state === 'landing' || state === 'starting'"
-        class="btn btn-ghost btn-sm"
-        @click="cancelRedirect"
-      >
-        {{ t('cancel_label', 'Cancel') }}
-      </button>
+      <label class="toggle" v-if="state === 'ready' || state === 'landing' || state === 'starting'">
+        <input type="checkbox" v-model="redirectEnabled" @change="onRedirectToggle" />
+        <span class="toggle-track">
+          <span class="toggle-thumb"></span>
+        </span>
+        <span class="toggle-label">{{ t('auto_redirect', 'Auto-redirect') }}</span>
+      </label>
       <button
         v-if="showRefresh"
-        :class="['btn btn-sm', state === 'ready' || state === 'offline' ? 'btn-outline' : 'btn-ghost']"
+        class="btn btn-sm btn-primary"
         @click="doRefresh"
       >
         {{ t('refresh_label', 'Refresh Now') }}
@@ -85,10 +85,22 @@
     <Teleport to="body">
       <div class="vtty-backdrop" v-if="vttyVisible" @click="vttyVisible = false" />
       <div class="vtty-panel" v-if="vttyVisible" @click.stop>
-        <div class="vtty-title">{{ vttyName }}</div>
-        <div class="vtty-screen">
-          <div v-if="!vttyLog.length" class="vtty-loading">{{ t('vtty_loading', 'Loading...') }}</div>
+        <div class="vtty-header">
+          <span class="vtty-name">{{ vttyName }}</span>
+          <button class="vtty-close" @click="vttyVisible = false" :aria-label="t('vtty_close', 'Close')">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="vtty-terminal">
+          <div v-if="vttyLog.length === 0" class="vtty-spinner">
+            <div class="spinner-ring"></div>
+          </div>
           <pre v-else>{{ vttyLog.join('\n') }}</pre>
+        </div>
+        <div class="vtty-footer">
+          <template v-if="!vttyPolled">{{ t('vtty_connecting', 'Connecting...') }}</template>
+          <template v-else-if="vttyLog.length">{{ t('vtty_connected', 'Connected') }}</template>
+          <template v-else>{{ t('vtty_no_output', 'No output yet') }}</template>
         </div>
       </div>
     </Teleport>
@@ -114,8 +126,12 @@ const messages: Record<string, Record<string, string>> = {
     redirect_after: 'seconds',
     cancel_label: 'Cancel',
     refresh_label: 'Refresh Now',
+    auto_redirect: 'Auto-redirect',
     vtty_loading: 'Loading...',
     vtty_no_output: 'No output yet',
+    vtty_connecting: 'Connecting...',
+    vtty_connected: 'Connected',
+    vtty_close: 'Close',
     click_to_copy: 'Click to copy',
     copied_msg: 'Copied to clipboard',
   },
@@ -134,8 +150,12 @@ const messages: Record<string, Record<string, string>> = {
     redirect_after: '秒后跳转',
     cancel_label: '取消跳转',
     refresh_label: '立即刷新',
+    auto_redirect: '自动跳转',
     vtty_loading: '加载中...',
     vtty_no_output: '暂无输出',
+    vtty_connecting: '连接中...',
+    vtty_connected: '已连接',
+    vtty_close: '关闭',
     click_to_copy: '点击以复制',
     copied_msg: '已复制到剪贴板',
   },
@@ -167,7 +187,9 @@ const watchPaths = ref<string[]>([])
 const binaries = ref<any[]>([])
 const vttyName = ref('')
 const vttyLog = ref<string[]>([])
+const vttyPolled = ref(false)
 const vttyVisible = ref(false)
+const redirectEnabled = ref(true)
 
 const cardRef = ref<HTMLElement>()
 
@@ -205,6 +227,7 @@ function probe() {
       if (d.vttys?.length) {
         vttyLog.value = d.vttys[0].log || []
       }
+      vttyPolled.value = true
     }).catch(() => {})
 }
 
@@ -288,9 +311,10 @@ function toast(_msg: string) {
   (el as any)._timer = setTimeout(() => el!.classList.remove('show'), 2000)
 }
 
-function showBinaryVtty(ev: MouseEvent, name: string) {
+function showBinaryVtty(_ev: MouseEvent, name: string) {
   vttyName.value = name
   vttyLog.value = []
+  vttyPolled.value = false
   vttyVisible.value = true
   probe()
 }
@@ -299,8 +323,16 @@ function cancelRedirect() {
   clearInterval(countdownTimer)
   clearInterval(pollTimer)
   showRefresh.value = true
-  state.value = 'building'
-  document.cookie = '__malkuth_nonce=1; max-age=1800; path=/'
+}
+
+function onRedirectToggle() {
+  if (!redirectEnabled.value) {
+    cancelRedirect()
+  } else {
+    showRefresh.value = false
+    countdown.value = 3
+    startCountdown()
+  }
 }
 
 function doRefresh() {
