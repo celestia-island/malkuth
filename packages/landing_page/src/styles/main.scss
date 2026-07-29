@@ -104,9 +104,9 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 
 .binaries { margin-top: 1rem; text-align: left; }
 .binaries-title { font-size: 0.75rem; color: var(--label); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
-.binary-row { display: grid; grid-template-columns: minmax(70px, auto) 1fr; gap: 8px 12px; padding: 6px 0; border-bottom: 1px solid var(--divider); font-size: 0.75rem; align-items: baseline; }
+.binary-row { display: grid; grid-template-columns: minmax(70px, auto) 1fr; gap: 8px 12px; padding: 6px 0; border-bottom: 1px solid var(--divider); font-size: 0.75rem; align-items: baseline; position: relative; }
 .binary-row:last-child { border-bottom: none; }
-.binary-name { font-weight: 600; color: var(--value); text-align: left; cursor: pointer; position: relative; }
+.binary-name { font-weight: 600; color: var(--value); text-align: left; cursor: pointer; }
 .vtty-icon { display: inline-flex; align-items: center; margin-left: 6px; color: inherit; cursor: pointer; opacity: 0.6; transition: opacity 0.2s; vertical-align: middle; }
 .vtty-icon:hover { opacity: 0.9; }
 .vtty-backdrop {
@@ -215,6 +215,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  pointer-events: none;
 }
 .vtty-tooltip-header {
   padding: 6px 10px;
@@ -253,7 +254,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   transition: all 0.25s ease; text-decoration: none; line-height: 1;
   border-radius: 6px; font-weight: 500; margin: 0 4px;
 }
-.btn-sm { padding: 5px 14px; font-size: 0.75rem; }
+.btn-sm { padding: 6px 18px; font-size: 0.8125rem; }
 .btn-ghost {
   background: transparent; color: var(--label);
 }
