@@ -14,7 +14,10 @@ fn main() {
             .unwrap_or_else(|_| "pnpm".into());
         // Also try common nvm paths
         let pnpm_candidates = [
-            format!("{}/.nvm/versions/node/v24.18.0/bin/pnpm", std::env::var("HOME").unwrap_or_default()),
+            format!(
+                "{}/.nvm/versions/node/v24.18.0/bin/pnpm",
+                std::env::var("HOME").unwrap_or_default()
+            ),
             pnpm,
         ];
         let mut built = false;
@@ -25,7 +28,10 @@ fn main() {
                 .status();
             if let Ok(s) = status {
                 if s.success() {
-                    println!("cargo:warning=landing_page built successfully with {}", pnpm_path);
+                    println!(
+                        "cargo:warning=landing_page built successfully with {}",
+                        pnpm_path
+                    );
                     built = true;
                     break;
                 }
