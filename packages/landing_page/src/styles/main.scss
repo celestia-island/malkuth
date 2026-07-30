@@ -111,7 +111,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .binary-row { display: grid; grid-template-columns: minmax(70px, auto) 1fr; gap: 8px 12px; padding: 6px 0; border-bottom: 1px solid var(--divider); font-size: 0.75rem; align-items: baseline; }
 .binary-row:last-child { border-bottom: none; }
 .binary-name-cell { display: flex; align-items: center; gap: 6px; }
-.binary-name { font-weight: 600; color: var(--value); cursor: pointer; position: relative; }
+.binary-name { font-weight: 600; color: var(--value); cursor: pointer; position: relative; line-height: 1.4; }
 .vtty-icon { display: inline-flex; align-items: center; margin-left: 6px; color: inherit; cursor: pointer; opacity: 0.6; transition: opacity 0.2s; vertical-align: middle; }
 .vtty-icon:hover { opacity: 0.9; }
 
@@ -125,6 +125,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   border: 1px solid rgba(255, 255, 255, 0.08);
   cursor: pointer;
   font-size: 0.65rem;
+  line-height: 1.4;
   color: var(--label);
   transition: all 0.2s;
   margin-left: 6px;
@@ -231,9 +232,8 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .malkuth-tooltip-xterm .xterm {
   height: 100%;
   text-align: left;
-  padding: 0;
 }
-.malkuth-tooltip-xterm .xterm-screen { padding: 6px 10px; }
+.malkuth-tooltip-xterm .xterm-screen { margin: 6px 10px; }
 .xterm-viewport::-webkit-scrollbar { display: none; }
 .xterm-viewport { scrollbar-width: none; }
 .malkuth-tooltip-terminal .vtty-spinner {
@@ -259,7 +259,8 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   left: 8px;
   right: 8px;
   z-index: 10;
-  display: flex;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
   align-items: center;
   gap: 4px;
   background: var(--tooltip-bg);
@@ -304,9 +305,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   opacity: 0.85;
 }
 .footer-info {
-  flex: 1;
   text-align: center;
-  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
