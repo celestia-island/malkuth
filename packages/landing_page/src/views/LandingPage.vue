@@ -37,6 +37,9 @@
             @mouseleave="hoverVttyLeave"
             @click.stop="togglePin($event, b.name)"
           >{{ b.name }}</span>
+          <span v-if="tooltipPinned && pinnedBinaryName === b.name" class="pinned-indicator">
+            {{ t('vtty_pinned', 'Pinned') }}
+          </span>
         </div>
         <span class="binary-detail">
           <span class="binary-time"

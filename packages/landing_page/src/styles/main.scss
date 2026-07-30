@@ -112,6 +112,19 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .binary-row:last-child { border-bottom: none; }
 .binary-name-cell { display: flex; align-items: center; gap: 6px; }
 .binary-name { font-weight: 600; color: var(--value); cursor: pointer; position: relative; line-height: 1; }
+.pinned-indicator {
+  display: inline-flex;
+  align-items: center;
+  font-style: italic;
+  font-size: 0.65rem;
+  color: var(--accent);
+  border: 1px solid rgba(255,140,66,0.3);
+  border-radius: 4px;
+  padding: 0 6px;
+  margin-left: 8px;
+  line-height: 1;
+  white-space: nowrap;
+}
 .vtty-icon { display: inline-flex; align-items: center; margin-left: 6px; color: inherit; cursor: pointer; opacity: 0.6; transition: opacity 0.2s; vertical-align: middle; }
 .vtty-icon:hover { opacity: 0.9; }
 
