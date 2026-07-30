@@ -188,9 +188,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .malkuth-tooltip-terminal {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
   width: 80ch;
-  height: 24em;
   background: transparent;
   font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
   font-size: 13px;
@@ -200,8 +198,8 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   text-align: left;
 }
 .malkuth-tooltip-xterm {
-  height: calc(100% - 28px);
-  min-height: 0;
+  height: 20em;
+  width: 100%;
 }
 .malkuth-tooltip-xterm .xterm {
   height: 100%;
@@ -228,6 +226,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 @keyframes vtty-spin { to { transform: rotate(360deg); } }
 .malkuth-tooltip-footer {
   flex-shrink: 0;
+  height: 28px;
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
