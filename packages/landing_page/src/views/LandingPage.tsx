@@ -120,8 +120,9 @@ export default defineComponent({
       const isLight = bg === '#ffffff'
       return {
         theme: isLight ? {
-          background: '#ffffff',
-          cursorAccent: '#ffffff',
+          background: '#f7f7f7',
+          black: '#f7f7f7',
+          cursorAccent: '#f7f7f7',
           foreground: '#383a42',
           cursor: '#0084ff',
           selectionBackground: '#e0e0e880',
@@ -141,9 +142,9 @@ export default defineComponent({
           brightCyan: '#0184bc',
           brightWhite: '#090a0b',
         } : {
-          background: '#0e0e1e',
-          cursorAccent: '#0e0e1e',
-          black: '#0e0e1e',
+          background: '#070707',
+          black: '#070707',
+          cursorAccent: '#070707',
           foreground: '#dcdfe4',
           cursor: '#528bff',
           selectionBackground: '#528bff40',
