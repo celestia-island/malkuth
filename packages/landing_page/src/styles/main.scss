@@ -110,7 +110,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .binaries-title { font-size: 0.75rem; color: var(--label); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
 .binary-row { display: grid; grid-template-columns: minmax(70px, auto) 1fr; gap: 8px 12px; padding: 6px 0; border-bottom: 1px solid var(--divider); font-size: 0.75rem; align-items: baseline; }
 .binary-row:last-child { border-bottom: none; }
-.binary-name-cell { display: flex; align-items: center; gap: 6px; }
+.binary-name-cell { display: flex; align-items: baseline; gap: 6px; }
 .binary-name { font-weight: 600; color: var(--value); cursor: pointer; position: relative; }
 .vtty-icon { display: inline-flex; align-items: center; margin-left: 6px; color: inherit; cursor: pointer; opacity: 0.6; transition: opacity 0.2s; vertical-align: middle; }
 .vtty-icon:hover { opacity: 0.9; }
@@ -261,8 +261,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   z-index: 10;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 6px;
+  gap: 4px;
   background: var(--tooltip-bg);
   border-top: 1px solid rgba(255,140,66,0.08);
   padding: 3px 8px;
@@ -280,6 +279,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   font-style: italic;
   transition: color 0.2s;
   flex-shrink: 0;
+  min-width: 90px;
 }
 .footer-pin-area:hover {
   opacity: 0.85;
