@@ -13,7 +13,8 @@
   --footer-hover: rgba(212, 212, 232, 0.55);
   --accent: #ff8c42;
   --accent-dim: rgba(255, 140, 66, 0.15);
-  --terminal-bg: #0c0c18;
+  --tooltip-bg: #0e0e1e;
+  --tooltip-fg: #d4d4e8;
 }
 @media (prefers-color-scheme: light) {
   :root {
@@ -29,6 +30,8 @@
     --retry: rgba(30, 30, 50, 0.35);
     --footer: rgba(30, 30, 50, 0.2);
     --footer-hover: rgba(30, 30, 50, 0.5);
+    --tooltip-bg: #ffffff;
+    --tooltip-fg: #333340;
   }
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -108,76 +111,10 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .binary-row { display: grid; grid-template-columns: minmax(70px, auto) 1fr; gap: 8px 12px; padding: 6px 0; border-bottom: 1px solid var(--divider); font-size: 0.75rem; align-items: baseline; }
 .binary-row:last-child { border-bottom: none; }
 .binary-name-cell { display: flex; align-items: center; gap: 6px; }
-.binary-name { font-weight: 600; color: var(--value); cursor: pointer; position: relative; }
+.binary-name { font-weight: 600; color: var(--value); cursor: pointer; position: relative; line-height: 1; border-radius: 4px; padding: 1px 4px; margin: -1px -4px; transition: box-shadow 0.2s; }
+.binary-name.is-pinned { box-shadow: 0 0 0 1px var(--accent); }
 .vtty-icon { display: inline-flex; align-items: center; margin-left: 6px; color: inherit; cursor: pointer; opacity: 0.6; transition: opacity 0.2s; vertical-align: middle; }
 .vtty-icon:hover { opacity: 0.9; }
-.vtty-backdrop {
-  position: fixed; inset: 0; z-index: 999998; background: rgba(0,0,0,0.35);
-  backdrop-filter: blur(4px);
-}
-.vtty-panel {
-  position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  z-index: 999999; background: var(--terminal-bg); border: 1px solid rgba(255,140,66,0.2);
-  border-radius: 12px; box-shadow: 0 8px 48px rgba(0,0,0,0.6), 0 0 24px rgba(255,140,66,0.06);
-  display: flex; flex-direction: column; overflow: hidden;
-}
-.vtty-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 16px; border-bottom: 1px solid rgba(255,255,255,0.06);
-  flex-shrink: 0;
-}
-.vtty-header .vtty-name {
-  color: var(--accent); font-weight: 600; font-size: 0.8125rem;
-  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
-}
-.vtty-close {
-  background: none; border: none; cursor: pointer;
-  color: rgba(255,255,255,0.3); padding: 4px;
-  display: flex; align-items: center; justify-content: center;
-  border-radius: 4px; transition: color 0.2s, background 0.2s;
-}
-.vtty-close:hover { color: #fff; background: rgba(255,255,255,0.1); }
-.vtty-terminal {
-  width: 80ch; height: 24em;
-  max-width: calc(94vw - 32px);
-  background: rgba(0,0,0,0.3);
-  border: 1px solid rgba(255,140,66,0.08);
-  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
-  font-size: 13px; line-height: 1.35;
-  color: #a0a0c0;
-  margin: 16px;
-  overflow: auto;
-  padding: 10px;
-  border-radius: 4px;
-  flex-shrink: 0;
-  scrollbar-width: none;
-  position: relative;
-  &::-webkit-scrollbar { display: none; }
-}
-.vtty-terminal pre {
-  margin: 0; white-space: pre-wrap; word-break: break-all;
-  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
-}
-.vtty-terminal code {
-  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
-}
-.vtty-spinner {
-  display: flex; align-items: center; justify-content: center;
-  width: 100%; height: 100%;
-}
-.spinner-ring {
-  width: 32px; height: 32px;
-  border: 3px solid rgba(255,140,66,0.15);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: vtty-spin 0.8s linear infinite;
-}
-@keyframes vtty-spin { to { transform: rotate(360deg); } }
-.vtty-footer {
-  padding: 8px 16px; border-top: 1px solid rgba(255,255,255,0.06);
-  text-align: center; font-size: 0.6875rem; color: rgba(255,255,255,0.3);
-  flex-shrink: 0;
-}
 
 .binary-detail { color: var(--label); font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace; font-size: 0.6875rem; text-align: right; }
 .binary-time { cursor: pointer; }
@@ -208,13 +145,19 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   opacity: 0.6;
 }
 .malkuth-tooltip.is-terminal {
-  background: var(--terminal-bg);
+  background: var(--tooltip-bg);
   border-color: rgba(255,140,66,0.2);
   padding: 0;
   max-width: none;
   box-shadow: 0 4px 16px rgba(0,0,0,0.5), 0 0 12px rgba(255,140,66,0.06);
 }
+.malkuth-tooltip.is-terminal.is-pinned {
+  pointer-events: auto;
+}
 .malkuth-tooltip-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding: 6px 10px;
   border-bottom: 1px solid rgba(255,255,255,0.06);
   flex-shrink: 0;
@@ -225,28 +168,122 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   font-size: 0.6875rem;
   font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
 }
+.malkuth-tooltip-header-copy {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: rgba(255,255,255,0.3);
+  padding: 2px 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: color 0.2s, background 0.2s;
+  pointer-events: auto;
+}
+.malkuth-tooltip-header-copy:hover {
+  color: #fff;
+  background: rgba(255,255,255,0.1);
+}
 .malkuth-tooltip-terminal {
+  position: relative;
   width: 80ch;
   height: 24em;
-  background: rgba(0,0,0,0.3);
-  border: 1px solid rgba(255,140,66,0.08);
+  background: transparent;
   font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
   font-size: 13px;
   line-height: 1.35;
   color: #a0a0c0;
   margin: 8px;
-  overflow: auto;
-  padding: 8px;
-  border-radius: 4px;
-  scrollbar-width: none;
-  &::-webkit-scrollbar { display: none; }
+  overflow: hidden;
+  text-align: left;
 }
-.malkuth-tooltip-terminal pre {
-  margin: 0; white-space: pre-wrap; word-break: break-all;
-  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
+.malkuth-tooltip-xterm {
+  width: 100%;
+  height: 100%;
 }
-.malkuth-tooltip-terminal code {
+.malkuth-tooltip-xterm .xterm {
+  height: 100%;
+  text-align: left;
+}
+.malkuth-tooltip-xterm .xterm-screen { margin: 6px 10px; }
+.xterm-viewport::-webkit-scrollbar { display: none; }
+.xterm-viewport { scrollbar-width: none; }
+.malkuth-tooltip-terminal .vtty-spinner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.3);
+}
+.malkuth-tooltip-terminal .spinner-ring {
+  width: 32px;
+  height: 32px;
+  border: 3px solid rgba(255,140,66,0.15);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: vtty-spin 0.8s linear infinite;
+}
+@keyframes vtty-spin { to { transform: rotate(360deg); } }
+.malkuth-tooltip-footer {
+  position: absolute;
+  bottom: 2px;
+  left: 8px;
+  right: 8px;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 4px;
+  background: var(--tooltip-bg);
+  border-top: 1px solid rgba(255,140,66,0.08);
+  padding: 3px 8px;
+  font-size: 0.65rem;
+  color: var(--tooltip-fg);
+  pointer-events: auto;
   font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
+  white-space: nowrap;
+}
+.footer-pin-area {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  font-style: italic;
+  transition: color 0.2s;
+  flex-shrink: 0;
+  min-width: 90px;
+}
+.footer-pin-area:hover {
+  opacity: 0.85;
+}
+.footer-pin-area svg {
+  flex-shrink: 0;
+}
+.footer-info {
+  text-align: right;
+  opacity: 0.55;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.malkuth-tooltip-footer .terminal-copy-btn {
+  background: transparent;
+  border: none;
+  color: var(--tooltip-fg);
+  opacity: 0.55;
+  cursor: pointer;
+  padding: 3px 5px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.2s;
+  flex-shrink: 0;
+  font-size: 0;
+}
+.malkuth-tooltip-footer .terminal-copy-btn:hover {
+  opacity: 0.85;
 }
 @keyframes tooltip-in { from { opacity: 0; } to { opacity: 1; } }
 
@@ -278,37 +315,4 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 }
 .btn-primary:active { transform: translateY(0); }
 
-/* ── Terminal scroll indicator ── */
-.terminal-scroll-bar {
-  position: absolute;
-  bottom: 2px;
-  right: 2px;
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: rgba(0, 0, 0, 0.55);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 4px;
-  padding: 2px 8px;
-  font-size: 0.65rem;
-  color: rgba(255, 255, 255, 0.55);
-  pointer-events: auto;
-  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
-  white-space: nowrap;
-}
-.terminal-copy-btn {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.55);
-  cursor: pointer;
-  font-size: 0.6rem;
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-family: inherit;
-  transition: background 0.2s, color 0.2s;
-}
-.terminal-copy-btn:hover {
-  background: rgba(255, 255, 255, 0.15);
-  color: rgba(255, 255, 255, 0.8);
-}
+

@@ -167,18 +167,15 @@ impl PodManager {
         let mut child = cmd.spawn()?;
 
         let max_lines = 500usize;
-        let bin_name = program.to_string();
-
         if let Some(stdout) = child.stdout.take() {
             let log = Arc::clone(&self.runtime_log);
-            let name = bin_name.clone();
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     let t = line.trim().to_string();
                     if !t.is_empty() {
                         if let Ok(mut g) = log.lock() {
-                            g.push(format!("[{name}] {t}"));
+                            g.push(t);
                             if g.len() > max_lines {
                                 g.remove(0);
                             }
@@ -196,7 +193,7 @@ impl PodManager {
                     let t = line.trim().to_string();
                     if !t.is_empty() {
                         if let Ok(mut g) = log.lock() {
-                            g.push(format!("[{bin_name}] {t}"));
+                            g.push(t);
                             if g.len() > max_lines {
                                 g.remove(0);
                             }

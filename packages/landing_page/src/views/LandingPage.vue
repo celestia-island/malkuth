@@ -33,17 +33,11 @@
       <div class="binary-row" v-for="b in binaries" :key="b.name">
         <div class="binary-name-cell">
           <span class="binary-name"
-            @mouseenter="showTextTooltip($event, b.name + '\n' + t('click_to_copy', 'Click to copy'))"
-            @mouseleave="hideTooltip"
-            @click="copy(b.name)"
-          >{{ b.name }}</span>
-          <span class="vtty-icon"
-            @click.stop="showBinaryVtty($event, b.name)"
-            @mouseenter="hoverVttyIcon($event, b.name)"
+            :class="{ 'is-pinned': tooltipPinned && pinnedBinaryName === b.name }"
+            @mouseenter="hoverVttyBadge($event, b.name)"
             @mouseleave="hoverVttyLeave"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-          </span>
+            @click.stop="togglePin($event, b.name)"
+          >{{ b.name }}</span>
         </div>
         <span class="binary-detail">
           <span class="binary-time"
@@ -91,30 +85,14 @@
     <p class="version-line">v{{ version }}</p>
 
     <Teleport to="body">
-      <div class="vtty-backdrop" v-if="vttyVisible" @click="vttyVisible = false" />
-      <div class="vtty-panel" v-if="vttyVisible" @click.stop>
-        <div class="vtty-header">
-          <span class="vtty-name">{{ vttyName }}</span>
-          <button class="vtty-close" @click="vttyVisible = false" :aria-label="t('vtty_close', 'Close')">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-        </div>
-        <div class="vtty-terminal" ref="vttyTerminalRef" @scroll="updateScroll">
-          <div v-if="vttyLog.length === 0" class="vtty-spinner">
-            <div class="spinner-ring"></div>
-          </div>
-          <pre v-else v-html="vttyLog.map(l => parseAnsi(l)).join('\n')"></pre>
-          <div class="terminal-scroll-bar" v-if="vttyLog.length">
-            <span>│ {{ scrollLine }}/{{ vttyLog.length }} lines │ {{ formatTime(vttyFirstTime) }} → {{ formatTime(vttyLastTime) }} │</span>
-            <button class="terminal-copy-btn" @click.stop="copyTerminal">Copy</button>
-          </div>
-        </div>
-        <div class="vtty-footer">
-          <template v-if="vttyLog.length">{{ t('vtty_connected', 'Connected') }}</template>
-          <template v-else>{{ t('vtty_no_output', 'No output yet') }}</template>
-        </div>
-      </div>
-      <div v-if="tooltip" class="malkuth-tooltip" :class="{ 'is-terminal': tooltip.kind === 'terminal' }" :style="tooltipStyle">
+      <div
+        v-if="tooltip"
+        class="malkuth-tooltip"
+        :class="{ 'is-terminal': tooltip.kind === 'terminal', 'is-pinned': tooltipPinned }"
+        :style="tooltipStyle"
+        @mouseenter="clearHideTimer"
+        @mouseleave="hoverTooltipLeave"
+      >
         <template v-if="tooltip.kind === 'text'">
           <span v-if="tooltip.content.includes('\n')">
             {{ tooltip.content.substring(0, tooltip.content.lastIndexOf('\n')) }}<br/>
@@ -125,12 +103,25 @@
         <template v-else-if="tooltip.kind === 'terminal'">
           <div class="malkuth-tooltip-header">
             <span class="malkuth-tooltip-name">{{ tooltip.binaryName }}</span>
+            <button class="malkuth-tooltip-header-copy" @click.stop="copyBinaryName" :title="t('copy_name', 'Copy name')">
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </button>
           </div>
           <div class="malkuth-tooltip-terminal">
+            <div class="malkuth-tooltip-xterm" ref="tooltipTerminalRef"></div>
             <div v-if="(tooltip.log || []).length === 0" class="vtty-spinner">
               <div class="spinner-ring"></div>
             </div>
-            <pre v-else v-html="(tooltip.log || []).map(l => parseAnsi(l)).join('\n')"></pre>
+             <div class="malkuth-tooltip-footer" v-if="(tooltip.log || []).length">
+              <span class="footer-pin-area" @click.stop="togglePinFromFooter">
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.7V5h1a2 2 0 0 0 2-2H6a2 2 0 0 0 2 2h1v5.7a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17z"/></svg>
+                <span>{{ tooltipPinned ? t('vtty_pinned', 'Pinned') : t('vtty_click_to_pin', 'Click to pin') }}</span>
+              </span>
+              <span class="footer-info">{{ tooltipScrollLine }}/{{ (tooltip.log || []).length }} {{ t('vtty_lines', 'lines') }}  {{ t('vtty_first_output', 'First:') }} {{ formatTime(tooltipFirstTime) }}  {{ t('vtty_last_output', 'Last:') }} {{ formatTime(tooltipLastTime) }}</span>
+              <button class="terminal-copy-btn" @click.stop="copyTooltipTerminal">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              </button>
+            </div>
           </div>
         </template>
       </div>
@@ -140,6 +131,8 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { Terminal } from '@xterm/xterm'
+import '@xterm/xterm/css/xterm.css'
 
 const messages: Record<string, Record<string, string>> = {
   en: {
@@ -163,6 +156,12 @@ const messages: Record<string, Record<string, string>> = {
     vtty_close: 'Close',
     click_to_copy: 'Click to copy',
     copied_msg: 'Copied to clipboard',
+    vtty_click_to_pin: 'Click to pin',
+    vtty_pinned: 'Pinned',
+    vtty_lines: 'lines',
+    vtty_first_output: 'First:',
+    vtty_last_output: 'Last:',
+    copy_name: 'Copy name',
   },
   zhs: {
     heading: 'Malkuth',
@@ -185,6 +184,12 @@ const messages: Record<string, Record<string, string>> = {
     vtty_close: '关闭',
     click_to_copy: '点击以复制',
     copied_msg: '已复制到剪贴板',
+    vtty_click_to_pin: '点击固定',
+    vtty_pinned: '已固定',
+    vtty_lines: '行',
+    vtty_first_output: '首次:',
+    vtty_last_output: '末次:',
+    copy_name: '复制名称',
   },
 }
 
@@ -212,9 +217,13 @@ const logoBase64 = ref('')
 const proxyEndpoint = ref('')
 const watchPaths = ref<string[]>([])
 const binaries = ref<any[]>([])
-const vttyName = ref('')
-const vttyLog = ref<string[]>([])
-const vttyVisible = ref(false)
+
+const tooltipPinned = ref(false)
+const pinnedBinaryName = ref<string | null>(null)
+const tooltipFirstTime = ref(0)
+const tooltipLastTime = ref(0)
+const tooltipScrollLine = ref(1)
+
 interface TooltipState {
   kind: 'text' | 'terminal'
   el: HTMLElement
@@ -224,15 +233,92 @@ interface TooltipState {
 }
 const tooltip = ref<TooltipState | null>(null)
 
-const vttyTerminalRef = ref<HTMLElement>()
-const vttyFirstTime = ref(0)
-const vttyLastTime = ref(0)
-const scrollLine = ref(1)
+let tooltipTerminal: Terminal | null = null
+const tooltipTerminalRef = ref<HTMLElement>()
 
 const cardRef = ref<HTMLElement>()
 
 let countdownTimer: any = null
 let pollTimer: any = null
+
+function getXtermOptions() {
+  const dark = !window.matchMedia('(prefers-color-scheme: light)').matches
+  return {
+    theme: dark ? {
+      background: '#282c34',
+      foreground: '#dcdfe4',
+      cursor: '#528bff',
+      cursorAccent: '#282c34',
+      selectionBackground: '#528bff40',
+      black: '#282c34',
+      red: '#e06c75',
+      green: '#98c379',
+      yellow: '#e5c07b',
+      blue: '#61afef',
+      magenta: '#c678dd',
+      cyan: '#56b6c2',
+      white: '#dcdfe4',
+      brightBlack: '#5c6370',
+      brightRed: '#e06c75',
+      brightGreen: '#98c379',
+      brightYellow: '#e5c07b',
+      brightBlue: '#61afef',
+      brightMagenta: '#c678dd',
+      brightCyan: '#56b6c2',
+      brightWhite: '#ffffff',
+    } : {
+      background: '#fafafa',
+      foreground: '#383a42',
+      cursor: '#0084ff',
+      cursorAccent: '#fafafa',
+      selectionBackground: '#0084ff40',
+      black: '#fafafa',
+      red: '#e45649',
+      green: '#50a14f',
+      yellow: '#986801',
+      blue: '#4078f2',
+      magenta: '#a626a4',
+      cyan: '#0184bc',
+      white: '#383a42',
+      brightBlack: '#a0a1a7',
+      brightRed: '#e45649',
+      brightGreen: '#50a14f',
+      brightYellow: '#986801',
+      brightBlue: '#4078f2',
+      brightMagenta: '#a626a4',
+      brightCyan: '#0184bc',
+      brightWhite: '#090a0b',
+    },
+    cols: 80,
+    rows: 24,
+    fontSize: 13,
+    fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace',
+    allowProposedApi: false,
+    allowTransparency: false,
+    disableStdin: true,
+    cursorBlink: false,
+    cursorStyle: 'block' as const,
+    scrollback: 10000,
+  }
+}
+
+function setupTooltipXterm(el: HTMLElement) {
+  disposeTooltipXterm()
+  tooltipTerminal = new Terminal(getXtermOptions())
+  tooltipTerminal.open(el)
+  tooltipTerminal.onScroll(() => {
+    if (tooltipTerminal) {
+      tooltipScrollLine.value = tooltipTerminal.buffer.active.viewportY + 1
+    }
+  })
+}
+
+function disposeTooltipXterm() {
+  if (tooltipTerminal) {
+    tooltipTerminal.dispose()
+    tooltipTerminal = null
+  }
+}
 
 const statusClass = computed(() => {
   if (state.value === 'ready') return 'status--ready'
@@ -257,43 +343,12 @@ const tooltipStyle = computed(() => {
   }
 })
 
-function probe() {
-  fetch('/', { headers: { 'X-Malkuth-Probe': '1' } })
-    .then(r => r.json())
-    .then(d => {
-      statusMessage.value = d.message || ''
-      if (d.state === 'ready') {
-        document.cookie = '__malkuth_nonce=1; max-age=1800; path=/'
-        location.reload()
-      } else if (d.state === 'offline') {
-        state.value = 'offline'
-        showRefresh.value = true
-        clearInterval(pollTimer)
-      } else {
-        state.value = d.state
-      }
-      if (d.vttys?.length) {
-        const newLog = d.vttys[0].log || []
-        if (!vttyFirstTime.value && newLog.length > 0) {
-          vttyFirstTime.value = Date.now()
-        }
-        if (newLog.length > 0) {
-          vttyLastTime.value = Date.now()
-        }
-        vttyLog.value = newLog
-        nextTick(updateScroll)
-      }
-    }).catch(() => {})
-}
-
 function startCountdown() {
   countdown.value = 3
   countdownTimer = setInterval(() => {
     countdown.value--
     if (countdown.value <= 0) {
       clearInterval(countdownTimer)
-      const attempts = redirectAttempts.value + 1
-      localStorage.setItem('__malkuth_redirect_attempts', String(attempts))
       document.cookie = '__malkuth_nonce=1; max-age=1800; path=/'
       location.reload()
     }
@@ -312,28 +367,25 @@ function loadInit() {
   state.value = s as any
   statusMessage.value = init.message || ''
 
-  const stored = parseInt(localStorage.getItem('__malkuth_redirect_attempts') || '0', 10)
-  redirectAttempts.value = stored
-
-  if (stored >= 3) {
-    state.value = 'offline'
+  const nonce = parseInt(getCookie('__malkuth_nonce') || '0', 10)
+  if (nonce >= 1) {
     showRefresh.value = true
-    localStorage.removeItem('__malkuth_redirect_attempts')
     return
   }
 
-  if (s === 'ready') {
-    localStorage.removeItem('__malkuth_redirect_attempts')
+  if (s === 'ready' || s === 'landing') {
     startCountdown()
   } else if (s === 'building') {
-    document.cookie = '__malkuth_nonce=1; max-age=1800; path=/'
     showRefresh.value = true
     pollTimer = setInterval(probe, 2000)
-  } else if (s === 'offline') {
-    showRefresh.value = true
   } else {
-    startCountdown()
+    showRefresh.value = true
   }
+}
+
+function getCookie(name: string): string | null {
+  const match = document.cookie.match(new RegExp('(^|; )' + name + '=([^;]*)'))
+  return match ? decodeURIComponent(match[2]) : null
 }
 
 onMounted(() => {
@@ -347,19 +399,28 @@ onMounted(() => {
   }
 })
 
-watch(vttyLog, () => {
-  nextTick(() => {
-    const el = vttyTerminalRef.value
-    if (el) {
-      el.scrollTop = el.scrollHeight
-      updateScroll()
-    }
-  })
+watch(tooltip, (newVal) => {
+  if (newVal?.kind === 'terminal') {
+    nextTick(() => {
+      const el = tooltipTerminalRef.value
+      if (el && !tooltipTerminal) {
+        setupTooltipXterm(el)
+      }
+      if (tooltipTerminal && newVal.log?.length) {
+        tooltipTerminal.reset()
+        tooltipTerminal.write(newVal.log.join('\r\n') + '\r\n')
+        tooltipScrollLine.value = tooltipTerminal.buffer.active.viewportY + 1
+      }
+    })
+  } else if (!newVal || newVal.kind === 'text') {
+    disposeTooltipXterm()
+  }
 })
 
 onUnmounted(() => {
   clearInterval(countdownTimer)
   clearInterval(pollTimer)
+  disposeTooltipXterm()
 })
 
 function copy(text: string) {
@@ -376,18 +437,8 @@ function toast(_msg: string) {
   (el as any)._timer = setTimeout(() => el!.classList.remove('show'), 2000)
 }
 
-function showBinaryVtty(_ev: MouseEvent, name: string) {
-  vttyName.value = name
-  vttyLog.value = []
-  vttyFirstTime.value = 0
-  vttyLastTime.value = 0
-  scrollLine.value = 1
-  vttyVisible.value = true
-  cancelRedirect()
-  probe()
-}
-
 function showTextTooltip(ev: MouseEvent, content: string) {
+  if (tooltipPinned.value) return
   tooltip.value = {
     kind: 'text',
     el: ev.currentTarget as HTMLElement,
@@ -398,19 +449,35 @@ function showTextTooltip(ev: MouseEvent, content: string) {
 let hideTimer: any = null
 
 function hideTooltip() {
+  if (tooltipPinned.value) return
   if (tooltip.value?.kind === 'text') {
     tooltip.value = null
     return
   }
   clearTimeout(hideTimer)
   hideTimer = setTimeout(() => {
+    if (tooltipPinned.value) return
+    disposeTooltipXterm()
+    tooltip.value = null
+  }, 200)
+}
+
+function clearHideTimer() {
+  clearTimeout(hideTimer)
+}
+
+function hoverTooltipLeave() {
+  if (tooltipPinned.value) return
+  clearTimeout(hideTimer)
+  hideTimer = setTimeout(() => {
+    disposeTooltipXterm()
     tooltip.value = null
   }, 200)
 }
 
 const hoverCache: Record<string, string[]> = {}
 
-function hoverVttyIcon(ev: MouseEvent, name: string) {
+function hoverVttyBadge(ev: MouseEvent, name: string) {
   clearTimeout(hideTimer)
   const el = ev.currentTarget as HTMLElement
   tooltip.value = {
@@ -421,14 +488,37 @@ function hoverVttyIcon(ev: MouseEvent, name: string) {
     log: hoverCache[name] || [],
   }
 
+  nextTick(() => {
+    const terminalEl = tooltipTerminalRef.value
+    if (terminalEl && !tooltipTerminal) {
+      setupTooltipXterm(terminalEl)
+    }
+    if (tooltipTerminal && hoverCache[name]?.length) {
+      tooltipTerminal.reset()
+      tooltipTerminal.write(hoverCache[name].join('\r\n') + '\r\n')
+      tooltipScrollLine.value = tooltipTerminal.buffer.active.viewportY + 1
+    }
+  })
+
   if (!hoverCache[name]) {
     fetch('/', { headers: { 'X-Malkuth-Probe': '1' } })
       .then(r => r.json())
       .then(d => {
         const logs = d.vttys?.[0]?.log || []
         hoverCache[name] = logs
+        if (!tooltipFirstTime.value && logs.length > 0) {
+          tooltipFirstTime.value = Date.now()
+        }
+        if (logs.length > 0) {
+          tooltipLastTime.value = Date.now()
+        }
         if (tooltip.value?.kind === 'terminal' && tooltip.value.binaryName === name) {
           tooltip.value = { ...tooltip.value, log: logs }
+          if (tooltipTerminal) {
+            tooltipTerminal.reset()
+            tooltipTerminal.write(logs.join('\r\n') + '\r\n')
+            tooltipScrollLine.value = tooltipTerminal.buffer.active.viewportY + 1
+          }
         }
       }).catch(() => {})
   }
@@ -436,9 +526,40 @@ function hoverVttyIcon(ev: MouseEvent, name: string) {
 
 function hoverVttyLeave() {
   clearTimeout(hideTimer)
+  if (tooltipPinned.value) return
   hideTimer = setTimeout(() => {
+    disposeTooltipXterm()
     tooltip.value = null
   }, 200)
+}
+
+function togglePin(ev: MouseEvent, name: string) {
+  if (tooltipPinned.value && pinnedBinaryName.value === name) {
+    unpinTooltip()
+    return
+  }
+  pinnedBinaryName.value = name
+  tooltipPinned.value = true
+  cancelRedirect()
+  clearTimeout(hideTimer)
+  hoverVttyBadge(ev, name)
+}
+
+function unpinTooltip() {
+  tooltipPinned.value = false
+  pinnedBinaryName.value = null
+  disposeTooltipXterm()
+  tooltip.value = null
+}
+
+function togglePinFromFooter() {
+  if (tooltipPinned.value) {
+    unpinTooltip()
+  } else {
+    pinnedBinaryName.value = tooltip.value?.binaryName || null
+    tooltipPinned.value = true
+    cancelRedirect()
+  }
 }
 
 function cancelRedirect() {
@@ -446,64 +567,11 @@ function cancelRedirect() {
   clearInterval(pollTimer)
   showRefresh.value = true
   state.value = 'building'
-  document.cookie = '__malkuth_nonce=1; max-age=1800; path=/'
 }
 
 function doRefresh() {
-  document.cookie = '__malkuth_nonce=1; max-age=1800; path=/'
+  document.cookie = '__malkuth_nonce=; max-age=0; path=/'
   location.reload()
-}
-
-function parseAnsi(text: string): string {
-  const sgrMap: Record<number, string> = {
-    0: '',
-    1: 'font-weight:bold',
-    31: 'color:#cd0000', 32: 'color:#00cd00', 33: 'color:#cdcd00',
-    34: 'color:#0000ee', 35: 'color:#cd00cd', 36: 'color:#00cdcd',
-    37: 'color:#e5e5e5',
-    90: 'color:#666666', 91: 'color:#ff0000', 92: 'color:#00ff00',
-    93: 'color:#ffff00', 94: 'color:#5c5cff', 95: 'color:#ff00ff',
-    96: 'color:#00ffff', 97: 'color:#ffffff',
-  }
-  let out = ''
-  let i = 0
-  let spanOpen = false
-  while (i < text.length) {
-    if (text[i] === '\x1b' && i + 1 < text.length && text[i + 1] === '[') {
-      let j = i + 2
-      while (j < text.length && text[j] !== 'm') j++
-      if (j === text.length) { i++; continue }
-      const codeStr = text.substring(i + 2, j)
-      const params = codeStr.split(';').map(Number)
-      i = j + 1
-      if (spanOpen) { out += '</span>'; spanOpen = false }
-      if (params.includes(0)) continue
-      let style = ''
-      for (const p of params) {
-        if (sgrMap[p]) style += sgrMap[p] + ';'
-      }
-      if (style) {
-        out += '<span style="' + style.slice(0, -1) + '">'
-        spanOpen = true
-      }
-      continue
-    }
-    if (text.startsWith('\x1b[K', i)) { i += 3; continue }
-    if (text[i] === '<') { out += '&lt;'; i++; continue }
-    if (text[i] === '>') { out += '&gt;'; i++; continue }
-    if (text[i] === '&') { out += '&amp;'; i++; continue }
-    out += text[i]
-    i++
-  }
-  if (spanOpen) out += '</span>'
-  return out
-}
-
-function updateScroll() {
-  const el = vttyTerminalRef.value
-  if (!el) return
-  const ratio = el.scrollHeight > el.clientHeight ? el.scrollTop / (el.scrollHeight - el.clientHeight) : 0
-  scrollLine.value = Math.max(1, Math.floor(1 + ratio * (vttyLog.value.length - 1)))
 }
 
 function formatTime(ts: number): string {
@@ -511,10 +579,41 @@ function formatTime(ts: number): string {
   return new Date(ts).toTimeString().slice(0, 8)
 }
 
-function copyTerminal() {
-  const text = vttyLog.value.join('\n')
-  navigator.clipboard?.writeText(text).then(() => {
+function copyTooltipTerminal() {
+  if (!tooltipTerminal) return
+  const buffer = tooltipTerminal.buffer.active
+  const lines: string[] = []
+  for (let i = 0; i < buffer.length; i++) {
+    const line = buffer.getLine(i)
+    if (line) lines.push(line.translateToString())
+  }
+  navigator.clipboard?.writeText(lines.join('\n')).then(() => {
     toast(t('copied_msg', 'Copied to clipboard'))
   }).catch(() => {})
+}
+
+function copyBinaryName() {
+  if (!tooltip.value?.binaryName) return
+  navigator.clipboard?.writeText(tooltip.value.binaryName).then(() => {
+    toast(t('copied_msg', 'Copied to clipboard'))
+  }).catch(() => {})
+}
+
+function probe() {
+  fetch('/', { headers: { 'X-Malkuth-Probe': '1' } })
+    .then(r => r.json())
+    .then(d => {
+      statusMessage.value = d.message || ''
+      if (d.state === 'ready') {
+        document.cookie = '__malkuth_nonce=1; max-age=1800; path=/'
+        location.reload()
+      } else if (d.state === 'offline') {
+        state.value = 'offline'
+        showRefresh.value = true
+        clearInterval(pollTimer)
+      } else {
+        state.value = d.state
+      }
+    }).catch(() => {})
 }
 </script>
