@@ -591,7 +591,8 @@ function formatTime(ts: number): string {
 }
 
 function copyTooltipTerminal() {
-  const text = (tooltip.value?.log || []).join('\n')
+  const raw = (tooltip.value?.log || []).join('\n')
+  const text = raw.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '')
   navigator.clipboard?.writeText(text).then(() => {
     toast(t('copied_msg', 'Copied to clipboard'))
   }).catch(() => {})

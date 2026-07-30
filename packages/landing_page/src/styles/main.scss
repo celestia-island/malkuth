@@ -127,10 +127,9 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   font-size: 0.65rem;
   color: var(--label);
   transition: all 0.2s;
-  margin-left: 4px;
+  margin-left: 6px;
   user-select: none;
   white-space: nowrap;
-  vertical-align: middle;
 }
 .vtty-badge:hover {
   background: rgba(255, 255, 255, 0.1);
