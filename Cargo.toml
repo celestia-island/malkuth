@@ -81,7 +81,7 @@ sha2 = { version = "^0.10", optional = true }
 rmcp = { version = "^1", optional = true, features = ["server", "transport-io", "macros"] }
 # HTTP client for the probe tool (healthz/readyz checks).
 reqwest = { version = "^0.13", optional = true, default-features = false, features = ["rustls"] }
-kou = { path = "../kou", optional = true }
+kou = { version = "^0.1", optional = true }
 
 
 regex = { version = "^1", optional = true }
