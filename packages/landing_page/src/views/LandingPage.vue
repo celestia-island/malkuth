@@ -242,9 +242,8 @@ let countdownTimer: any = null
 let pollTimer: any = null
 
 function getXtermOptions() {
-  const dark = !window.matchMedia('(prefers-color-scheme: light)').matches
   return {
-    theme: dark ? {
+    theme: {
       background: '#282c34',
       foreground: '#dcdfe4',
       cursor: '#528bff',
@@ -266,28 +265,6 @@ function getXtermOptions() {
       brightMagenta: '#c678dd',
       brightCyan: '#56b6c2',
       brightWhite: '#ffffff',
-    } : {
-      background: '#fafafa',
-      foreground: '#383a42',
-      cursor: '#0084ff',
-      cursorAccent: '#fafafa',
-      selectionBackground: '#0084ff40',
-      black: '#fafafa',
-      red: '#e45649',
-      green: '#50a14f',
-      yellow: '#986801',
-      blue: '#4078f2',
-      magenta: '#a626a4',
-      cyan: '#0184bc',
-      white: '#383a42',
-      brightBlack: '#a0a1a7',
-      brightRed: '#e45649',
-      brightGreen: '#50a14f',
-      brightYellow: '#986801',
-      brightBlue: '#4078f2',
-      brightMagenta: '#a626a4',
-      brightCyan: '#0184bc',
-      brightWhite: '#090a0b',
     },
     cols: 80,
     rows: 24,
