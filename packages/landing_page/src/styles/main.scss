@@ -188,6 +188,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .malkuth-tooltip-terminal {
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   width: 80ch;
   background: transparent;
   font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
@@ -200,6 +201,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .malkuth-tooltip-xterm {
   height: 20em;
   width: 100%;
+  overflow: hidden;
 }
 .malkuth-tooltip-xterm .xterm {
   height: 100%;
