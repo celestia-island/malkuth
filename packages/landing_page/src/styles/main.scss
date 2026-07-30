@@ -234,9 +234,16 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   position: absolute;
   inset: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 10px;
   background: rgba(0,0,0,0.3);
+}
+.spinner-text {
+  font-size: 0.7rem;
+  color: var(--tooltip-fg);
+  opacity: 0.5;
 }
 .malkuth-tooltip-terminal .spinner-ring {
   width: 32px;

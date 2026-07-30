@@ -111,6 +111,7 @@
             <div class="malkuth-tooltip-xterm" ref="tooltipTerminalRef"></div>
             <div v-if="(tooltip.log || []).length === 0" class="vtty-spinner">
               <div class="spinner-ring"></div>
+              <span class="spinner-text">{{ t('vtty_waiting', 'Connected, waiting for output...') }}</span>
             </div>
           </div>
           <div class="malkuth-tooltip-footer" v-if="(tooltip.log || []).length">
@@ -153,6 +154,7 @@ const messages: Record<string, Record<string, string>> = {
     vtty_loading: 'Loading...',
     vtty_no_output: 'No output yet',
     vtty_connected: 'Connected',
+    vtty_waiting: 'Connected, waiting for output...',
     vtty_close: 'Close',
     click_to_copy: 'Click to copy',
     copied_msg: 'Copied to clipboard',
@@ -181,6 +183,7 @@ const messages: Record<string, Record<string, string>> = {
     vtty_loading: '加载中...',
     vtty_no_output: '暂无输出',
     vtty_connected: '已连接',
+    vtty_waiting: '已连接，等待输出中...',
     vtty_close: '关闭',
     click_to_copy: '点击以复制',
     copied_msg: '已复制到剪贴板',
@@ -242,8 +245,32 @@ let countdownTimer: any = null
 let pollTimer: any = null
 
 function getXtermOptions() {
+  const bg = getComputedStyle(document.documentElement).getPropertyValue('--tooltip-bg').trim()
+  const isLight = bg === '#ffffff'
   return {
-    theme: {
+    theme: isLight ? {
+      background: '#fafafa',
+      foreground: '#383a42',
+      cursor: '#0084ff',
+      cursorAccent: '#fafafa',
+      selectionBackground: '#0084ff40',
+      black: '#fafafa',
+      red: '#e45649',
+      green: '#50a14f',
+      yellow: '#986801',
+      blue: '#4078f2',
+      magenta: '#a626a4',
+      cyan: '#0184bc',
+      white: '#383a42',
+      brightBlack: '#a0a1a7',
+      brightRed: '#e45649',
+      brightGreen: '#50a14f',
+      brightYellow: '#986801',
+      brightBlue: '#4078f2',
+      brightMagenta: '#a626a4',
+      brightCyan: '#0184bc',
+      brightWhite: '#090a0b',
+    } : {
       background: '#282c34',
       foreground: '#dcdfe4',
       cursor: '#528bff',
