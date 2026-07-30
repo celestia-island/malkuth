@@ -111,8 +111,8 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .binary-row { display: grid; grid-template-columns: minmax(70px, auto) 1fr; gap: 8px 12px; padding: 6px 0; border-bottom: 1px solid var(--divider); font-size: 0.75rem; align-items: baseline; }
 .binary-row:last-child { border-bottom: none; }
 .binary-name-cell { display: flex; align-items: center; gap: 6px; }
-.binary-name { font-weight: 600; color: var(--value); cursor: pointer; position: relative; line-height: 1; }
-.pinned-dot { flex-shrink: 0; margin-left: 4px; }
+.binary-name { font-weight: 600; color: var(--value); cursor: pointer; position: relative; line-height: 1; border-radius: 4px; padding: 1px 4px; margin: -1px -4px; transition: box-shadow 0.2s; }
+.binary-name.is-pinned { box-shadow: 0 0 0 1px var(--accent); }
 .vtty-icon { display: inline-flex; align-items: center; margin-left: 6px; color: inherit; cursor: pointer; opacity: 0.6; transition: opacity 0.2s; vertical-align: middle; }
 .vtty-icon:hover { opacity: 0.9; }
 
