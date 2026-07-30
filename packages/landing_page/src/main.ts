@@ -1,5 +1,4 @@
-import './styles/main.scss'
 import { createApp } from 'vue'
-import LandingPage from './views/LandingPage.vue'
+import LandingPage from './views/LandingPage'
 
 createApp(LandingPage).mount('#app')
