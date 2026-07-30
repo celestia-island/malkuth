@@ -450,6 +450,7 @@ function toast(_msg: string) {
 }
 
 function showTextTooltip(ev: MouseEvent, content: string) {
+  if (tooltipPinned.value) return
   tooltip.value = {
     kind: 'text',
     el: ev.currentTarget as HTMLElement,
@@ -460,6 +461,7 @@ function showTextTooltip(ev: MouseEvent, content: string) {
 let hideTimer: any = null
 
 function hideTooltip() {
+  if (tooltipPinned.value) return
   if (tooltip.value?.kind === 'text') {
     tooltip.value = null
     return
