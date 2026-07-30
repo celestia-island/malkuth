@@ -33,25 +33,10 @@
       <div class="binary-row" v-for="b in binaries" :key="b.name">
         <div class="binary-name-cell">
           <span class="binary-name"
-            @mouseenter="showTextTooltip($event, b.name + '\n' + t('click_to_copy', 'Click to copy'))"
-            @mouseleave="hideTooltip"
-            @click="copy(b.name)"
-          >{{ b.name }}</span>
-          <span class="vtty-badge"
-            :class="{ 'is-pinned': tooltipPinned && pinnedBinaryName === b.name }"
-            @click.stop="togglePin($event, b.name)"
             @mouseenter="hoverVttyBadge($event, b.name)"
             @mouseleave="hoverVttyLeave"
-          >
-            <template v-if="tooltipPinned && pinnedBinaryName === b.name">
-              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.7V5h1a2 2 0 0 0 2-2H6a2 2 0 0 0 2 2h1v5.7a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17z"/></svg>
-              <span>{{ t('vtty_pinned', 'Pinned') }}</span>
-            </template>
-            <template v-else>
-              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-              <span>{{ t('vtty_label', 'Terminal') }}</span>
-            </template>
-          </span>
+            @click.stop="togglePin($event, b.name)"
+          >{{ b.name }}</span>
         </div>
         <span class="binary-detail">
           <span class="binary-time"
@@ -117,8 +102,8 @@
         <template v-else-if="tooltip.kind === 'terminal'">
           <div class="malkuth-tooltip-header">
             <span class="malkuth-tooltip-name">{{ tooltip.binaryName }}</span>
-            <button v-if="tooltipPinned" class="malkuth-tooltip-close" @click="unpinTooltip" :aria-label="t('vtty_close', 'Close')">
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            <button class="malkuth-tooltip-header-copy" @click.stop="copyBinaryName" :title="t('copy_name', 'Copy name')">
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
             </button>
           </div>
           <div class="malkuth-tooltip-terminal">
@@ -131,7 +116,7 @@
                 <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.7V5h1a2 2 0 0 0 2-2H6a2 2 0 0 0 2 2h1v5.7a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17z"/></svg>
                 <span>{{ tooltipPinned ? t('vtty_pinned', 'Pinned') : t('vtty_click_to_pin', 'Click to pin') }}</span>
               </span>
-              <span class="footer-info">{{ tooltipScrollLine }}/{{ (tooltip.log || []).length }} {{ t('vtty_lines', 'lines') }} {{ formatTime(tooltipFirstTime) }} → {{ formatTime(tooltipLastTime) }}</span>
+              <span class="footer-info">{{ tooltipScrollLine }}/{{ (tooltip.log || []).length }} {{ t('vtty_lines', 'lines') }}  {{ t('vtty_first_output', 'First:') }} {{ formatTime(tooltipFirstTime) }}  {{ t('vtty_last_output', 'Last:') }} {{ formatTime(tooltipLastTime) }}</span>
               <button class="terminal-copy-btn" @click.stop="copyTooltipTerminal">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
               </button>
@@ -170,11 +155,12 @@ const messages: Record<string, Record<string, string>> = {
     vtty_close: 'Close',
     click_to_copy: 'Click to copy',
     copied_msg: 'Copied to clipboard',
-    vtty_label: 'Terminal',
     vtty_click_to_pin: 'Click to pin',
     vtty_pinned: 'Pinned',
-    vtty_unpin: 'Unpin',
     vtty_lines: 'lines',
+    vtty_first_output: 'First:',
+    vtty_last_output: 'Last:',
+    copy_name: 'Copy name',
   },
   zhs: {
     heading: 'Malkuth',
@@ -197,11 +183,12 @@ const messages: Record<string, Record<string, string>> = {
     vtty_close: '关闭',
     click_to_copy: '点击以复制',
     copied_msg: '已复制到剪贴板',
-    vtty_label: '终端',
     vtty_click_to_pin: '点击固定',
     vtty_pinned: '已固定',
-    vtty_unpin: '取消固定',
     vtty_lines: '行',
+    vtty_first_output: '首次:',
+    vtty_last_output: '末次:',
+    copy_name: '复制名称',
   },
 }
 
@@ -600,6 +587,13 @@ function copyTooltipTerminal() {
     if (line) lines.push(line.translateToString())
   }
   navigator.clipboard?.writeText(lines.join('\n')).then(() => {
+    toast(t('copied_msg', 'Copied to clipboard'))
+  }).catch(() => {})
+}
+
+function copyBinaryName() {
+  if (!tooltip.value?.binaryName) return
+  navigator.clipboard?.writeText(tooltip.value.binaryName).then(() => {
     toast(t('copied_msg', 'Copied to clipboard'))
   }).catch(() => {})
 }

@@ -115,34 +115,6 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .vtty-icon { display: inline-flex; align-items: center; margin-left: 6px; color: inherit; cursor: pointer; opacity: 0.6; transition: opacity 0.2s; vertical-align: middle; }
 .vtty-icon:hover { opacity: 0.9; }
 
-.vtty-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 8px;
-  border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  cursor: pointer;
-  font-size: 0.65rem;
-  line-height: 1;
-  color: var(--label);
-  transition: all 0.2s;
-  margin-left: 6px;
-  user-select: none;
-  white-space: nowrap;
-}
-.vtty-badge:hover {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(255, 255, 255, 0.18);
-  color: var(--value);
-}
-.vtty-badge.is-pinned {
-  background: rgba(255, 140, 66, 0.1);
-  border-color: rgba(255, 140, 66, 0.25);
-  color: var(--accent);
-}
-
 .binary-detail { color: var(--label); font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace; font-size: 0.6875rem; text-align: right; }
 .binary-time { cursor: pointer; }
 .binary-hash { color: rgba(46, 213, 115, 0.7); cursor: pointer; position: relative; }
@@ -195,7 +167,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   font-size: 0.6875rem;
   font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
 }
-.malkuth-tooltip-close {
+.malkuth-tooltip-header-copy {
   background: none;
   border: none;
   cursor: pointer;
@@ -208,7 +180,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   transition: color 0.2s, background 0.2s;
   pointer-events: auto;
 }
-.malkuth-tooltip-close:hover {
+.malkuth-tooltip-header-copy:hover {
   color: #fff;
   background: rgba(255,255,255,0.1);
 }
@@ -288,30 +260,15 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .footer-pin-area svg {
   flex-shrink: 0;
 }
-.footer-unpin-btn {
-  background: transparent;
-  border: 1px solid color-mix(in srgb, var(--tooltip-fg, #fff) 12%, transparent);
-  color: var(--tooltip-fg);
-  opacity: 0.55;
-  cursor: pointer;
-  font-size: 0.6rem;
-  padding: 1px 5px;
-  border-radius: 3px;
-  font-family: inherit;
-  transition: opacity 0.2s;
-  flex-shrink: 0;
-}
-.footer-unpin-btn:hover {
-  opacity: 0.85;
-}
 .footer-info {
-  text-align: center;
+  text-align: right;
+  opacity: 0.55;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .malkuth-tooltip-footer .terminal-copy-btn {
   background: transparent;
-  border: 1px solid color-mix(in srgb, var(--tooltip-fg, #fff) 12%, transparent);
+  border: none;
   color: var(--tooltip-fg);
   opacity: 0.55;
   cursor: pointer;
@@ -322,6 +279,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   justify-content: center;
   transition: opacity 0.2s;
   flex-shrink: 0;
+  font-size: 0;
 }
 .malkuth-tooltip-footer .terminal-copy-btn:hover {
   opacity: 0.85;
