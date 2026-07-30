@@ -207,6 +207,8 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .malkuth-tooltip-xterm .xterm {
   height: 100%;
   text-align: left;
+  font-feature-settings: "liga" 0;
+  -webkit-font-smoothing: antialiased;
 }
 .malkuth-tooltip-xterm .xterm-screen { margin: 6px 10px; }
 .xterm-viewport::-webkit-scrollbar {
