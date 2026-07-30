@@ -37,9 +37,7 @@
             @mouseleave="hoverVttyLeave"
             @click.stop="togglePin($event, b.name)"
           >{{ b.name }}</span>
-          <span v-if="tooltipPinned && pinnedBinaryName === b.name" class="pinned-indicator">
-            {{ t('vtty_pinned', 'Pinned') }}
-          </span>
+          <svg v-if="tooltipPinned && pinnedBinaryName === b.name" class="pinned-dot" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="var(--accent)" stroke="none"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.7V5h1a2 2 0 0 0 2-2H6a2 2 0 0 0 2 2h1v5.7a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17z"/></svg>
         </div>
         <span class="binary-detail">
           <span class="binary-time"
