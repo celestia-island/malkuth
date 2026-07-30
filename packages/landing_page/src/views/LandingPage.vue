@@ -591,9 +591,14 @@ function formatTime(ts: number): string {
 }
 
 function copyTooltipTerminal() {
-  const raw = (tooltip.value?.log || []).join('\n')
-  const text = raw.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '')
-  navigator.clipboard?.writeText(text).then(() => {
+  if (!tooltipTerminal) return
+  const buffer = tooltipTerminal.buffer.active
+  const lines: string[] = []
+  for (let i = 0; i < buffer.length; i++) {
+    const line = buffer.getLine(i)
+    if (line) lines.push(line.translateToString())
+  }
+  navigator.clipboard?.writeText(lines.join('\n')).then(() => {
     toast(t('copied_msg', 'Copied to clipboard'))
   }).catch(() => {})
 }
