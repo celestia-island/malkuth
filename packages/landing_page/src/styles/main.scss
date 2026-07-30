@@ -110,8 +110,8 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .binaries-title { font-size: 0.75rem; color: var(--label); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
 .binary-row { display: grid; grid-template-columns: minmax(70px, auto) 1fr; gap: 8px 12px; padding: 6px 0; border-bottom: 1px solid var(--divider); font-size: 0.75rem; align-items: baseline; }
 .binary-row:last-child { border-bottom: none; }
-.binary-name-cell { display: flex; align-items: center; gap: 6px; }
-.binary-name { font-weight: 600; color: var(--value); cursor: pointer; position: relative; display: flex; align-items: center; height: 20px; }
+.binary-name-cell { display: flex; align-items: flex-end; gap: 6px; }
+.binary-name { font-weight: 600; color: var(--value); cursor: pointer; position: relative; line-height: 1.2; }
 .vtty-icon { display: inline-flex; align-items: center; margin-left: 6px; color: inherit; cursor: pointer; opacity: 0.6; transition: opacity 0.2s; vertical-align: middle; }
 .vtty-icon:hover { opacity: 0.9; }
 
@@ -119,14 +119,13 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 20px;
-  padding: 0 8px;
+  padding: 1px 8px;
   border-radius: 9999px;
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.08);
   cursor: pointer;
   font-size: 0.65rem;
-  line-height: 1;
+  line-height: 1.2;
   color: var(--label);
   transition: all 0.2s;
   margin-left: 6px;
