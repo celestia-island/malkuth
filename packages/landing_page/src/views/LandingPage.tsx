@@ -565,6 +565,7 @@ export default defineComponent({
                     onMouseleave={hideTooltip}
                     onClick={() => copy(b.compile_time)}
                   >{b.compile_time}</span>
+                  <span class="binary-row__sep"> · </span>
                   <span class="binary-row__hash"
                     onMouseenter={(e: MouseEvent) => showTextTooltip(e, b.hash + '\n' + t('click_to_copy', 'Click to copy'))}
                     onMouseleave={hideTooltip}
