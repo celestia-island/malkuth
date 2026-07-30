@@ -200,7 +200,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   text-align: left;
 }
 .malkuth-tooltip-xterm {
-  flex: 1;
+  height: calc(100% - 28px);
   min-height: 0;
 }
 .malkuth-tooltip-xterm .xterm {
