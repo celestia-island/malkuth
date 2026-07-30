@@ -186,7 +186,9 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   background: rgba(255,255,255,0.1);
 }
 .malkuth-tooltip-terminal {
-  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   width: 80ch;
   height: 24em;
   background: transparent;
@@ -195,12 +197,11 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   line-height: 1.35;
   color: #a0a0c0;
   margin: 8px;
-  overflow: hidden;
   text-align: left;
 }
 .malkuth-tooltip-xterm {
-  width: 100%;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
 }
 .malkuth-tooltip-xterm .xterm {
   height: 100%;
@@ -210,8 +211,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 .xterm-viewport::-webkit-scrollbar { display: none; }
 .xterm-viewport { scrollbar-width: none; }
 .malkuth-tooltip-terminal .vtty-spinner {
-  position: absolute;
-  inset: 0;
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -227,11 +227,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 }
 @keyframes vtty-spin { to { transform: rotate(360deg); } }
 .malkuth-tooltip-footer {
-  position: absolute;
-  bottom: 2px;
-  left: 8px;
-  right: 8px;
-  z-index: 10;
+  flex-shrink: 0;
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;

@@ -409,6 +409,7 @@ watch(tooltip, (newVal) => {
       if (tooltipTerminal && newVal.log?.length) {
         tooltipTerminal.reset()
         tooltipTerminal.write(newVal.log.join('\r\n') + '\r\n')
+        tooltipTerminal.scrollToBottom()
         tooltipScrollLine.value = tooltipTerminal.buffer.active.viewportY + 1
       }
     })
@@ -496,6 +497,7 @@ function hoverVttyBadge(ev: MouseEvent, name: string) {
     if (tooltipTerminal && hoverCache[name]?.length) {
       tooltipTerminal.reset()
       tooltipTerminal.write(hoverCache[name].join('\r\n') + '\r\n')
+        tooltipTerminal.scrollToBottom()
       tooltipScrollLine.value = tooltipTerminal.buffer.active.viewportY + 1
     }
   })
@@ -517,6 +519,7 @@ function hoverVttyBadge(ev: MouseEvent, name: string) {
           if (tooltipTerminal) {
             tooltipTerminal.reset()
             tooltipTerminal.write(logs.join('\r\n') + '\r\n')
+        tooltipTerminal.scrollToBottom()
             tooltipScrollLine.value = tooltipTerminal.buffer.active.viewportY + 1
           }
         }
