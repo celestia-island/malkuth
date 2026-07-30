@@ -150,6 +150,9 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   padding: 0;
   max-width: none;
   box-shadow: 0 4px 16px rgba(0,0,0,0.5), 0 0 12px rgba(255,140,66,0.06);
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
 }
 .malkuth-tooltip.is-terminal.is-pinned {
   pointer-events: auto;
@@ -186,11 +189,10 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   background: rgba(255,255,255,0.1);
 }
 .malkuth-tooltip-terminal {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  width: 80ch;
-  background: transparent;
+  flex: 1;
+  min-height: 24em;
+  width: calc(80ch + 16px);
+  background: var(--bg);
   font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace;
   font-size: 13px;
   line-height: 1.35;
@@ -199,19 +201,34 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
   text-align: left;
 }
 .malkuth-tooltip-xterm {
-  height: 20em;
+  height: 100%;
   width: 100%;
-  overflow: hidden;
 }
 .malkuth-tooltip-xterm .xterm {
   height: 100%;
   text-align: left;
 }
 .malkuth-tooltip-xterm .xterm-screen { margin: 6px 10px; }
-.xterm-viewport::-webkit-scrollbar { display: none; }
-.xterm-viewport { scrollbar-width: none; }
+.xterm-viewport::-webkit-scrollbar {
+  width: 4px;
+}
+.xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: rgba(255,140,66,0.25);
+  border-radius: 2px;
+}
+.xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,140,66,0.45);
+}
+.xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,140,66,0.25) transparent;
+}
 .malkuth-tooltip-terminal .vtty-spinner {
-  flex: 1;
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -228,7 +245,6 @@ h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--he
 @keyframes vtty-spin { to { transform: rotate(360deg); } }
 .malkuth-tooltip-footer {
   flex-shrink: 0;
-  height: 28px;
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
