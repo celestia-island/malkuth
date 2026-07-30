@@ -116,8 +116,8 @@ export default defineComponent({
     let pollTimer: any = null
 
     function getXtermOptions() {
-      const bg = getComputedStyle(document.documentElement).getPropertyValue('--tooltip-bg').trim()
-      const isLight = bg === '#ffffff'
+      const bg = getComputedStyle(document.documentElement).getPropertyValue('--color-tooltip-footer-bg').trim()
+      const isLight = bg !== '#0e0e1e'
       return {
         theme: isLight ? {
           background: '#f7f7f7',
@@ -321,11 +321,11 @@ export default defineComponent({
 
     function toast(_msg: string) {
       let el = document.getElementById('globalToast')
-      if (!el) { el = document.createElement('div'); el.id = 'globalToast'; el.className = 'toast'; document.body.appendChild(el) }
+      if (!el) { el = document.createElement('div'); el.id = 'globalToast';       el.className = 'toast'; document.body.appendChild(el) }
       el.textContent = t('copied_msg', 'Copied to clipboard')
-      el.classList.add('show')
+      el.classList.add('toast--show')
       clearTimeout((el as any)._timer);
-      (el as any)._timer = setTimeout(() => el!.classList.remove('show'), 2000)
+      (el as any)._timer = setTimeout(() => el!.classList.remove('toast--show'), 2000)
     }
 
     function showTextTooltip(ev: MouseEvent, content: string) {
@@ -512,9 +512,9 @@ export default defineComponent({
 
     return () => (
       <div class="card" ref={cardRef}>
-        <img class="logo" src={'data:image/webp;base64,' + logoBase64.value} alt="Malkuth" />
-        <h1>{t('heading', 'Malkuth')}</h1>
-        <p class="tagline">{t('tagline', 'This port is managed by the Malkuth process supervisor')}</p>
+        <img class="card__logo" src={'data:image/webp;base64,' + logoBase64.value} alt="Malkuth" />
+        <h1 class="card__heading">{t('heading', 'Malkuth')}</h1>
+        <p class="card__tagline">{t('tagline', 'This port is managed by the Malkuth process supervisor')}</p>
 
         <div class={['status', statusClass.value]}>
           {statusText.value}
@@ -524,21 +524,21 @@ export default defineComponent({
           <>
             {proxyEndpoint.value && (
               <div class="info-row">
-                <span class="info-label">{t('proxy_label', 'Proxy')}</span>
-                <span class="info-value">{proxyEndpoint.value}</span>
+                <span class="info-row__label">{t('proxy_label', 'Proxy')}</span>
+                <span class="info-row__value">{proxyEndpoint.value}</span>
               </div>
             )}
             {watchPaths.value.length > 0 && (
               <div class="info-row">
-                <span class="info-label">{t('watch_label', 'Watching')}</span>
-                <div class="watch-list">
+                <span class="info-row__label">{t('watch_label', 'Watching')}</span>
+                <div class="info-row__watch">
                   {watchPaths.value.map(p => (
                     <span key={p} class="watch-item"
                       onMouseenter={(e: MouseEvent) => showTextTooltip(e, p + '\n' + t('click_to_copy', 'Click to copy'))}
                       onMouseleave={hideTooltip}
                       onClick={() => copy(p)}
                     >
-                      <span class="watch-text">{p}</span>
+                      <span class="watch-item__text">{p}</span>
                     </span>
                   ))}
                 </div>
@@ -549,28 +549,28 @@ export default defineComponent({
 
         {binaries.value.length > 0 && (
           <div class="binaries">
-            <div class="binaries-title">{t('binaries_title', 'Supervised Binaries')}</div>
+            <div class="binaries__title">{t('binaries_title', 'Supervised Binaries')}</div>
             {binaries.value.map(b => (
               <div class="binary-row" key={b.name}>
                 <div class="binary-name-cell">
-                  <span class={['binary-name', tooltipPinned.value && pinnedBinaryName.value === b.name && 'is-pinned']}
+                  <span class={['binary-name', tooltipPinned.value && pinnedBinaryName.value === b.name && 'binary-name--pinned']}
                     onMouseenter={(e: MouseEvent) => hoverVttyBadge(e, b.name)}
                     onMouseleave={hoverVttyLeave}
                     onClick={(e: MouseEvent) => { e.stopPropagation(); togglePin(e, b.name) }}
                   >{b.name}</span>
                 </div>
                 <span class="binary-detail">
-                  <span class="binary-time"
+                  <span class="binary-row__time"
                     onMouseenter={(e: MouseEvent) => showTextTooltip(e, b.compile_time + '\n' + t('click_to_copy', 'Click to copy'))}
                     onMouseleave={hideTooltip}
                     onClick={() => copy(b.compile_time)}
                   >{b.compile_time}</span>
-                  <span class="binary-hash"
+                  <span class="binary-row__hash"
                     onMouseenter={(e: MouseEvent) => showTextTooltip(e, b.hash + '\n' + t('click_to_copy', 'Click to copy'))}
                     onMouseleave={hideTooltip}
                     onClick={() => copy(b.hash)}
                   >
-                    <span class="binary-hash-short">{b.hash_short}</span>
+                    <span class="binary-row__hash-short">{b.hash_short}</span>
                   </span>
                 </span>
               </div>
@@ -579,33 +579,33 @@ export default defineComponent({
         )}
 
         {(state.value === 'landing' || state.value === 'starting') && (
-          <p class="retry-hint">
+          <p class="card__retry-hint">
             {t('redirect_before', 'Redirecting in')}
-            <span class="countdown">{countdown.value}</span>
-            <span class="countdown-unit">{t('redirect_after', 'seconds')}</span>
+            <span class="card__countdown">{countdown.value}</span>
+            <span class="card__countdown-unit">{t('redirect_after', 'seconds')}</span>
           </p>
         )}
-        <div class="cancel-row">
+        <div class="card__cancel-row">
           {(state.value === 'ready' || state.value === 'landing' || state.value === 'starting') && (
-            <button class="btn btn-ghost btn-sm" onClick={cancelRedirect}>
+            <button class="btn btn--ghost btn--sm" onClick={cancelRedirect}>
               {t('cancel_label', 'Cancel')}
             </button>
           )}
           {showRefresh.value && (
-            <button class="btn btn-sm btn-primary" onClick={doRefresh}>
+            <button class="btn btn--sm btn--primary" onClick={doRefresh}>
               {t('refresh_label', 'Refresh Now')}
             </button>
           )}
         </div>
 
-        <p class="footer">
+        <p class="card__footer">
           Powered by <a href="https://github.com/celestia-island/malkuth" target="_blank" rel="noopener">Malkuth</a>
         </p>
-        <p class="version-line">v{version.value}</p>
+        <p class="card__version">v{version.value}</p>
 
         <Teleport to="body">
           {tooltip.value && (
-            <div class={['malkuth-tooltip', tooltip.value.kind === 'terminal' && 'is-terminal', tooltipPinned.value && 'is-pinned']}
+            <div class={['malkuth-tooltip', tooltip.value.kind === 'terminal' && 'malkuth-tooltip--terminal', tooltipPinned.value && 'malkuth-tooltip--pinned']}
               style={tooltipStyle.value}
               onMouseenter={clearHideTimer}
               onMouseleave={hoverTooltipLeave}
@@ -614,36 +614,36 @@ export default defineComponent({
                 tooltip.value.content.includes('\n') ? (
                   <>
                     {tooltip.value.content.substring(0, tooltip.value.content.lastIndexOf('\n'))}<br/>
-                    <i class="tooltip-copy-hint">{tooltip.value.content.substring(tooltip.value.content.lastIndexOf('\n') + 1)}</i>
+                    <i class="malkuth-tooltip__copy-hint">{tooltip.value.content.substring(tooltip.value.content.lastIndexOf('\n') + 1)}</i>
                   </>
                 ) : (
                   <span>{tooltip.value.content}</span>
                 )
               ) : (
                 <>
-                  <div class="malkuth-tooltip-header">
-                    <span class="malkuth-tooltip-name">{tooltip.value.binaryName}</span>
-                    <button class="malkuth-tooltip-header-copy" onClick={(e: MouseEvent) => { e.stopPropagation(); copyBinaryName() }} title={t('copy_name', 'Copy name')}>
+                  <div class="malkuth-tooltip__header">
+                    <span class="malkuth-tooltip__name">{tooltip.value.binaryName}</span>
+                    <button class="malkuth-tooltip__copy" onClick={(e: MouseEvent) => { e.stopPropagation(); copyBinaryName() }} title={t('copy_name', 'Copy name')}>
                       <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                     </button>
                   </div>
-                  <div class="malkuth-tooltip-terminal">
-                    <div class="malkuth-tooltip-xterm" ref={tooltipTerminalRef}></div>
+                  <div class="malkuth-tooltip__terminal">
+                    <div class="malkuth-tooltip__xterm" ref={tooltipTerminalRef}></div>
                     {((tooltip.value.log || []).length === 0) && (
                       <div class="vtty-spinner">
-                        <div class="spinner-ring"></div>
-                        <span class="spinner-text">{t('vtty_waiting', 'Connected, waiting for output...')}</span>
+                        <div class="vtty-spinner__ring"></div>
+                        <span class="vtty-spinner__text">{t('vtty_waiting', 'Connected, waiting for output...')}</span>
                       </div>
                     )}
                   </div>
                   {(tooltip.value.log || []).length > 0 && (
-                    <div class="malkuth-tooltip-footer">
-                      <span class="footer-pin-area" onClick={(e: MouseEvent) => { e.stopPropagation(); togglePinFromFooter() }}>
+                    <div class="malkuth-tooltip__footer">
+                      <span class="malkuth-tooltip__pin-area" onClick={(e: MouseEvent) => { e.stopPropagation(); togglePinFromFooter() }}>
                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.7V5h1a2 2 0 0 0 2-2H6a2 2 0 0 0 2 2h1v5.7a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17z"/></svg>
                         <span>{tooltipPinned.value ? t('vtty_pinned', 'Pinned') : t('vtty_click_to_pin', 'Click to pin')}</span>
                       </span>
-                      <span class="footer-info">{tooltipScrollLine.value}/{(tooltip.value.log || []).length} {t('vtty_lines', 'lines')}  {t('vtty_first_output', 'First:')} {formatTime(tooltipFirstTime.value)}  {t('vtty_last_output', 'Last:')} {formatTime(tooltipLastTime.value)}</span>
-                      <button class="terminal-copy-btn" onClick={(e: MouseEvent) => { e.stopPropagation(); copyTooltipTerminal() }}>
+                      <span class="malkuth-tooltip__info">{tooltipScrollLine.value}/{(tooltip.value.log || []).length} {t('vtty_lines', 'lines')}  {t('vtty_first_output', 'First:')} {formatTime(tooltipFirstTime.value)}  {t('vtty_last_output', 'Last:')} {formatTime(tooltipLastTime.value)}</span>
+                      <button class="malkuth-tooltip__copy-btn" onClick={(e: MouseEvent) => { e.stopPropagation(); copyTooltipTerminal() }}>
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                       </button>
                     </div>
