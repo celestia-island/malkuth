@@ -82,9 +82,11 @@ export default defineComponent({
   setup() {
     const state = ref<'landing' | 'building' | 'ready' | 'offline' | 'starting'>('landing')
     const countdown = ref(3)
-    const redirectAttempts = ref(0)
     const statusMessage = ref('')
     const showRefresh = ref(false)
+    // True once a redirect has been attempted (nonce cookie present) or the
+    // user cancelled it — never show a countdown / cancel button afterwards.
+    const redirectAttempted = ref(false)
     const showLandingOnly = ref(false)
     const version = ref('0.2.4')
     const logoBase64 = ref('')
@@ -214,12 +216,14 @@ export default defineComponent({
       if (state.value === 'ready') return 'status--ready'
       if (state.value === 'offline') return 'status--working'
       if (state.value === 'building') return 'status--working'
+      if (state.value === 'starting') return 'status--working'
       return 'status--landing'
     })
     const statusText = computed(() => {
       if (state.value === 'ready') return t('status_ready', 'All services running.')
       if (state.value === 'building') return t('status_building', 'Building')
       if (state.value === 'offline') return t('status_offline', 'Service temporarily unavailable')
+      if (state.value === 'starting') return t('status_starting', 'The service is starting up')
       return t('status_landing', 'Redirecting shortly')
     })
 
@@ -257,10 +261,11 @@ export default defineComponent({
       state.value = s as any
       statusMessage.value = init.message || ''
 
-      if (s === 'offline') {
-        // Backend unreachable: never show a redirect countdown here.
-        // Offer manual refresh and keep polling so the page recovers
-        // automatically once the service is back.
+      if (s === 'offline' || s === 'starting') {
+        // Backend unreachable or not ready: never show a redirect countdown
+        // here. Offer manual refresh and keep polling (even with a stale
+        // nonce cookie) so the page recovers automatically once the
+        // service reports ready.
         showRefresh.value = true
         pollTimer = setInterval(probe, 2000)
         return
@@ -268,6 +273,9 @@ export default defineComponent({
 
       const nonce = parseInt(getCookie('__malkuth_nonce') || '0', 10)
       if (nonce >= 1) {
+        // A redirect was already attempted (and failed or was cancelled):
+        // show the refresh action only — no countdown, no cancel button.
+        redirectAttempted.value = true
         showRefresh.value = true
         return
       }
@@ -275,6 +283,8 @@ export default defineComponent({
       if (s === 'ready' || s === 'landing') {
         startCountdown()
       } else if (s === 'building') {
+        // Not ready yet: no countdown — poll so the page auto-redirects
+        // once the backend reports ready.
         showRefresh.value = true
         pollTimer = setInterval(probe, 2000)
       } else {
@@ -467,8 +477,10 @@ export default defineComponent({
     function cancelRedirect() {
       clearInterval(countdownTimer)
       clearInterval(pollTimer)
+      // Keep the current status text; only drop the countdown + cancel
+      // button in favour of a manual refresh action.
+      redirectAttempted.value = true
       showRefresh.value = true
-      state.value = 'building'
     }
 
     function doRefresh() {
@@ -588,7 +600,7 @@ export default defineComponent({
           </div>
         )}
 
-        {(state.value === 'landing' || state.value === 'starting') && (
+        {state.value === 'landing' && !redirectAttempted.value && (
           <p class="card__retry-hint">
             {t('redirect_before', 'Redirecting in')}
             <span class="card__countdown">{countdown.value}</span>
@@ -596,7 +608,7 @@ export default defineComponent({
           </p>
         )}
         <div class="card__cancel-row">
-          {(state.value === 'ready' || state.value === 'landing' || state.value === 'starting') && (
+          {(state.value === 'ready' || state.value === 'landing') && !redirectAttempted.value && (
             <button class="btn btn--ghost btn--sm" onClick={cancelRedirect}>
               {t('cancel_label', 'Cancel')}
             </button>
