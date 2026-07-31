@@ -11,7 +11,7 @@ const messages: Record<string, Record<string, string>> = {
     status_building: 'The service is currently being rebuilt. Please wait a moment',
     status_starting: 'The service is starting up',
     status_ready: 'All services are running normally.',
-    status_offline: 'Service is offline',
+    status_offline: 'Service temporarily unavailable',
     proxy_label: 'Proxy',
     watch_label: 'Watching',
     binaries_title: 'Supervised Binaries',
@@ -40,7 +40,7 @@ const messages: Record<string, Record<string, string>> = {
     status_building: '服务正在重新构建中，请稍候',
     status_starting: '服务正在启动中',
     status_ready: '所有服务运行正常。',
-    status_offline: '服务已离线',
+    status_offline: '当前服务暂不可达',
     proxy_label: '代理',
     watch_label: '监听',
     binaries_title: '受监管二进制',
@@ -219,7 +219,7 @@ export default defineComponent({
     const statusText = computed(() => {
       if (state.value === 'ready') return t('status_ready', 'All services running.')
       if (state.value === 'building') return t('status_building', 'Building')
-      if (state.value === 'offline') return t('status_offline', 'Service is offline')
+      if (state.value === 'offline') return t('status_offline', 'Service temporarily unavailable')
       return t('status_landing', 'Redirecting shortly')
     })
 
@@ -256,6 +256,15 @@ export default defineComponent({
       const s = init.state || 'landing'
       state.value = s as any
       statusMessage.value = init.message || ''
+
+      if (s === 'offline') {
+        // Backend unreachable: never show a redirect countdown here.
+        // Offer manual refresh and keep polling so the page recovers
+        // automatically once the service is back.
+        showRefresh.value = true
+        pollTimer = setInterval(probe, 2000)
+        return
+      }
 
       const nonce = parseInt(getCookie('__malkuth_nonce') || '0', 10)
       if (nonce >= 1) {
@@ -503,7 +512,7 @@ export default defineComponent({
           } else if (d.state === 'offline') {
             state.value = 'offline'
             showRefresh.value = true
-            clearInterval(pollTimer)
+            // Keep polling: probe() reloads the page once state is 'ready'.
           } else {
             state.value = d.state
           }
