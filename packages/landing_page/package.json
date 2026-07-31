@@ -1,6 +1,6 @@
 {
   "name": "@celestia-island/malkuth-landing-page",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,15 +9,15 @@
     "serve": "python3 -m http.server 5173 -d ../../target/landing_page"
   },
   "dependencies": {
-    "vue": "^3.5",
-    "@xterm/xterm": "^5"
+    "vue": "^*",
+    "@xterm/xterm": "^*"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^5.2",
-    "@vitejs/plugin-vue-jsx": "^4",
-    "typescript": "~5.8",
-    "vite": "^6.4",
-    "vue-tsc": "^2.2",
-    "sass": "^1.101"
+    "@vitejs/plugin-vue": "^*",
+    "@vitejs/plugin-vue-jsx": "^*",
+    "typescript": "^*",
+    "vite": "^*",
+    "vue-tsc": "^*",
+    "sass": "^*"
   }
 }
