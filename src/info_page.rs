@@ -125,11 +125,21 @@ pub fn info_router(
     if let Some(ref backend_url) = serve_backend {
         let state_arc = backend_state.clone();
         let url = backend_url.clone();
+        let host_port = url
+            .trim_start_matches("http://")
+            .trim_start_matches("https://")
+            .to_string();
+        // Probe once synchronously so the very first landing-page request
+        // already knows whether the backend is reachable (no Unknown window).
+        let up = check_backend_alive(&host_port);
+        if let Ok(mut w) = state_arc.try_write() {
+            *w = if up {
+                BackendState::Up
+            } else {
+                BackendState::Down
+            };
+        }
         tokio::spawn(async move {
-            let host_port = url
-                .trim_start_matches("http://")
-                .trim_start_matches("https://")
-                .to_string();
             loop {
                 let up = check_backend_alive(&host_port);
                 let mut w = state_arc.write().await;
@@ -199,24 +209,46 @@ fn check_backend_alive(host_port: &str) -> bool {
     head.contains(" 200 ") || head.contains(" 3")
 }
 
-fn build_spa_init(state: &InfoState, lang: &str) -> serde_json::Value {
+async fn build_spa_init(state: &InfoState, lang: &str) -> serde_json::Value {
     let i18n = get_i18n(lang);
-    let (spa_state, message) = match state.status {
-        InfoStatus::Ready => (
-            "ready",
-            i18n.get("status_ready")
-                .map_or("All services running.", |v| v.as_str()),
-        ),
-        InfoStatus::Working => (
-            "building",
-            i18n.get("status_building")
-                .map_or("Building...", |v| v.as_str()),
-        ),
-        InfoStatus::Landing => (
-            "landing",
-            i18n.get("status_landing")
-                .map_or("Redirecting shortly", |v| v.as_str()),
-        ),
+    let (spa_state, message) = if state.serve_backend.is_some() {
+        // Serve mode: reflect the real-time backend health so the landing
+        // page never promises a redirect while the service is unreachable.
+        match *state.backend_state.read().await {
+            BackendState::Up => (
+                "landing",
+                i18n.get("status_landing")
+                    .map_or("Redirecting shortly", |v| v.as_str()),
+            ),
+            BackendState::Unknown => (
+                "landing",
+                i18n.get("status_landing")
+                    .map_or("Redirecting shortly", |v| v.as_str()),
+            ),
+            BackendState::Down => (
+                "offline",
+                i18n.get("status_offline")
+                    .map_or("Service temporarily unavailable", |v| v.as_str()),
+            ),
+        }
+    } else {
+        match state.status {
+            InfoStatus::Ready => (
+                "ready",
+                i18n.get("status_ready")
+                    .map_or("All services running.", |v| v.as_str()),
+            ),
+            InfoStatus::Working => (
+                "building",
+                i18n.get("status_building")
+                    .map_or("Building...", |v| v.as_str()),
+            ),
+            InfoStatus::Landing => (
+                "landing",
+                i18n.get("status_landing")
+                    .map_or("Redirecting shortly", |v| v.as_str()),
+            ),
+        }
     };
     serde_json::json!({
         "state": spa_state,
@@ -229,8 +261,8 @@ fn build_spa_init(state: &InfoState, lang: &str) -> serde_json::Value {
     })
 }
 
-fn serve_spa(state: &InfoState, lang: &str) -> Response {
-    let init_data = build_spa_init(state, lang);
+async fn serve_spa(state: &InfoState, lang: &str) -> Response {
+    let init_data = build_spa_init(state, lang).await;
     let init_json = serde_json::to_string(&init_data).unwrap_or_default();
     let init_script = format!("<script>window.__MALKUTH_INIT__ = {};</script>", init_json);
     let result = LANDING_PAGE_HTML.replacen("</head>", &format!("{init_script}</head>"), 1);
@@ -353,7 +385,7 @@ async fn serve_probe(lang: &str, state: &InfoState) -> Response {
     } else if backend_state == BackendState::Unknown {
         ("landing", "")
     } else {
-        ("building", "")
+        ("offline", "")
     };
 
     let message = if msg.is_empty() {
@@ -363,9 +395,9 @@ async fn serve_probe(lang: &str, state: &InfoState) -> Response {
                 .get("status_landing")
                 .map_or("Redirecting shortly", |v| v.as_str())
                 .to_string(),
-            "building" => i18n
-                .get("status_building")
-                .map_or("Building...", |v| v.as_str())
+            "offline" => i18n
+                .get("status_offline")
+                .map_or("Service temporarily unavailable", |v| v.as_str())
                 .to_string(),
             "ready" => i18n
                 .get("status_ready")
@@ -431,15 +463,15 @@ async fn serve_landing(lang: &str, state: &InfoState) -> Response {
     } else if backend_state == BackendState::Unknown {
         "landing"
     } else {
-        "building"
+        "offline"
     };
     let init_msg = match init_state {
         "ready" => i18n
             .get("status_landing")
             .map_or("Redirecting shortly", |v| v.as_str()),
-        "building" => i18n
-            .get("status_building")
-            .map_or("Building...", |v| v.as_str()),
+        "offline" => i18n
+            .get("status_offline")
+            .map_or("Service temporarily unavailable", |v| v.as_str()),
         _ => i18n
             .get("status_starting")
             .map_or("Service temporarily unavailable", |v| v.as_str()),
@@ -455,7 +487,10 @@ async fn serve_landing(lang: &str, state: &InfoState) -> Response {
     );
     ctx.insert("tagline", i18n.get("tagline").map_or("", |v| v.as_str()));
     ctx.insert("ready", &backend_up);
-    ctx.insert("landing", &(init_state != "building"));
+    ctx.insert(
+        "landing",
+        &(init_state == "ready" || init_state == "landing"),
+    );
     ctx.insert(
         "task",
         i18n.get("task_landing").map_or("Landing", |v| v.as_str()),
@@ -548,14 +583,14 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
                 }
             }
             if !LANDING_PAGE_HTML.starts_with("<html><body><h1>Malkuth</h1>") {
-                return serve_spa(&state, &lang);
+                return serve_spa(&state, &lang).await;
             }
             return serve_landing(&lang, &state).await;
         }
     }
 
     if !LANDING_PAGE_HTML.starts_with("<html><body><h1>Malkuth</h1>") {
-        return serve_spa(&state, &lang);
+        return serve_spa(&state, &lang).await;
     }
 
     // Normal (non-serve) rendering below
@@ -840,6 +875,8 @@ mod tests {
         ctx.insert("footer", "GitHub");
         ctx.insert("status_text", "Starting...");
         ctx.insert("ready", &false);
+        ctx.insert("landing", &false);
+        ctx.insert("initial_state", "");
         ctx.insert("task", "Startup");
         ctx.insert("logo_base64", "dGVzdA==");
         ctx.insert("proxy_label", "Proxy");
@@ -866,5 +903,58 @@ mod tests {
             Ok(html) => println!("OK: {} bytes", html.len()),
             Err(e) => panic!("Template error: {:#?}", e),
         }
+    }
+
+    /// When the backend is unreachable the serve-mode landing page must not
+    /// render a redirect countdown; it shows the refresh action instead.
+    #[test]
+    fn test_template_renders_offline_without_countdown() {
+        let mut ctx = tera::Context::new();
+        ctx.insert("lang", "zh-Hans");
+        ctx.insert("dir", "ltr");
+        ctx.insert("title", "Malkuth");
+        ctx.insert("heading", "Malkuth");
+        ctx.insert("tagline", "Supervisor");
+        ctx.insert("version_label", "Version");
+        ctx.insert("task_label", "");
+        ctx.insert("retry_before", "");
+        ctx.insert("retry_after", "");
+        ctx.insert("retry_unit", "");
+        ctx.insert("retry_manual", "");
+        ctx.insert("footer", "");
+        ctx.insert("status_text", "当前服务暂不可达");
+        ctx.insert("ready", &false);
+        ctx.insert("landing", &false);
+        ctx.insert("initial_state", "offline");
+        ctx.insert("task", "Landing");
+        ctx.insert("logo_base64", "dGVzdA==");
+        ctx.insert("proxy_label", "Proxy");
+        ctx.insert("watch_label", "Watching");
+        ctx.insert("version", "0.2.8");
+        ctx.insert("binaries", &Vec::<serde_json::Value>::new());
+        ctx.insert("binaries_title", "Supervised Binaries");
+        ctx.insert("redirect_before", "将在");
+        ctx.insert("redirect_after", "秒后跳转");
+        ctx.insert("cancel_label", "取消跳转");
+        ctx.insert("refresh_label", "立即刷新");
+        ctx.insert("copy_hint", "Click to copy");
+        ctx.insert("copied_msg", "Copied");
+        ctx.insert("copy_fail_msg", "Copy failed");
+        ctx.insert("footer_prefix", "");
+        ctx.insert("footer_suffix", "");
+
+        let html = tera::Tera::one_off(TEMPLATE, &ctx, false).expect("Template error");
+        assert!(
+            !html.contains("id=\"retryHint\""),
+            "offline page must not render the countdown hint"
+        );
+        assert!(
+            html.contains(">立即刷新</button>"),
+            "offline page must offer the refresh action"
+        );
+        assert!(
+            !html.contains(">取消跳转</button>"),
+            "offline page must not offer a cancel-redirect action"
+        );
     }
 }
