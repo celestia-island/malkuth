@@ -62,17 +62,17 @@ export default defineConfig({
   base: '/',
   resolve: {
     alias: {
-      '@': resolve(__dirname, 'src'),
+      '@': resolve(import.meta.dirname, 'src'),
     },
   },
   build: {
-    outDir: resolve(__dirname, '../../target/landing_page'),
+    outDir: resolve(import.meta.dirname, '../../target/landing_page'),
     emptyOutDir: true,
     cssCodeSplit: false,
     rollupOptions: {
       output: {
         manualChunks: undefined,
-        inlineDynamicImports: true,
+        codeSplitting: false,
         assetFileNames: 'assets/[name].[ext]',
         entryFileNames: 'assets/index.js',
       },
