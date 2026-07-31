@@ -105,7 +105,8 @@ fn detect_install_method() -> &'static str {
 
 /// Build an axum Router that serves the Malkuth info page on every request.
 /// When `serve_backend` is set, the handler acts as an HTTP reverse proxy:
-/// - Backend reachable (TCP connect succeeds) → forward the request
+/// - Backend reachable (TCP connect succeeds and any HTTP response comes back,
+///   regardless of status code) → forward the request
 /// - Backend unreachable → render the info/landing page
 #[allow(clippy::too_many_arguments)]
 pub fn info_router(
@@ -206,7 +207,10 @@ fn check_backend_alive(host_port: &str) -> bool {
     let mut buf = [0u8; 64];
     let n = stream.read(&mut buf).unwrap_or(0);
     let head = std::str::from_utf8(&buf[..n]).unwrap_or("");
-    head.contains(" 200 ") || head.contains(" 3")
+    // Any well-formed HTTP status line means the service is reachable,
+    // regardless of the status code — API-only backends legitimately
+    // answer 404 on `GET /`, which must not read as "unreachable".
+    head.starts_with("HTTP/1.") || head.starts_with("HTTP/2") || head.starts_with("HTTP/3")
 }
 
 async fn build_spa_init(state: &InfoState, lang: &str) -> serde_json::Value {
@@ -815,6 +819,54 @@ mod tests {
         let mut headers = header::HeaderMap::new();
         headers.insert("accept-language", "en-US,en;q=0.9".parse().unwrap());
         assert_eq!(detect_language(&headers), "en");
+    }
+
+    /// Spawn a one-shot TCP responder on 127.0.0.1 and return its host:port.
+    fn spawn_stub_backend(response: &'static str) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                use std::io::{Read, Write};
+                let mut buf = [0u8; 256];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        format!("127.0.0.1:{port}")
+    }
+
+    #[test]
+    fn test_backend_alive_any_http_status() {
+        for status in [
+            "200 OK",
+            "301 Moved Permanently",
+            "404 Not Found",
+            "500 Boom",
+        ] {
+            let hp = spawn_stub_backend(Box::leak(
+                format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").into_boxed_str(),
+            ));
+            assert!(
+                check_backend_alive(&hp),
+                "HTTP status `{status}` must count as reachable"
+            );
+        }
+    }
+
+    #[test]
+    fn test_backend_dead_on_garbage_or_refused() {
+        let hp = spawn_stub_backend("this is not http");
+        assert!(!check_backend_alive(&hp), "non-HTTP junk must read as down");
+
+        // Nothing listening on this port (bind+drop leaves it closed).
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        assert!(!check_backend_alive(&format!("127.0.0.1:{port}")));
+        assert!(!check_backend_alive("not-a-socket-addr"));
     }
 
     #[test]
