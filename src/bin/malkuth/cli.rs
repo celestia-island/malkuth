@@ -105,6 +105,11 @@ pub struct Args {
     /// Enable HTTP reverse-proxy mode on the info port. When a backend pod
     /// is healthy, requests are forwarded to the given URL; otherwise the
     /// info/landing page is shown. Example: `--serve http://127.0.0.1:8425`.
+    ///
+    /// Backend state is probed periodically with plain-HTTP `GET /readyz`
+    /// (k8s-style): connection failure shows an offline notice; a 503
+    /// readiness response shows a starting-up notice; any other HTTP
+    /// response counts as reachable. HTTPS backends cannot be probed.
     #[arg(long = "serve", value_name = "URL")]
     pub serve: Option<String>,
 

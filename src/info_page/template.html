@@ -464,10 +464,10 @@
     {% endfor %}
   </div>
   {% endif %}
-  {% if initial_state != "offline" %}
+  {% if initial_state != "offline" and initial_state != "starting" %}
   <p class="retry-hint" id="retryHint">{% if landing %}{{ redirect_before }}{% else %}{{ retry_before }}{% endif %}<span class="countdown" id="countdown" style="--countdown-color: #ffa500">{% if landing %}3{% else %}10{% endif %}</span><span class="countdown-unit" id="countdownUnit">{% if landing %}{{ redirect_after }}{% else %} {{ retry_unit }}{{ retry_after }}{% endif %}</span></p>
   {% endif %}
-  <div class="cancel-row"><button class="cancel-btn" id="cancelBtn">{% if initial_state == "offline" %}{{ refresh_label }}{% else %}{{ cancel_label }}{% endif %}</button></div>
+  <div class="cancel-row"><button class="cancel-btn" id="cancelBtn">{% if initial_state == "offline" or initial_state == "starting" %}{{ refresh_label }}{% else %}{{ cancel_label }}{% endif %}</button></div>
   <p class="footer">{{ footer_prefix }}<a href="https://github.com/celestia-island/malkuth" target="_blank" rel="noopener">Malkuth</a>{{ footer_suffix }}</p>
   {% if install_method %}
   <p class="version-line">v{{ version }} ({{ install_label }} {{ install_method }})</p>
@@ -562,7 +562,7 @@
     if (btn) { btn.style.display = "inline-block"; btn.textContent = "{{ refresh_label }}"; }
     poll();
     timer = setInterval(poll, probeTime);
-  } else if (initState === "offline") {
+  } else if (initState === "offline" || initState === "starting") {
     if (hintEl) { hintEl.innerHTML = ""; }
     if (countdownSpan) { countdownSpan.textContent = "\u2014"; }
     if (btn) { btn.style.display = "inline-block"; btn.textContent = "{{ refresh_label }}"; }

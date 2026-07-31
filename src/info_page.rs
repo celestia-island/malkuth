@@ -48,7 +48,13 @@ const TEMPLATE: &str = include_str!("info_page/template.html");
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendState {
     Unknown,
+    /// Backend is reachable and ready to receive traffic.
     Up,
+    /// Backend is reachable but explicitly reports not-ready
+    /// (e.g. `GET /readyz` → 503 while starting up or draining
+    /// for a rolling restart).
+    NotReady,
+    /// Backend is unreachable (TCP refused / timeout / non-HTTP).
     Down,
 }
 
@@ -105,8 +111,10 @@ fn detect_install_method() -> &'static str {
 
 /// Build an axum Router that serves the Malkuth info page on every request.
 /// When `serve_backend` is set, the handler acts as an HTTP reverse proxy:
-/// - Backend reachable (TCP connect succeeds and any HTTP response comes back,
-///   regardless of status code) → forward the request
+/// - First visit (no `__malkuth_nonce` cookie) → landing page reflecting the
+///   probed backend state (Up → redirect countdown, NotReady → starting-up
+///   notice, Down → offline notice)
+/// - Repeat visit (nonce set) & backend Up → forward the request
 /// - Backend unreachable → render the info/landing page
 #[allow(clippy::too_many_arguments)]
 pub fn info_router(
@@ -126,29 +134,22 @@ pub fn info_router(
     if let Some(ref backend_url) = serve_backend {
         let state_arc = backend_state.clone();
         let url = backend_url.clone();
-        let host_port = url
-            .trim_start_matches("http://")
-            .trim_start_matches("https://")
-            .to_string();
         // Probe once synchronously so the very first landing-page request
         // already knows whether the backend is reachable (no Unknown window).
-        let up = check_backend_alive(&host_port);
+        let initial = probe_backend(&url);
         if let Ok(mut w) = state_arc.try_write() {
-            *w = if up {
-                BackendState::Up
-            } else {
-                BackendState::Down
-            };
+            *w = initial;
         }
         tokio::spawn(async move {
             loop {
-                let up = check_backend_alive(&host_port);
+                // Blocking probe on the blocking thread pool so slow backends
+                // never stall an async worker.
+                let probe_url = url.clone();
+                let state = tokio::task::spawn_blocking(move || probe_backend(&probe_url))
+                    .await
+                    .unwrap_or(BackendState::Down);
                 let mut w = state_arc.write().await;
-                *w = if up {
-                    BackendState::Up
-                } else {
-                    BackendState::Down
-                };
+                *w = state;
                 drop(w);
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
@@ -189,28 +190,83 @@ struct InfoState {
     backend_state: std::sync::Arc<tokio::sync::RwLock<BackendState>>,
 }
 
-fn check_backend_alive(host_port: &str) -> bool {
+/// Probe the `--serve` backend's reachability with `GET /readyz`.
+///
+/// Verdict precedence:
+/// - TCP connect fails / no valid HTTP status line → [`BackendState::Down`]
+/// - HTTP 503 (k8s-style readiness failure, what malkuth-instrumented
+///   services report while starting or draining) → [`BackendState::NotReady`]
+/// - any other HTTP status → [`BackendState::Up`]. API-only backends
+///   legitimately answer 404 on unknown paths, which must not read as
+///   "unreachable".
+///
+/// `url` may carry a scheme and/or path (both are stripped for the probe).
+/// Plain HTTP only — a TLS backend cannot answer this probe.
+fn probe_backend(url: &str) -> BackendState {
+    let host_port = url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .split(['/', '?'])
+        .next()
+        .unwrap_or("");
     let addr: std::net::SocketAddr = match host_port.parse().ok() {
         Some(a) => a,
-        None => return false,
+        None => return BackendState::Down,
     };
     let mut stream = match std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
         Ok(s) => s,
-        Err(_) => return false,
+        Err(_) => return BackendState::Down,
     };
-    use std::io::{Read, Write};
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-    let req = format!("GET / HTTP/1.0\r\nHost: {}\r\n\r\n", host_port);
+    use std::io::Write;
+    let req = format!("GET /readyz HTTP/1.0\r\nHost: {host_port}\r\nConnection: close\r\n\r\n");
     if stream.write_all(req.as_bytes()).is_err() {
-        return false;
+        return BackendState::Down;
     }
-    let mut buf = [0u8; 64];
-    let n = stream.read(&mut buf).unwrap_or(0);
-    let head = std::str::from_utf8(&buf[..n]).unwrap_or("");
-    // Any well-formed HTTP status line means the service is reachable,
-    // regardless of the status code — API-only backends legitimately
-    // answer 404 on `GET /`, which must not read as "unreachable".
-    head.starts_with("HTTP/1.") || head.starts_with("HTTP/2") || head.starts_with("HTTP/3")
+    match read_http_status_code(&mut stream, Duration::from_millis(1500)) {
+        Some(503) => BackendState::NotReady,
+        Some(_) => BackendState::Up,
+        None => BackendState::Down,
+    }
+}
+
+/// Read one HTTP status line (until `\n`, capped at 64 bytes) with a total
+/// deadline, tolerating short reads and slow first bytes. Returns the
+/// numeric status code, or `None` when no well-formed status line arrives.
+fn read_http_status_code(stream: &mut std::net::TcpStream, budget: Duration) -> Option<u16> {
+    use std::io::Read;
+    let deadline = std::time::Instant::now() + budget;
+    let mut line = Vec::with_capacity(64);
+    let mut byte = [0u8; 1];
+    loop {
+        if line.len() >= 64 {
+            break;
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+        let _ = stream.set_read_timeout(Some(deadline - now));
+        match stream.read(&mut byte) {
+            Ok(0) => break,
+            Ok(_) => {
+                if byte[0] == b'\n' {
+                    break;
+                }
+                line.push(byte[0]);
+            }
+            Err(_) => break,
+        }
+    }
+    let head = std::str::from_utf8(&line).unwrap_or("");
+    // "HTTP/1.1 200 OK" → strip version token, then take the code.
+    let after = head
+        .strip_prefix("HTTP/1.")
+        .or_else(|| head.strip_prefix("HTTP/2"))
+        .or_else(|| head.strip_prefix("HTTP/3"))?;
+    let code_part = after
+        .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.')
+        .trim_start();
+    code_part.split_whitespace().next()?.parse().ok()
 }
 
 async fn build_spa_init(state: &InfoState, lang: &str) -> serde_json::Value {
@@ -219,15 +275,15 @@ async fn build_spa_init(state: &InfoState, lang: &str) -> serde_json::Value {
         // Serve mode: reflect the real-time backend health so the landing
         // page never promises a redirect while the service is unreachable.
         match *state.backend_state.read().await {
-            BackendState::Up => (
+            BackendState::Up | BackendState::Unknown => (
                 "landing",
                 i18n.get("status_landing")
                     .map_or("Redirecting shortly", |v| v.as_str()),
             ),
-            BackendState::Unknown => (
-                "landing",
-                i18n.get("status_landing")
-                    .map_or("Redirecting shortly", |v| v.as_str()),
+            BackendState::NotReady => (
+                "starting",
+                i18n.get("status_starting")
+                    .map_or("The service is starting up", |v| v.as_str()),
             ),
             BackendState::Down => (
                 "offline",
@@ -333,11 +389,18 @@ async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
     }
 
     let status = StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK);
+    // Keep backend cookies separate so the malkuth nonce cookie never
+    // clobbers them (HeaderMap::insert would replace all Set-Cookie values).
+    let mut backend_cookies: Vec<Vec<u8>> = Vec::new();
     let resp_headers: Vec<(String, Vec<u8>)> = resp
         .headers()
         .iter()
-        .filter(|(n, _)| {
+        .filter(|(n, v)| {
             let lower = n.as_str().to_lowercase();
+            if lower == "set-cookie" {
+                backend_cookies.push(v.as_bytes().to_vec());
+                return false;
+            }
             lower != "transfer-encoding" && lower != "connection"
         })
         .map(|(n, v)| (n.as_str().to_string(), v.as_bytes().to_vec()))
@@ -347,10 +410,15 @@ async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
     let mut response = Response::new(axum::body::Body::from(resp_body));
     *response.status_mut() = status;
 
-    response.headers_mut().insert(
+    response.headers_mut().append(
         header::SET_COOKIE,
         header::HeaderValue::from_static("__malkuth_nonce=1; max-age=1800; path=/"),
     );
+    for value in backend_cookies {
+        if let Ok(v) = header::HeaderValue::from_bytes(&value) {
+            response.headers_mut().append(header::SET_COOKIE, v);
+        }
+    }
 
     for (name, value) in resp_headers {
         if let (Ok(n), Ok(v)) = (
@@ -388,6 +456,8 @@ async fn serve_probe(lang: &str, state: &InfoState) -> Response {
         ("ready", "")
     } else if backend_state == BackendState::Unknown {
         ("landing", "")
+    } else if backend_state == BackendState::NotReady {
+        ("starting", "")
     } else {
         ("offline", "")
     };
@@ -398,6 +468,10 @@ async fn serve_probe(lang: &str, state: &InfoState) -> Response {
             "landing" => i18n
                 .get("status_landing")
                 .map_or("Redirecting shortly", |v| v.as_str())
+                .to_string(),
+            "starting" => i18n
+                .get("status_starting")
+                .map_or("The service is starting up", |v| v.as_str())
                 .to_string(),
             "offline" => i18n
                 .get("status_offline")
@@ -466,6 +540,8 @@ async fn serve_landing(lang: &str, state: &InfoState) -> Response {
         "ready"
     } else if backend_state == BackendState::Unknown {
         "landing"
+    } else if backend_state == BackendState::NotReady {
+        "starting"
     } else {
         "offline"
     };
@@ -478,7 +554,7 @@ async fn serve_landing(lang: &str, state: &InfoState) -> Response {
             .map_or("Service temporarily unavailable", |v| v.as_str()),
         _ => i18n
             .get("status_starting")
-            .map_or("Service temporarily unavailable", |v| v.as_str()),
+            .map_or("The service is starting up", |v| v.as_str()),
     };
 
     let mut ctx = tera::Context::new();
@@ -823,21 +899,33 @@ mod tests {
 
     /// Spawn a one-shot TCP responder on 127.0.0.1 and return its host:port.
     fn spawn_stub_backend(response: &'static str) -> String {
+        spawn_custom_backend(move |mut stream| {
+            use std::io::Write;
+            let _ = stream.write_all(response.as_bytes());
+        })
+    }
+
+    /// Spawn a one-shot TCP backend whose behaviour is fully customised.
+    /// The closure receives the accepted stream after the request was read.
+    fn spawn_custom_backend<F>(f: F) -> String
+    where
+        F: FnOnce(std::net::TcpStream) + Send + 'static,
+    {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
             if let Ok((mut stream, _)) = listener.accept() {
-                use std::io::{Read, Write};
+                use std::io::Read;
                 let mut buf = [0u8; 256];
                 let _ = stream.read(&mut buf);
-                let _ = stream.write_all(response.as_bytes());
+                f(stream);
             }
         });
         format!("127.0.0.1:{port}")
     }
 
     #[test]
-    fn test_backend_alive_any_http_status() {
+    fn test_backend_up_on_any_non503_status() {
         for status in [
             "200 OK",
             "301 Moved Permanently",
@@ -847,17 +935,68 @@ mod tests {
             let hp = spawn_stub_backend(Box::leak(
                 format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").into_boxed_str(),
             ));
-            assert!(
-                check_backend_alive(&hp),
+            assert_eq!(
+                probe_backend(&hp),
+                BackendState::Up,
                 "HTTP status `{status}` must count as reachable"
             );
         }
     }
 
     #[test]
-    fn test_backend_dead_on_garbage_or_refused() {
+    fn test_backend_not_ready_on_503() {
+        let hp =
+            spawn_stub_backend("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n");
+        assert_eq!(probe_backend(&hp), BackendState::NotReady);
+    }
+
+    #[test]
+    fn test_backend_http10_and_scheme_path_url() {
+        // Bare host:port, scheme-only, and scheme+path forms all probe equally.
+        // (Each stub answers exactly one connection, so spawn one per form.)
+        let hp = spawn_stub_backend("HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n");
+        assert_eq!(probe_backend(&hp), BackendState::Up);
+        let hp = spawn_stub_backend("HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n");
+        assert_eq!(probe_backend(&format!("http://{hp}")), BackendState::Up);
+        let hp = spawn_stub_backend("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        assert_eq!(
+            probe_backend(&format!("http://{hp}/api/ready")),
+            BackendState::Up
+        );
+    }
+
+    #[test]
+    fn test_backend_up_on_slow_or_fragmented_response() {
+        // First byte delayed 300ms (loaded event loop) — still within budget.
+        let hp = spawn_custom_backend(|mut stream| {
+            use std::io::Write;
+            std::thread::sleep(Duration::from_millis(300));
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n");
+        });
+        assert_eq!(probe_backend(&hp), BackendState::Up);
+
+        // Status line dribbled out byte by byte — must be reassembled.
+        let hp = spawn_custom_backend(|mut stream| {
+            use std::io::Write;
+            for b in b"HTTP/1.1 404 Not Found\r\n\r\n" {
+                let _ = stream.write_all(&[*b]);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        assert_eq!(probe_backend(&hp), BackendState::Up);
+    }
+
+    #[test]
+    fn test_backend_down_on_silent_garbage_or_refused() {
+        // Accepts but never answers within the probe budget → down.
+        let hp = spawn_custom_backend(|stream| {
+            std::thread::sleep(Duration::from_millis(2500));
+            drop(stream);
+        });
+        assert_eq!(probe_backend(&hp), BackendState::Down);
+
         let hp = spawn_stub_backend("this is not http");
-        assert!(!check_backend_alive(&hp), "non-HTTP junk must read as down");
+        assert_eq!(probe_backend(&hp), BackendState::Down);
 
         // Nothing listening on this port (bind+drop leaves it closed).
         let port = std::net::TcpListener::bind("127.0.0.1:0")
@@ -865,8 +1004,11 @@ mod tests {
             .local_addr()
             .unwrap()
             .port();
-        assert!(!check_backend_alive(&format!("127.0.0.1:{port}")));
-        assert!(!check_backend_alive("not-a-socket-addr"));
+        assert_eq!(
+            probe_backend(&format!("127.0.0.1:{port}")),
+            BackendState::Down
+        );
+        assert_eq!(probe_backend("not-a-socket-addr"), BackendState::Down);
     }
 
     #[test]
@@ -1008,5 +1150,91 @@ mod tests {
             !html.contains(">取消跳转</button>"),
             "offline page must not offer a cancel-redirect action"
         );
+    }
+
+    /// A backend that reports not-ready (starting / draining) must not render
+    /// a redirect countdown either; the page polls until it turns ready.
+    #[test]
+    fn test_template_renders_starting_without_countdown() {
+        let mut ctx = tera::Context::new();
+        ctx.insert("lang", "zh-Hans");
+        ctx.insert("dir", "ltr");
+        ctx.insert("title", "Malkuth");
+        ctx.insert("heading", "Malkuth");
+        ctx.insert("tagline", "Supervisor");
+        ctx.insert("version_label", "Version");
+        ctx.insert("task_label", "");
+        ctx.insert("retry_before", "");
+        ctx.insert("retry_after", "");
+        ctx.insert("retry_unit", "");
+        ctx.insert("retry_manual", "");
+        ctx.insert("footer", "");
+        ctx.insert("status_text", "服务正在启动中");
+        ctx.insert("ready", &false);
+        ctx.insert("landing", &false);
+        ctx.insert("initial_state", "starting");
+        ctx.insert("task", "Landing");
+        ctx.insert("logo_base64", "dGVzdA==");
+        ctx.insert("proxy_label", "Proxy");
+        ctx.insert("watch_label", "Watching");
+        ctx.insert("version", "0.2.10");
+        ctx.insert("binaries", &Vec::<serde_json::Value>::new());
+        ctx.insert("binaries_title", "Supervised Binaries");
+        ctx.insert("redirect_before", "将在");
+        ctx.insert("redirect_after", "秒后跳转");
+        ctx.insert("cancel_label", "取消跳转");
+        ctx.insert("refresh_label", "立即刷新");
+        ctx.insert("copy_hint", "Click to copy");
+        ctx.insert("copied_msg", "Copied");
+        ctx.insert("copy_fail_msg", "Copy failed");
+        ctx.insert("footer_prefix", "");
+        ctx.insert("footer_suffix", "");
+
+        let html = tera::Tera::one_off(TEMPLATE, &ctx, false).expect("Template error");
+        assert!(
+            !html.contains("id=\"retryHint\""),
+            "starting page must not render the countdown hint"
+        );
+        assert!(
+            html.contains(">立即刷新</button>"),
+            "starting page must offer the refresh action"
+        );
+        assert!(
+            !html.contains(">取消跳转</button>"),
+            "starting page must not offer a cancel-redirect action"
+        );
+    }
+
+    /// The malkuth nonce cookie must be appended alongside — never replace —
+    /// any Set-Cookie headers the backend itself returns.
+    #[tokio::test]
+    async fn test_proxy_preserves_backend_cookies() {
+        let backend = spawn_custom_backend(|mut stream| {
+            use std::io::Write;
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nSet-Cookie: session=abc; Path=/\r\nSet-Cookie: theme=dark; Path=/\r\n\r\nok",
+            );
+        });
+        // Give the stub a moment to start listening.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let req = Request::builder()
+            .uri("/")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = proxy_to_backend(req, &format!("http://{backend}"))
+            .await
+            .expect("proxy should succeed");
+
+        let cookies: Vec<_> = resp.headers().get_all(header::SET_COOKIE).iter().collect();
+        assert_eq!(cookies.len(), 3, "nonce + both backend cookies expected");
+        let joined: String = cookies
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(joined.contains("__malkuth_nonce=1"), "nonce cookie missing");
+        assert!(joined.contains("session=abc"), "backend cookie 1 missing");
+        assert!(joined.contains("theme=dark"), "backend cookie 2 missing");
     }
 }
