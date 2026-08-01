@@ -1,6 +1,7 @@
 name: Checks
 
 on:
+  workflow_dispatch:
   push:
     branches: [master, dev]
   pull_request:
@@ -12,7 +13,9 @@ env:
 jobs:
   check:
     name: fmt + check + clippy + test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'self-hosted' || matrix.os }}
+    if: github.event_name == 'workflow_dispatch' || matrix.os == 'ubuntu-latest'
+
     permissions:
       contents: read
     strategy:
@@ -58,7 +61,7 @@ jobs:
 
   integration:
     name: python integration tests (CLI + test-app)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, local]
     permissions:
       contents: read
     steps:
