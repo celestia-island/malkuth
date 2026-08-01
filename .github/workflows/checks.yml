@@ -13,7 +13,7 @@ env:
 jobs:
   check:
     name: fmt + check + clippy + test (${{ matrix.os }})
-    runs-on: [self-hosted, linux, x64, local]
+    runs-on: [self-hosted, local]
 
     permissions:
       contents: read
@@ -108,7 +108,7 @@ jobs:
 
   integration:
     name: python integration tests (CLI + test-app)
-    runs-on: [self-hosted, linux, x64, local]
+    runs-on: [self-hosted, local]
     permissions:
       contents: read
     steps:
