@@ -429,7 +429,14 @@ async fn proxy_upgrade(req: Request, backend: &str) -> Result<Response, ()> {
     wire.extend_from_slice(b"\r\n");
     for (name, value) in parts.headers.iter() {
         let lower = name.as_str().to_lowercase();
-        if lower == "host" || lower == "connection" || lower == "transfer-encoding" {
+        // Content-Length is dropped here and re-added below from the fully
+        // buffered body — keeping the client's copy would send a duplicate
+        // framing header (rejected as 400 by hyper/axum backends).
+        if lower == "host"
+            || lower == "connection"
+            || lower == "transfer-encoding"
+            || lower == "content-length"
+        {
             continue;
         }
         if lower == "cookie" {
