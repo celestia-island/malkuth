@@ -114,8 +114,10 @@ fn detect_install_method() -> &'static str {
 /// - First visit (no `__malkuth_nonce` cookie) → landing page reflecting the
 ///   probed backend state (Up → redirect countdown, NotReady → starting-up
 ///   notice, Down → offline notice)
-/// - Repeat visit (nonce set) & backend Up → forward the request
-/// - Backend unreachable → render the info/landing page
+/// - Repeat visit (nonce set) & backend Up → forward the request; the
+///   backend response passes through untouched (status, headers, body)
+/// - Backend unreachable / unavailable (transport failure or 502/503/504)
+///   → render the info/landing page
 #[allow(clippy::too_many_arguments)]
 pub fn info_router(
     version: impl Into<String>,
@@ -329,6 +331,16 @@ async fn serve_spa(state: &InfoState, lang: &str) -> Response {
     Html(result).into_response()
 }
 
+/// Whether a proxied backend status means "backend unavailable" and should
+/// be masked with the landing page. Only gateway-style statuses qualify:
+/// 502/503/504 signal a backend that is down or draining — mirroring
+/// [`probe_backend`], where 503 is the single not-ready verdict and every
+/// other HTTP status counts as up. All other statuses (404, 3xx, 500, ...)
+/// are live backend answers and pass through to the browser untouched.
+fn should_fall_back(status: u16) -> bool {
+    matches!(status, 502..=504)
+}
+
 async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
     let uri = req.uri();
     let path = uri.path_and_query().map_or("/", |pq| pq.as_str());
@@ -336,6 +348,10 @@ async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
 
     let client = reqwest::Client::builder()
         .no_proxy()
+        // Never follow redirects server-side: a 3xx must reach the browser
+        // untouched. Following an absolute redirect could loop back through
+        // this proxy and surface the landing page as a bogus 200.
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_millis(500))
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -383,8 +399,13 @@ async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
     let resp = backend_req.send().await.map_err(|_| ())?;
     let status_code = resp.status().as_u16();
 
-    // Treat 4xx/5xx as backend-unhealthy → fall back to landing
-    if status_code >= 400 {
+    // Fall back to the landing page only on transport failure (above) or
+    // gateway-style unavailability (502/503/504 — see `should_fall_back`,
+    // aligned with the probe's 503 → NotReady verdict). Every other status
+    // — 404, 3xx, even 500 — is a live backend answer and is passed through
+    // to the browser untouched; masking it as "offline" is what trapped
+    // users on the landing page when a backend 404'd on `/`.
+    if should_fall_back(status_code) {
         return Err(());
     }
 
@@ -1236,5 +1257,115 @@ mod tests {
         assert!(joined.contains("__malkuth_nonce=1"), "nonce cookie missing");
         assert!(joined.contains("session=abc"), "backend cookie 1 missing");
         assert!(joined.contains("theme=dark"), "backend cookie 2 missing");
+    }
+
+    /// Only 502/503/504 (backend unavailable / draining) may be masked with
+    /// the landing page; every other status is a live backend answer.
+    #[test]
+    fn test_should_fall_back_classification() {
+        for status in [200u16, 204, 301, 302, 304, 400, 404, 418, 500] {
+            assert!(
+                !should_fall_back(status),
+                "status {status} must pass through to the browser"
+            );
+        }
+        for status in [502u16, 503, 504] {
+            assert!(
+                should_fall_back(status),
+                "status {status} must fall back to the landing page"
+            );
+        }
+    }
+
+    /// Backend 4xx/5xx answers (other than 502/503/504) are live responses
+    /// and must reach the browser untouched — status and body — instead of
+    /// being masked as "backend offline".
+    #[tokio::test]
+    async fn test_proxy_passes_through_error_statuses() {
+        for (status_line, expected) in [
+            ("404 Not Found", StatusCode::NOT_FOUND),
+            (
+                "500 Internal Server Error",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ] {
+            let backend = spawn_stub_backend(Box::leak(
+                format!("HTTP/1.1 {status_line}\r\nContent-Length: 2\r\nX-Marker: stub\r\n\r\nok")
+                    .into_boxed_str(),
+            ));
+            // Give the stub a moment to start listening.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            let req = Request::builder()
+                .uri("/")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let resp = proxy_to_backend(req, &format!("http://{backend}"))
+                .await
+                .unwrap_or_else(|_| panic!("status `{status_line}` must pass through"));
+
+            assert_eq!(resp.status(), expected);
+            assert_eq!(resp.headers().get("x-marker").unwrap(), "stub");
+            let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(&body[..], b"ok");
+        }
+    }
+
+    /// Redirects must reach the browser untouched: the proxy must not follow
+    /// them itself (following an absolute redirect could loop back through
+    /// the proxy and surface the landing page as a bogus 200). The stub is
+    /// one-shot, so a followed redirect would fail the request outright.
+    #[tokio::test]
+    async fn test_proxy_passes_through_redirect_without_following() {
+        let backend = spawn_stub_backend(
+            "HTTP/1.1 301 Moved Permanently\r\nContent-Length: 0\r\nLocation: http://example.com/new\r\n\r\n",
+        );
+        // Give the stub a moment to start listening.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let req = Request::builder()
+            .uri("/")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = proxy_to_backend(req, &format!("http://{backend}"))
+            .await
+            .expect("301 must pass through instead of being followed");
+
+        assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
+        assert_eq!(
+            resp.headers().get(header::LOCATION).unwrap(),
+            "http://example.com/new"
+        );
+    }
+
+    /// 502/503/504 are gateway semantics for "backend unavailable /
+    /// draining" (mirroring the probe's 503 → NotReady verdict) and still
+    /// fall back to the landing page.
+    #[tokio::test]
+    async fn test_proxy_falls_back_on_gateway_statuses() {
+        for status_line in [
+            "502 Bad Gateway",
+            "503 Service Unavailable",
+            "504 Gateway Timeout",
+        ] {
+            let backend = spawn_stub_backend(Box::leak(
+                format!("HTTP/1.1 {status_line}\r\nContent-Length: 0\r\n\r\n").into_boxed_str(),
+            ));
+            // Give the stub a moment to start listening.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            let req = Request::builder()
+                .uri("/")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            assert!(
+                proxy_to_backend(req, &format!("http://{backend}"))
+                    .await
+                    .is_err(),
+                "status `{status_line}` must fall back to the landing page"
+            );
+        }
     }
 }
