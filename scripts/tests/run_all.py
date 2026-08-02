@@ -12,6 +12,7 @@ from _harness import ensure_built  # noqa: E402
 from utils import logger  # noqa: E402
 
 MODULES = [
+    "test_cli_binary_change_restarts",
     "test_cli_proxy_basic",
     "test_cli_proxy_sticky_crash",
     "test_cli_rolling_restart",

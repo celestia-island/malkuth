@@ -23,7 +23,7 @@ mod watcher;
 #[cfg(feature = "ws")]
 mod ws_proxy;
 
-use std::{net::SocketAddr, sync::Arc, sync::Mutex, time::Duration};
+use std::{net::SocketAddr, path::Component, sync::Arc, sync::Mutex, time::Duration};
 use tokio::signal;
 
 use clap::Parser;
@@ -31,7 +31,7 @@ use cli::{Args, ProxySpec};
 use pool::{PodManager, assign_ports};
 use proxy::ProxyState;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tracing::{error, info, warn};
 
@@ -79,6 +79,34 @@ fn mtimes_changed(
         }
     }
     false
+}
+
+/// Normalize a path for identity comparison: canonicalize when the path exists
+/// on disk (resolving symlinks and `..`), otherwise absolutize and resolve `.`
+/// and `..` lexically. The fallback matters because a supervised binary may not
+/// exist yet (first deployment) when the watcher compares event paths.
+fn normalize_path(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("/"))
+            .join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for comp in absolute.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            c => normalized.push(c.as_os_str()),
+        }
+    }
+    normalized
 }
 
 /// Collect metadata for a supervised binary: compile timestamp and SHA-256 hash.
@@ -383,13 +411,24 @@ async fn main() {
         let mut rx = watcher::spawn(args.watch.clone(), args.debounce);
         let build_cmd = args.build.clone();
         let watch_paths = args.watch.clone();
+        let binary_path: Option<PathBuf> = args
+            .command
+            .first()
+            .map(|c| normalize_path(&PathBuf::from(c)));
         let pod_count = args.pod_count.max(1);
         let manager = Arc::clone(&manager);
         tokio::spawn(async move {
             let mut next_pod: usize = 0;
-            while rx.recv().await.is_some() {
+            while let Some(paths) = rx.recv().await {
+                // A change to the supervised binary itself must restart the pods
+                // even when the build command produces identical output (e.g. a
+                // replaced /usr/local/bin/arona with an unchanged vite build).
+                let binary_changed = binary_path
+                    .as_ref()
+                    .is_some_and(|bp| paths.iter().any(|p| normalize_path(p) == *bp));
                 // Run optional build command before restarting.
-                // Only restart if the build actually produced changed output.
+                // Only restart if the build actually produced changed output
+                // (or the supervised binary itself changed).
                 if let Some(ref cmd) = build_cmd {
                     info!(cmd, "running build command");
                     let before = snapshot_mtimes(&watch_paths);
@@ -445,6 +484,11 @@ async fn main() {
                                         info!(
                                             cmd,
                                             "build produced changes, proceeding with restart"
+                                        );
+                                    } else if binary_changed {
+                                        info!(
+                                            ?paths,
+                                            "supervised binary changed, restarting regardless of build output"
                                         );
                                     } else {
                                         info!(cmd, "build produced no changes, skipping restart");
