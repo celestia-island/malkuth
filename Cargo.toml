@@ -42,7 +42,7 @@ leader-follower = ["lease"]
 schema = ["dep:schemars"]
 
 # ── CLI binary ─────────────────────────────────────────────────
-cli = ["dep:clap", "dep:notify", "dep:tracing-subscriber", "dep:chrono", "dep:toml", "dep:axum", "dep:tera", "dep:sha2", "dep:reqwest", "dep:kou"]
+cli = ["dep:clap", "dep:notify", "dep:tracing-subscriber", "dep:chrono", "dep:toml", "dep:axum", "dep:tera", "dep:sha2", "dep:reqwest", "dep:kou", "dep:hyper", "dep:hyper-util"]
 
 # ── MCP server ─────────────────────────────────────────────────
 # Standalone MCP (Model Context Protocol) server exposing supervision + probe
@@ -66,6 +66,12 @@ tokio = { version = "^1", features = ["rt", "rt-multi-thread", "macros", "net", 
 tokio-tungstenite = { version = "^0.29", optional = true }
 interprocess = { version = "^2", optional = true, features = ["tokio"] }
 axum = { version = "^0.8", optional = true }
+# Raw HTTP/1.1 upgrade support for the `--serve` proxy tunnel (the `OnUpgrade`
+# extension type plus the upgraded stream bridge). axum 0.8 no longer
+# re-exports `axum::hyper`, so hyper is a direct dependency; only the
+# always-on `upgrade` module types are used.
+hyper = { version = "^1", optional = true }
+hyper-util = { version = "^0.1", optional = true, features = ["tokio"] }
 tera = { version = "^2", optional = true }
 tokio-postgres = { version = "^0.7", optional = true }
 

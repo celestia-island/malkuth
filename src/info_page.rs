@@ -5,9 +5,13 @@ use axum::{
     response::{Html, IntoResponse, Response},
     routing::get,
 };
+use hyper::upgrade::OnUpgrade;
+use hyper_util::rt::TokioIo;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 include!(concat!(env!("OUT_DIR"), "/landing_page_html.rs"));
 
@@ -115,7 +119,9 @@ fn detect_install_method() -> &'static str {
 ///   probed backend state (Up → redirect countdown, NotReady → starting-up
 ///   notice, Down → offline notice)
 /// - Repeat visit (nonce set) & backend Up → forward the request; the
-///   backend response passes through untouched (status, headers, body)
+///   backend response passes through untouched (status, headers, body).
+///   WebSocket (or any HTTP/1.1 upgrade) handshakes are tunneled over raw
+///   TCP instead of going through reqwest, which cannot upgrade.
 /// - Backend unreachable / unavailable (transport failure or 502/503/504)
 ///   → render the info/landing page
 #[allow(clippy::too_many_arguments)]
@@ -341,9 +347,425 @@ fn should_fall_back(status: u16) -> bool {
     matches!(status, 502..=504)
 }
 
+/// Whether the request asks for an HTTP/1.1 protocol upgrade. Both a
+/// `Connection` header containing the `upgrade` token (token-list match,
+/// case-insensitive) and an `Upgrade` header must be present. The `Upgrade`
+/// value is intentionally not restricted to `websocket` — generic upgrade
+/// semantics are tunneled the same way.
+fn is_upgrade_request(headers: &header::HeaderMap) -> bool {
+    headers.contains_key(header::UPGRADE)
+        && headers
+            .get_all(header::CONNECTION)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .any(|v| {
+                v.split(',')
+                    .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
+            })
+}
+
+/// Extract the bare `host:port` of the `--serve` backend URL, dropping any
+/// scheme and path — plain HTTP only, mirroring [`probe_backend`].
+fn backend_host_port(backend: &str) -> Option<&str> {
+    let host_port = backend
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .split(['/', '?'])
+        .next()?;
+    (!host_port.is_empty()).then_some(host_port)
+}
+
+/// Reverse-proxy an HTTP/1.1 upgrade handshake (WebSocket or other) to the
+/// `--serve` backend over a raw TCP tunnel. reqwest strips hop-by-hop
+/// headers and has no upgrade semantics, so the handshake is written to the
+/// backend verbatim; on a 101 the backend's response headers pass through
+/// untouched and both byte streams are spliced together. Non-101 answers
+/// (e.g. 404/426) pass through with their full body, with the same
+/// semantics as [`proxy_to_backend`]: only transport failures and
+/// 502/503/504 fall back to the landing page.
+async fn proxy_upgrade(req: Request, backend: &str) -> Result<Response, ()> {
+    let (mut parts, body) = req.into_parts();
+
+    // hyper stores the pending upgrade in the request extensions. Every
+    // axum http1 request carrying an upgrade token gets one; its absence
+    // means the server cannot upgrade this connection, so fall back to the
+    // plain proxy rather than answering 500.
+    let Some(on_upgrade) = parts.extensions.remove::<OnUpgrade>() else {
+        return proxy_to_backend_parts(parts, body, backend).await;
+    };
+
+    let Some(host_port) = backend_host_port(backend) else {
+        return Err(());
+    };
+    let path_and_query = parts.uri.path_and_query().map_or("/", |pq| pq.as_str());
+
+    // WS requests normally carry no body; if one does, read it fully so the
+    // forwarded request is complete before the upgrade exchange starts.
+    let body_bytes = axum::body::to_bytes(body, usize::MAX)
+        .await
+        .map_err(|_| ())?;
+
+    // Dial the backend (plain HTTP only, like the readiness probe). Any
+    // connect failure is a transport error → landing page.
+    let mut stream =
+        tokio::time::timeout(Duration::from_millis(2000), TcpStream::connect(host_port))
+            .await
+            .map_err(|_| ())?
+            .map_err(|_| ())?;
+
+    // Forward the request verbatim over raw HTTP/1.1: hop-by-hop headers
+    // (Host/Connection/Transfer-Encoding) are dropped, Host is reset to the
+    // backend, `Connection: Upgrade` is re-added so the backend treats this
+    // as an upgrade request, and everything else — Upgrade,
+    // Sec-WebSocket-*, Cookie, ... — goes through byte-for-byte. The
+    // malkuth nonce cookie is stripped for symmetry with
+    // `proxy_to_backend`.
+    let mut wire: Vec<u8> = Vec::with_capacity(512);
+    wire.extend_from_slice(parts.method.as_str().as_bytes());
+    wire.push(b' ');
+    wire.extend_from_slice(path_and_query.as_bytes());
+    wire.extend_from_slice(b" HTTP/1.1\r\nHost: ");
+    wire.extend_from_slice(host_port.as_bytes());
+    wire.extend_from_slice(b"\r\n");
+    for (name, value) in parts.headers.iter() {
+        let lower = name.as_str().to_lowercase();
+        // Content-Length is dropped here and re-added below from the fully
+        // buffered body — keeping the client's copy would send a duplicate
+        // framing header (rejected as 400 by hyper/axum backends).
+        if lower == "host"
+            || lower == "connection"
+            || lower == "transfer-encoding"
+            || lower == "content-length"
+        {
+            continue;
+        }
+        if lower == "cookie" {
+            let Some(cookies) = value.to_str().ok() else {
+                continue;
+            };
+            let cleaned: Vec<&str> = cookies
+                .split(';')
+                .filter(|c| !c.trim().starts_with("__malkuth_nonce="))
+                .collect();
+            if cleaned.is_empty() {
+                continue;
+            }
+            wire.extend_from_slice(b"Cookie: ");
+            wire.extend_from_slice(cleaned.join(";").as_bytes());
+            wire.extend_from_slice(b"\r\n");
+            continue;
+        }
+        wire.extend_from_slice(name.as_str().as_bytes());
+        wire.extend_from_slice(b": ");
+        wire.extend_from_slice(value.as_bytes());
+        wire.extend_from_slice(b"\r\n");
+    }
+    if !body_bytes.is_empty() {
+        wire.extend_from_slice(b"Content-Length: ");
+        wire.extend_from_slice(body_bytes.len().to_string().as_bytes());
+        wire.extend_from_slice(b"\r\n");
+    }
+    wire.extend_from_slice(b"Connection: Upgrade\r\n\r\n");
+    // Bounded write so a backend that accepts but never reads cannot stall
+    // the handler (the kernel buffer absorbs tiny requests, so this only
+    // trips on genuinely wedged peers).
+    let wire_flush = async {
+        stream.write_all(&wire).await?;
+        if !body_bytes.is_empty() {
+            stream.write_all(&body_bytes).await?;
+        }
+        stream.flush().await
+    };
+    tokio::time::timeout(Duration::from_secs(5), wire_flush)
+        .await
+        .map_err(|_| ())?
+        .map_err(|_| ())?;
+
+    // Read the response head (status line + headers, byte-capped so a
+    // hostile backend cannot buffer without bound) and any bytes the
+    // backend already sent past the head — those belong to the upgraded
+    // stream and must not be lost.
+    let (head, leftover) =
+        tokio::time::timeout(Duration::from_secs(10), read_response_head(&mut stream))
+            .await
+            .map_err(|_| ())?
+            .map_err(|_| ())?;
+    let (status, resp_headers) = parse_response_head(&head).ok_or(())?;
+
+    if status == 101 {
+        // Build the 101 for the browser with the backend's headers verbatim
+        // (Upgrade / Connection / Sec-WebSocket-Accept / Sec-WebSocket-*).
+        let mut response = Response::new(axum::body::Body::empty());
+        *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+        for (name, value) in resp_headers {
+            if let (Ok(n), Ok(v)) = (
+                header::HeaderName::from_bytes(name.as_bytes()),
+                header::HeaderValue::from_bytes(&value),
+            ) {
+                response.headers_mut().append(n, v);
+            }
+        }
+        // No nonce Set-Cookie on the 101: after an upgrade there is no
+        // further HTTP exchange to gate, browsers ignore Set-Cookie on
+        // upgrade responses anyway, and the JS-set nonce cookie keeps
+        // working. Keep the upgrade payload minimal.
+
+        // The `OnUpgrade` future only resolves once the 101 has been
+        // flushed to the browser, so the handler must return first and the
+        // tunnel runs detached. `copy_bidirectional` shuts down the
+        // opposing writer on EOF — exactly the half-close semantics the
+        // WebSocket close handshake relies on — and ends the tunnel when
+        // either side disconnects or errors, dropping both streams.
+        tokio::spawn(async move {
+            let upgraded = match on_upgrade.await {
+                Ok(stream) => stream,
+                Err(_) => return,
+            };
+            let mut client_io = TokioIo::new(upgraded);
+            if !leftover.is_empty() {
+                // Bytes the backend sent right after the head (e.g. a
+                // server-initiated frame) reach the browser first.
+                let mut rest = std::io::Cursor::new(leftover);
+                if tokio::io::copy(&mut rest, &mut client_io).await.is_err() {
+                    return;
+                }
+            }
+            let _ = tokio::io::copy_bidirectional(&mut client_io, &mut stream).await;
+        });
+        return Ok(response);
+    }
+
+    // Non-101: the backend answered in HTTP. Forward the whole response
+    // untouched — 404/426/400 and friends are live backend answers and must
+    // not be masked (same rule as `proxy_to_backend`); only 502/503/504
+    // fall back to the landing page.
+    if should_fall_back(status) {
+        return Err(());
+    }
+
+    // Read the full body: framed exactly via Content-Length / chunked
+    // transfer, otherwise read until EOF (a backend that neither frames nor
+    // closes within the budget is a transport failure).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let resp_body = read_response_body(&mut stream, &resp_headers, leftover, deadline).await?;
+
+    // Mirror `proxy_to_backend`'s response assembly: nonce cookie appended
+    // alongside (never replacing) backend Set-Cookie headers; hop-by-hop
+    // headers stripped since the body was already decoded.
+    let mut backend_cookies: Vec<Vec<u8>> = Vec::new();
+    let resp_headers: Vec<(String, Vec<u8>)> = resp_headers
+        .into_iter()
+        .filter(|(name, value)| {
+            let lower = name.to_lowercase();
+            if lower == "set-cookie" {
+                backend_cookies.push(value.clone());
+                return false;
+            }
+            lower != "transfer-encoding" && lower != "connection"
+        })
+        .collect();
+
+    let status_code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
+    let mut response = Response::new(axum::body::Body::from(resp_body));
+    *response.status_mut() = status_code;
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        header::HeaderValue::from_static("__malkuth_nonce=1; max-age=1800; path=/"),
+    );
+    for value in backend_cookies {
+        if let Ok(v) = header::HeaderValue::from_bytes(&value) {
+            response.headers_mut().append(header::SET_COOKIE, v);
+        }
+    }
+    for (name, value) in resp_headers {
+        if let (Ok(n), Ok(v)) = (
+            header::HeaderName::from_bytes(name.as_bytes()),
+            header::HeaderValue::from_bytes(&value),
+        ) {
+            response.headers_mut().insert(n, v);
+        }
+    }
+    Ok(response)
+}
+
+/// Read a backend response head (status line + headers up to `\r\n\r\n`),
+/// capped at 64 KiB. Returns the head and any bytes read past it (the head
+/// of the upgraded stream, for a 101).
+async fn read_response_head(stream: &mut TcpStream) -> Result<(Vec<u8>, Vec<u8>), ()> {
+    const CAP: usize = 64 * 1024;
+    let mut buf: Vec<u8> = Vec::with_capacity(1024);
+    let mut chunk = [0u8; 4096];
+    loop {
+        if buf.len() >= CAP {
+            return Err(());
+        }
+        let n = stream.read(&mut chunk).await.map_err(|_| ())?;
+        if n == 0 {
+            // Backend hung up mid-headers: nothing to forward.
+            return Err(());
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4) {
+            let leftover = buf.split_off(end);
+            return Ok((buf, leftover));
+        }
+    }
+}
+
+/// A parsed response header entry: lowercased name + raw value bytes.
+type ParsedHeader = (String, Vec<u8>);
+
+/// Parse a response head into `(status, headers)` with lowercased names.
+fn parse_response_head(head: &[u8]) -> Option<(u16, Vec<ParsedHeader>)> {
+    let text = std::str::from_utf8(head).ok()?;
+    let mut lines = text.split("\r\n");
+    let status_line = lines.next()?;
+    let status = status_line.split_whitespace().nth(1)?.parse::<u16>().ok()?;
+    let mut headers = Vec::new();
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        headers.push((
+            name.trim().to_ascii_lowercase(),
+            value.trim().as_bytes().to_vec(),
+        ));
+    }
+    Some((status, headers))
+}
+
+/// Read the body of a non-101 backend response. `body` already holds any
+/// bytes read past the head. Content-Length and chunked framing are decoded
+/// exactly; unframed bodies are read until EOF. All reads respect
+/// `deadline`; exceeding it (or losing the connection early) is a transport
+/// failure.
+async fn read_response_body(
+    stream: &mut TcpStream,
+    headers: &[ParsedHeader],
+    mut body: Vec<u8>,
+    deadline: tokio::time::Instant,
+) -> Result<Vec<u8>, ()> {
+    let is_chunked = headers.iter().any(|(name, value)| {
+        name == "transfer-encoding"
+            && String::from_utf8_lossy(value)
+                .to_ascii_lowercase()
+                .contains("chunked")
+    });
+    let content_length = headers
+        .iter()
+        .find(|(name, _)| name == "content-length")
+        .and_then(|(_, value)| std::str::from_utf8(value).ok())
+        .and_then(|v| v.trim().parse::<usize>().ok());
+
+    if is_chunked {
+        let mut out: Vec<u8> = Vec::new();
+        let mut rest: Vec<u8> = std::mem::take(&mut body);
+        loop {
+            let size_line = take_line(&mut rest, stream, 128, deadline).await?;
+            let size_hex = std::str::from_utf8(&size_line)
+                .ok()
+                .and_then(|s| s.split(';').next())
+                .map(str::trim)
+                .unwrap_or("");
+            let size = usize::from_str_radix(size_hex, 16).map_err(|_| ())?;
+            if size == 0 {
+                // Trailer section, terminated by a blank line.
+                loop {
+                    if take_line(&mut rest, stream, 4096, deadline)
+                        .await?
+                        .is_empty()
+                    {
+                        break;
+                    }
+                }
+                break;
+            }
+            while rest.len() < size + 2 {
+                let n = read_some(stream, &mut rest, deadline).await?;
+                if n == 0 {
+                    return Err(());
+                }
+            }
+            out.extend_from_slice(&rest[..size]);
+            rest.drain(..size + 2); // payload + trailing CRLF
+        }
+        Ok(out)
+    } else if let Some(len) = content_length {
+        while body.len() < len {
+            let n = read_some(stream, &mut body, deadline).await?;
+            if n == 0 {
+                return Err(());
+            }
+        }
+        body.truncate(len);
+        Ok(body)
+    } else {
+        loop {
+            if read_some(stream, &mut body, deadline).await? == 0 {
+                return Ok(body);
+            }
+        }
+    }
+}
+
+/// Take one `\r\n`-terminated line, draining `rest` first and topping up
+/// from the stream as needed. Line length is capped to protect against
+/// hostile framing.
+async fn take_line(
+    rest: &mut Vec<u8>,
+    stream: &mut TcpStream,
+    cap: usize,
+    deadline: tokio::time::Instant,
+) -> Result<Vec<u8>, ()> {
+    loop {
+        if let Some(pos) = rest.windows(2).position(|w| w == b"\r\n") {
+            let line: Vec<u8> = rest.drain(..pos).collect();
+            rest.drain(..2);
+            if line.len() > cap {
+                return Err(());
+            }
+            return Ok(line);
+        }
+        if rest.len() > cap {
+            return Err(());
+        }
+        if read_some(stream, rest, deadline).await? == 0 {
+            return Err(());
+        }
+    }
+}
+
+/// Read one chunk from the backend into `buf`, respecting `deadline`.
+async fn read_some(
+    stream: &mut TcpStream,
+    buf: &mut Vec<u8>,
+    deadline: tokio::time::Instant,
+) -> Result<usize, ()> {
+    let mut chunk = [0u8; 8192];
+    let n = tokio::time::timeout_at(deadline, stream.read(&mut chunk))
+        .await
+        .map_err(|_| ())?
+        .map_err(|_| ())?;
+    if n > 0 {
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    Ok(n)
+}
+
 async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
-    let uri = req.uri();
-    let path = uri.path_and_query().map_or("/", |pq| pq.as_str());
+    let (parts, body) = req.into_parts();
+    proxy_to_backend_parts(parts, body, backend).await
+}
+
+/// Plain-HTTP forward of a request to the `--serve` backend (reqwest; no
+/// upgrade semantics). Consumed by both [`proxy_to_backend`] and the
+/// no-upgrade fallback inside [`proxy_upgrade`].
+async fn proxy_to_backend_parts(
+    parts: axum::http::request::Parts,
+    body: axum::body::Body,
+    backend: &str,
+) -> Result<Response, ()> {
+    let path = parts.uri.path_and_query().map_or("/", |pq| pq.as_str());
     let url = format!("{}{}", backend.trim_end_matches('/'), path);
 
     let client = reqwest::Client::builder()
@@ -357,7 +779,6 @@ async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
         .build()
         .map_err(|_| ())?;
 
-    let (parts, body) = req.into_parts();
     let method = parts.method;
     let headers = parts.headers;
 
@@ -679,7 +1100,15 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
         if allowed {
             let nonce = read_nonce(&req);
             if nonce == 1 {
-                if let Ok(resp) = proxy_to_backend(req, backend).await {
+                // Upgrade handshakes (WebSocket etc.) cannot go through the
+                // reqwest forwarder — detect them from the headers before
+                // consuming the request and tunnel them instead.
+                let proxy_result = if is_upgrade_request(req.headers()) {
+                    proxy_upgrade(req, backend).await
+                } else {
+                    proxy_to_backend(req, backend).await
+                };
+                if let Ok(resp) = proxy_result {
                     return resp;
                 }
             }
@@ -1367,5 +1796,352 @@ mod tests {
                 "status `{status_line}` must fall back to the landing page"
             );
         }
+    }
+
+    #[test]
+    fn test_is_upgrade_request_classification() {
+        fn headers(pairs: &[(&str, &str)]) -> header::HeaderMap {
+            let mut map = header::HeaderMap::new();
+            for (name, value) in pairs {
+                map.insert(
+                    header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                    value.parse().unwrap(),
+                );
+            }
+            map
+        }
+
+        // Canonical WebSocket handshake.
+        assert!(is_upgrade_request(&headers(&[
+            ("connection", "upgrade"),
+            ("upgrade", "websocket"),
+        ])));
+        // Token-list Connection and mixed casing must match.
+        assert!(is_upgrade_request(&headers(&[
+            ("Connection", "keep-alive, UpGrAdE"),
+            ("Upgrade", "WebSocket"),
+        ])));
+        // Any Upgrade value qualifies (generic upgrade semantics).
+        assert!(is_upgrade_request(&headers(&[
+            ("connection", "Upgrade"),
+            ("upgrade", "h2c"),
+        ])));
+        // An Upgrade header alone is not an upgrade request...
+        assert!(!is_upgrade_request(&headers(&[("upgrade", "websocket")])));
+        // ...nor is `Connection: upgrade` without an `Upgrade` header...
+        assert!(!is_upgrade_request(&headers(&[("connection", "upgrade")])));
+        // ...nor plain keep-alive traffic.
+        assert!(!is_upgrade_request(&headers(&[(
+            "connection",
+            "keep-alive"
+        )])));
+        assert!(!is_upgrade_request(&headers(&[("connection", "close")])));
+        assert!(!is_upgrade_request(&headers(&[])));
+    }
+
+    #[test]
+    fn test_backend_host_port_extraction() {
+        assert_eq!(backend_host_port("127.0.0.1:8080"), Some("127.0.0.1:8080"));
+        assert_eq!(
+            backend_host_port("http://127.0.0.1:8080"),
+            Some("127.0.0.1:8080")
+        );
+        assert_eq!(
+            backend_host_port("http://127.0.0.1:8080/api/ws"),
+            Some("127.0.0.1:8080")
+        );
+        assert_eq!(
+            backend_host_port("https://example.com:9443"),
+            Some("example.com:9443")
+        );
+        assert_eq!(backend_host_port(""), None);
+        assert_eq!(backend_host_port("http://"), None);
+    }
+
+    #[test]
+    fn test_parse_response_head() {
+        let (status, headers) = parse_response_head(
+            b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: abc\r\nConnection: Upgrade\r\n\r\n",
+        )
+        .unwrap();
+        assert_eq!(status, 101);
+        assert!(headers.contains(&("upgrade".to_string(), b"websocket".to_vec())));
+        assert!(headers.contains(&("sec-websocket-accept".to_string(), b"abc".to_vec())));
+
+        let (status, headers) =
+            parse_response_head(b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\n\r\n").unwrap();
+        assert_eq!(status, 404);
+        assert_eq!(
+            headers
+                .iter()
+                .find(|(n, _)| n == "content-length")
+                .map(|(_, v)| v.as_slice()),
+            Some(b"2".as_slice())
+        );
+
+        // Garbage must not parse.
+        assert!(parse_response_head(b"not http at all").is_none());
+    }
+
+    /// A raw backend answering a real upgrade handshake: the 101 response
+    /// must be forwarded verbatim, and the forwarded wire request must carry
+    /// the rewrite rules (Host reset, `Connection: Upgrade` re-added).
+    #[tokio::test]
+    async fn test_proxy_upgrade_tunnels_101_with_headers() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req_text = String::from_utf8_lossy(&buf[..n]);
+                let lowered = req_text.to_ascii_lowercase();
+                if !lowered.contains("upgrade: websocket")
+                    || !lowered.contains("connection: upgrade")
+                    || !lowered.contains("host: 127.0.0.1:")
+                {
+                    stream
+                        .write_all(b"HTTP/1.1 500 Broken Proxy\r\nContent-Length: 0\r\n\r\n")
+                        .ok();
+                    return;
+                }
+                let key = req_text
+                    .lines()
+                    .find(|l| l.to_ascii_lowercase().starts_with("sec-websocket-key"))
+                    .and_then(|l| l.split_once(':').map(|(_, v)| v.trim().to_string()))
+                    .unwrap_or_default();
+                let accept = ws_accept_for_test(&key);
+                let resp = format!(
+                    "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\nX-Backend: ws\r\n\r\n"
+                );
+                stream.write_all(resp.as_bytes()).ok();
+                // Give the proxy time to finish reading the head before the
+                // stub connection disappears.
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut req = Request::builder()
+            .uri("/api/rpc?workspace=test")
+            .header("host", "front.door.example")
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .header("sec-websocket-version", "13")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        // A real hyper server would attach a live OnUpgrade; a none()-style
+        // one exercises the same decision path (the detached tunnel simply
+        // fails to upgrade and exits).
+        let on_upgrade = hyper::upgrade::on(&mut req);
+        req.extensions_mut().insert(on_upgrade);
+
+        let resp = proxy_upgrade(req, &format!("http://127.0.0.1:{port}"))
+            .await
+            .expect("101 must pass through");
+        assert_eq!(resp.status(), StatusCode::SWITCHING_PROTOCOLS);
+        assert_eq!(resp.headers().get("upgrade").unwrap(), "websocket");
+        assert_eq!(resp.headers().get("connection").unwrap(), "Upgrade");
+        assert_eq!(
+            resp.headers()
+                .get("sec-websocket-accept")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            ws_accept_for_test("dGhlIHNhbXBsZSBub25jZQ==")
+        );
+        assert_eq!(resp.headers().get("x-backend").unwrap(), "ws");
+    }
+
+    /// A non-101 backend answer to an upgrade handshake passes through
+    /// untouched (#92 semantics), with the nonce cookie appended alongside
+    /// any backend Set-Cookie.
+    #[tokio::test]
+    async fn test_proxy_upgrade_passes_through_non_101() {
+        let backend = spawn_stub_backend(
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nX-Marker: ws404\r\nSet-Cookie: session=abc; Path=/\r\n\r\nno",
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut req = Request::builder()
+            .uri("/missing")
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let on_upgrade = hyper::upgrade::on(&mut req);
+        req.extensions_mut().insert(on_upgrade);
+
+        let resp = proxy_upgrade(req, &format!("http://{backend}"))
+            .await
+            .expect("404 must pass through instead of being masked");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(resp.headers().get("x-marker").unwrap(), "ws404");
+        let cookies: Vec<_> = resp.headers().get_all(header::SET_COOKIE).iter().collect();
+        let joined: String = cookies
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(joined.contains("__malkuth_nonce=1"), "nonce cookie missing");
+        assert!(joined.contains("session=abc"), "backend cookie missing");
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"no");
+    }
+
+    /// Chunked non-101 bodies are decoded before being forwarded.
+    #[tokio::test]
+    async fn test_proxy_upgrade_decodes_chunked_body() {
+        let backend = spawn_stub_backend(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n",
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut req = Request::builder()
+            .uri("/ws")
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let on_upgrade = hyper::upgrade::on(&mut req);
+        req.extensions_mut().insert(on_upgrade);
+
+        let resp = proxy_upgrade(req, &format!("http://{backend}"))
+            .await
+            .expect("chunked 200 must pass through");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"Wikipedia");
+    }
+
+    /// Transport failures and 502/503/504 answers still fall back to the
+    /// landing page on the upgrade path.
+    #[tokio::test]
+    async fn test_proxy_upgrade_falls_back_on_transport_and_gateway() {
+        // Nothing listening on this port (bind+drop leaves it closed).
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut req = Request::builder()
+            .uri("/ws")
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let on_upgrade = hyper::upgrade::on(&mut req);
+        req.extensions_mut().insert(on_upgrade);
+        assert!(
+            proxy_upgrade(req, &format!("http://127.0.0.1:{port}"))
+                .await
+                .is_err(),
+            "unreachable backend must fall back to the landing page"
+        );
+
+        for status_line in [
+            "502 Bad Gateway",
+            "503 Service Unavailable",
+            "504 Gateway Timeout",
+        ] {
+            let backend = spawn_stub_backend(Box::leak(
+                format!("HTTP/1.1 {status_line}\r\nContent-Length: 0\r\n\r\n").into_boxed_str(),
+            ));
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let mut req = Request::builder()
+                .uri("/ws")
+                .header("connection", "upgrade")
+                .header("upgrade", "websocket")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let on_upgrade = hyper::upgrade::on(&mut req);
+            req.extensions_mut().insert(on_upgrade);
+            assert!(
+                proxy_upgrade(req, &format!("http://{backend}"))
+                    .await
+                    .is_err(),
+                "status `{status_line}` must fall back to the landing page"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ws_accept_derivation() {
+        // RFC 6455 §1.3 example key.
+        assert_eq!(
+            ws_accept_for_test("dGhlIHNhbXBsZSBub25jZQ=="),
+            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+        );
+    }
+
+    /// base64(sha1(key + RFC 6455 GUID)) — the canonical WebSocket
+    /// Sec-WebSocket-Accept derivation (mirrors examples/test_app).
+    fn ws_accept_for_test(key: &str) -> String {
+        const GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+        let mut input = key.as_bytes().to_vec();
+        input.extend_from_slice(GUID);
+        base64_encode(&sha1(&input))
+    }
+
+    fn sha1(data: &[u8]) -> [u8; 20] {
+        let mut h: [u32; 5] = [
+            0x6745_2301,
+            0xEFCD_AB89,
+            0x98BA_DCFE,
+            0x1032_5476,
+            0xC3D2_E1F0,
+        ];
+        let bit_len = (data.len() as u64) * 8;
+        let mut msg = data.to_vec();
+        msg.push(0x80);
+        while msg.len() % 64 != 56 {
+            msg.push(0);
+        }
+        msg.extend_from_slice(&bit_len.to_be_bytes());
+        for chunk in msg.chunks(64) {
+            let mut w = [0u32; 80];
+            for (i, word) in chunk.chunks(4).enumerate() {
+                w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+            }
+            for i in 16..80 {
+                w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+            }
+            let (mut a, mut b, mut c, mut d, mut e) = (h[0], h[1], h[2], h[3], h[4]);
+            for (i, &wi) in w.iter().enumerate() {
+                let (f, k) = match i {
+                    0..=19 => ((b & c) | (!b & d), 0x5A82_7999),
+                    20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                    40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                    _ => (b ^ c ^ d, 0xCA62_C1D6),
+                };
+                let tmp = a
+                    .rotate_left(5)
+                    .wrapping_add(f)
+                    .wrapping_add(e)
+                    .wrapping_add(k)
+                    .wrapping_add(wi);
+                e = d;
+                d = c;
+                c = b.rotate_left(30);
+                b = a;
+                a = tmp;
+            }
+            h[0] = h[0].wrapping_add(a);
+            h[1] = h[1].wrapping_add(b);
+            h[2] = h[2].wrapping_add(c);
+            h[3] = h[3].wrapping_add(d);
+            h[4] = h[4].wrapping_add(e);
+        }
+        let mut out = [0u8; 20];
+        for (i, hh) in h.iter().enumerate() {
+            out[i * 4..i * 4 + 4].copy_from_slice(&hh.to_be_bytes());
+        }
+        out
     }
 }

@@ -16,6 +16,7 @@ MODULES = [
     "test_cli_proxy_basic",
     "test_cli_proxy_sticky_crash",
     "test_cli_rolling_restart",
+    "test_cli_proxy_websocket",
     "test_app_supervise_restart",
     "test_app_rolling_update",
 ]
