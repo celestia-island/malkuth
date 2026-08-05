@@ -118,6 +118,28 @@ pub struct Args {
     #[arg(long = "serve-host", value_name = "HOST")]
     pub serve_host: Vec<String>,
 
+    /// Enable automatic database backups (`pg_dump -Fc`) into DIR. Databases
+    /// are discovered from `--db-backup-uri` plus the process environment's
+    /// `DATABASE_URL` / `*_DATABASE_URL` variables (systemd `Environment=`
+    /// provides these naturally). Backups run at startup and then daily at
+    /// 02:00 local time.
+    #[arg(long = "db-backup-dir", value_name = "DIR")]
+    pub db_backup_dir: Option<PathBuf>,
+
+    /// Keep at most N dump files per database (default: 14).
+    #[arg(long = "db-backup-retain", default_value = "14")]
+    pub db_backup_retain: usize,
+
+    /// Encrypt every dump with `age -r <RECIPIENT>` (writes `.dump.age`).
+    /// Recommended for compliance-sensitive data (real-name, reports).
+    #[arg(long = "db-backup-key", value_name = "RECIPIENT")]
+    pub db_backup_key: Option<String>,
+
+    /// Database URL to back up (repeatable). Defaults to the discovered
+    /// environment URLs.
+    #[arg(long = "db-backup-uri", value_name = "URI")]
+    pub db_backup_uri: Vec<String>,
+
     /// The command to run (everything after `--`), e.g. `-- cargo run`.
     #[arg(last = true, allow_hyphen_values = true)]
     pub command: Vec<String>,
