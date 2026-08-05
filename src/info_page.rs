@@ -3,7 +3,7 @@ use axum::{
     extract::Request,
     http::{StatusCode, header},
     response::{Html, IntoResponse, Response},
-    routing::get,
+    routing::any,
 };
 use hyper::upgrade::OnUpgrade;
 use hyper_util::rt::TokioIo;
@@ -177,9 +177,13 @@ pub fn info_router(
         runtime_log,
         backend_state,
     };
+    // All methods: with --serve the landing page doubles as a full reverse
+    // proxy (JSON-RPC POSTs, PUT/PATCH/DELETE, WS upgrades…). GET-only routing
+    // answered 405 for every non-GET request — e.g. the webui login (POST
+    // /api/rpc) could never reach the backend through the front door.
     Router::new()
-        .route("/", get(info_page))
-        .fallback(get(info_page))
+        .route("/", any(info_page))
+        .fallback(any(info_page))
         .with_state(state)
 }
 
