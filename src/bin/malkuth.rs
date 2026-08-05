@@ -17,6 +17,8 @@ mod proxy;
 mod self_update;
 #[path = "malkuth/singleton.rs"]
 mod singleton;
+#[path = "malkuth/db_backup.rs"]
+mod db_backup;
 #[path = "malkuth/watcher.rs"]
 mod watcher;
 #[path = "malkuth/ws_proxy.rs"]
@@ -517,6 +519,23 @@ async fn main() {
                 manager.restart_one(id).await;
             }
         });
+    }
+
+    // ── Automatic database backups (optional) ────────────────
+    if let Some(dir) = args.db_backup_dir {
+        let cfg = db_backup::DbBackupConfig {
+            dir,
+            retain: args.db_backup_retain,
+            key: args.db_backup_key.clone(),
+            uris: args.db_backup_uri.clone(),
+        };
+        info!(
+            dir = %cfg.dir.display(),
+            retain = cfg.retain,
+            encrypted = cfg.key.is_some(),
+            "database backup facility enabled"
+        );
+        tokio::spawn(db_backup::run_forever(cfg));
     }
 
     // ── Info page HTTP server (optional) ──────────────────────
