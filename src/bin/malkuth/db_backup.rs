@@ -126,8 +126,12 @@ pub fn run_backup(cfg: &DbBackupConfig, uri: &str) -> Result<PathBuf, String> {
             .arg("-o")
             .arg(&final_path)
             .arg(&tmp)
-            .output()
-            .map_err(|e| format!("spawn age: {e}"))?;
+            .output();
+        if let Err(e) = enc {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("spawn age: {e}"));
+        }
+        let enc = enc.expect("checked above");
         let _ = std::fs::remove_file(&tmp);
         if !enc.status.success() {
             let _ = std::fs::remove_file(&final_path);
