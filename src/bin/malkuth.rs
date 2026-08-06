@@ -5,6 +5,8 @@
 
 #[path = "malkuth/cli.rs"]
 mod cli;
+#[path = "malkuth/db_backup.rs"]
+mod db_backup;
 #[path = "malkuth/ipc_proxy.rs"]
 #[cfg(feature = "ipc")]
 mod ipc_proxy;
@@ -17,8 +19,6 @@ mod proxy;
 mod self_update;
 #[path = "malkuth/singleton.rs"]
 mod singleton;
-#[path = "malkuth/db_backup.rs"]
-mod db_backup;
 #[path = "malkuth/watcher.rs"]
 mod watcher;
 #[path = "malkuth/ws_proxy.rs"]
@@ -498,18 +498,39 @@ async fn main() {
                                     }
                                 }
                                 Ok(s) => {
-                                    warn!(cmd, code = %s, "build failed; skipping restart");
-                                    continue;
+                                    warn!(cmd, code = %s, "build failed");
+                                    if binary_changed {
+                                        info!(
+                                            ?paths,
+                                            "supervised binary changed, restarting despite build failure"
+                                        );
+                                    } else {
+                                        continue;
+                                    }
                                 }
                                 Err(e) => {
-                                    warn!(cmd, error = %e, "build command error; skipping restart");
-                                    continue;
+                                    warn!(cmd, error = %e, "build command error");
+                                    if binary_changed {
+                                        info!(
+                                            ?paths,
+                                            "supervised binary changed, restarting despite build error"
+                                        );
+                                    } else {
+                                        continue;
+                                    }
                                 }
                             }
                         }
                         Err(e) => {
-                            warn!(cmd, error = %e, "build spawn failed; skipping restart");
-                            continue;
+                            warn!(cmd, error = %e, "build spawn failed");
+                            if binary_changed {
+                                info!(
+                                    ?paths,
+                                    "supervised binary changed, restarting despite build spawn failure"
+                                );
+                            } else {
+                                continue;
+                            }
                         }
                     }
                 }

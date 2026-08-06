@@ -209,7 +209,13 @@ fn sleep_until_next_run() -> Duration {
         .date_naive()
         .and_hms_opt(2, 0, 0)
         .and_then(|d| d.and_local_timezone(chrono::Local).single())
-        .map(|dt| if dt > now { dt } else { dt + chrono::Duration::days(1) })
+        .map(|dt| {
+            if dt > now {
+                dt
+            } else {
+                dt + chrono::Duration::days(1)
+            }
+        })
         .unwrap_or(now + chrono::Duration::hours(24));
     let secs = (next - now).num_seconds().max(60) as u64;
     Duration::from_secs(secs)
@@ -249,7 +255,10 @@ mod tests {
     #[test]
     fn parses_db_names() {
         assert_eq!(db_name_from_uri("postgres://u:p@h:5432/arona"), "arona");
-        assert_eq!(db_name_from_uri("postgres://h/chest?sslmode=require"), "chest");
+        assert_eq!(
+            db_name_from_uri("postgres://h/chest?sslmode=require"),
+            "chest"
+        );
         // No path segment: fall back to a sanitized host label.
         assert_eq!(db_name_from_uri("postgres://dbhost:5432/"), "dbhost");
     }
