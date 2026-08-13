@@ -139,3 +139,7 @@ jobs:
 
       - name: Run the Python scripts/ suite
         run: python3 scripts/tests/run_all.py
+
+  verify-versions:
+    name: Verify version consistency
+    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@master
