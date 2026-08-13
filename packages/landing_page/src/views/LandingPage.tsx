@@ -120,6 +120,7 @@ export default defineComponent({
     function getXtermOptions() {
       const bg = getComputedStyle(document.documentElement).getPropertyValue('--color-tooltip-footer-bg').trim()
       const isLight = bg !== '#0e0e1e'
+      const cols = computeXtermCols()
       return {
         theme: isLight ? {
           background: '#f7f7f7',
@@ -181,7 +182,7 @@ export default defineComponent({
         brightMagenta: '#c678dd',
         brightCyan: '#56b6c2',
         brightWhite: '#ffffff',
-        cols: 80,
+        cols,
         rows: 24,
         fontSize: 13,
         fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", "Consolas", "Courier New", monospace',
@@ -194,6 +195,18 @@ export default defineComponent({
       }
     }
 
+    // Compute how many monospace columns fit inside the tooltip container so
+    // the terminal never overflows the popup, even on narrow viewports.
+    function computeXtermCols(): number {
+      const el = tooltipTerminalRef.value
+      if (!el) return 80
+      const avail = Math.min(720, window.innerWidth - 48) - 24
+      const charW = Math.ceil(13 * 0.602)
+      return Math.max(24, Math.floor(avail / charW))
+    }
+
+    let resizeObserver: ResizeObserver | null = null
+
     function setupTooltipXterm(el: HTMLElement) {
       disposeTooltipXterm()
       tooltipTerminal = new Terminal(getXtermOptions())
@@ -203,9 +216,23 @@ export default defineComponent({
           tooltipScrollLine.value = tooltipTerminal.buffer.active.viewportY + 1
         }
       })
+      if (typeof ResizeObserver !== 'undefined') {
+        resizeObserver = new ResizeObserver(() => {
+          if (!tooltipTerminal) return
+          const cols = computeXtermCols()
+          if (cols !== tooltipTerminal.cols) {
+            tooltipTerminal.resize(cols, 24)
+          }
+        })
+        resizeObserver.observe(el)
+      }
     }
 
     function disposeTooltipXterm() {
+      if (resizeObserver) {
+        resizeObserver.disconnect()
+        resizeObserver = null
+      }
       if (tooltipTerminal) {
         tooltipTerminal.dispose()
         tooltipTerminal = null
@@ -230,6 +257,20 @@ export default defineComponent({
     const tooltipStyle = computed(() => {
       if (!tooltip.value) return {}
       const rect = tooltip.value.el.getBoundingClientRect()
+      const isTerminal = tooltip.value.kind === 'terminal'
+      if (isTerminal) {
+        const width = Math.min(720, window.innerWidth - 48)
+        const left = Math.min(
+          Math.max(rect.left + rect.width / 2 - width / 2, 8),
+          Math.max(8, window.innerWidth - width - 8),
+        )
+        return {
+          left: left + 'px',
+          top: (rect.top - 12) + 'px',
+          transform: 'translate(0, -100%)',
+          width: width + 'px',
+        }
+      }
       return {
         left: (rect.left + rect.width / 2) + 'px',
         top: (rect.top - 12) + 'px',
