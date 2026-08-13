@@ -7,21 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.14] - 2026-08-14
+
+### Added
+
+- Add automatic database backups with rolling retention and optional age encryption.
+
+### Fixed
+
+- Restart supervised pods when the watched binary changes despite a failing build.
+- Remove the partial dump file when the age binary cannot be spawned.
+
+## [0.2.13] - 2026-08-05
+
 ### Added
 
 - Tunnel WebSocket upgrades through the serve proxy.
+- Add GitHub-hosted CI fallback to remove the self-hosted single point.
+
+### Changed
+
+- Isolate CI cargo caches per runner via CARGO_HOME.
+
+### Fixed
+
+- Route all HTTP methods through the serve proxy front door.
+
+## [0.2.12] - 2026-08-03
+
+### Fixed
+
+- Restart supervised pods when the watched binary itself changes.
+
+## [0.2.11] - 2026-08-02
 
 ### Changed
 
 - Route compute CI to local self-hosted runner.
-- Update tera requirement from ^1 to ^2.
-- Update sha2 requirement from ^0.10 to ^0.11.
+- Update tera requirement to ^2 and sha2 to ^0.11.
 
 ### Fixed
 
-- Fix matrix gate by splitting official OS legs into manual-only jobs.
 - Pass through backend error responses instead of masking them as offline.
-- Restart supervised pods when the watched binary itself changes.
 
 ### Removed
 
@@ -201,7 +228,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Drive the pages CNAME from config and move to the docs subdomain.
 - Drop `--locked` from npm-release build to let Cargo resolve the lock file.
 
-[Unreleased]: https://github.com/celestia-island/malkuth/compare/v0.2.10...HEAD
+[Unreleased]: https://github.com/celestia-island/malkuth/compare/v0.2.12...HEAD
+[0.2.12]: https://github.com/celestia-island/malkuth/compare/v0.2.10...v0.2.12
 [0.2.10]: https://github.com/celestia-island/malkuth/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/celestia-island/malkuth/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/celestia-island/malkuth/compare/v0.2.6...v0.2.8
