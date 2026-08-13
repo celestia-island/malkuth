@@ -462,7 +462,8 @@ body {
   &__terminal {
     flex: 1;
     min-height: 24em;
-    width: calc(80ch + 16px);
+    width: min(720px, calc(100vw - 48px));
+    max-width: calc(100vw - 32px);
     background: transparent;
     font-family: var(--font-mono);
     font-size: 13px;
