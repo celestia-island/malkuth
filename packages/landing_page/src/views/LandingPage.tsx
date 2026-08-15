@@ -278,13 +278,24 @@ export default defineComponent({
       }
     })
 
+    // Build token served by the backend right now (see malkuth's
+    // probe_backend_epoch). The landing page writes it into the nonce
+    // cookie so the reload after the countdown is proxied straight to
+    // the fresh build — and so the next rebuild invalidates it again,
+    // re-showing this page exactly once per build.
+    let initEpoch = '1'
+
+    function setNonceCookie() {
+      document.cookie = `__malkuth_nonce=${initEpoch}; max-age=604800; path=/`
+    }
+
     function startCountdown() {
       countdown.value = 3
       countdownTimer = setInterval(() => {
         countdown.value--
         if (countdown.value <= 0) {
           clearInterval(countdownTimer)
-          document.cookie = '__malkuth_nonce=1; max-age=1800; path=/'
+          setNonceCookie()
           location.reload()
         }
       }, 1000)
@@ -298,6 +309,7 @@ export default defineComponent({
       watchPaths.value = init.watch_paths || []
       binaries.value = init.binaries || []
       version.value = init.version || '0.2.4'
+      initEpoch = init.epoch || '1'
       const s = init.state || 'landing'
       state.value = s as any
       statusMessage.value = init.message || ''
@@ -312,10 +324,11 @@ export default defineComponent({
         return
       }
 
-      const nonce = parseInt(getCookie('__malkuth_nonce') || '0', 10)
-      if (nonce >= 1) {
-        // A redirect was already attempted (and failed or was cancelled):
-        // show the refresh action only — no countdown, no cancel button.
+      if (getCookie('__malkuth_nonce') === initEpoch) {
+        // The cookie already matches the served build, yet the landing
+        // page is shown: a redirect was already attempted (and failed or
+        // was cancelled). Show the refresh action only — no countdown,
+        // no cancel button.
         redirectAttempted.value = true
         showRefresh.value = true
         return
@@ -560,7 +573,7 @@ export default defineComponent({
         .then(d => {
           statusMessage.value = d.message || ''
           if (d.state === 'ready') {
-            document.cookie = '__malkuth_nonce=1; max-age=1800; path=/'
+            setNonceCookie()
             location.reload()
           } else if (d.state === 'offline') {
             state.value = 'offline'

@@ -502,7 +502,7 @@
     function tick() {
       if (countdownSpan) countdownSpan.textContent = countdownRemaining;
       if (countdownRemaining <= 0) {
-        document.cookie = "__malkuth_nonce=1; max-age=1800; path=/";
+        document.cookie = "__malkuth_nonce={{ malkuth_epoch }}; max-age=604800; path=/";
         location.reload();
         return;
       }
@@ -520,7 +520,7 @@
           statusEl.textContent = data.message;
         }
         if (data.state === "ready") {
-          document.cookie = "__malkuth_nonce=1; max-age=1800; path=/";
+          document.cookie = "__malkuth_nonce={{ malkuth_epoch }}; max-age=604800; path=/";
           location.reload();
           return;
         }
@@ -555,7 +555,7 @@
     startCountdown();
     timer = setInterval(poll, probeTime);
   } else if (initState === "building") {
-    document.cookie = "__malkuth_nonce=1; max-age=1800; path=/";
+    document.cookie = "__malkuth_nonce={{ malkuth_epoch }}; max-age=604800; path=/";
     if (hintEl) { hintEl.innerHTML = ""; }
     if (countdownSpan) { countdownSpan.textContent = "\u2014"; }
     if (countdownUnitEl) { countdownUnitEl.textContent = ""; }
@@ -572,7 +572,7 @@
 
   if (btn) {
     btn.onclick = function() {
-      document.cookie = "__malkuth_nonce=1; max-age=1800; path=/";
+      document.cookie = "__malkuth_nonce={{ malkuth_epoch }}; max-age=604800; path=/";
       location.reload();
     };
   }
