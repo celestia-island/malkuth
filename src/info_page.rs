@@ -138,13 +138,21 @@ pub fn info_router(
     runtime_log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 ) -> Router<()> {
     let backend_state = std::sync::Arc::new(tokio::sync::RwLock::new(BackendState::Unknown));
+    let epoch = std::sync::Arc::new(tokio::sync::RwLock::new("1".to_string()));
 
     if let Some(ref backend_url) = serve_backend {
         let state_arc = backend_state.clone();
+        let epoch_arc = epoch.clone();
         let url = backend_url.clone();
         // Probe once synchronously so the very first landing-page request
-        // already knows whether the backend is reachable (no Unknown window).
+        // already knows whether the backend is reachable (no Unknown window)
+        // and which build the backend currently serves.
         let initial = probe_backend(&url);
+        if let Some(e) = probe_backend_epoch(&url) {
+            if let Ok(mut w) = epoch_arc.try_write() {
+                *w = e;
+            }
+        }
         if let Ok(mut w) = state_arc.try_write() {
             *w = initial;
         }
@@ -153,12 +161,21 @@ pub fn info_router(
                 // Blocking probe on the blocking thread pool so slow backends
                 // never stall an async worker.
                 let probe_url = url.clone();
-                let state = tokio::task::spawn_blocking(move || probe_backend(&probe_url))
-                    .await
-                    .unwrap_or(BackendState::Down);
+                let (state, token) = tokio::task::spawn_blocking(move || {
+                    (probe_backend(&probe_url), probe_backend_epoch(&probe_url))
+                })
+                .await
+                .unwrap_or((BackendState::Down, None));
                 let mut w = state_arc.write().await;
                 *w = state;
                 drop(w);
+                // A failed epoch probe keeps the previous token: a backend
+                // that briefly fails to answer `/` has not necessarily
+                // rolled back to an older build.
+                if let Some(e) = token {
+                    let mut ew = epoch_arc.write().await;
+                    *ew = e;
+                }
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         });
@@ -176,6 +193,7 @@ pub fn info_router(
         build_log,
         runtime_log,
         backend_state,
+        epoch,
     };
     // All methods: with --serve the landing page doubles as a full reverse
     // proxy (JSON-RPC POSTs, PUT/PATCH/DELETE, WS upgrades…). GET-only routing
@@ -200,6 +218,10 @@ struct InfoState {
     build_log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     runtime_log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     backend_state: std::sync::Arc<tokio::sync::RwLock<BackendState>>,
+    /// Build token currently served by the `--serve` backend (see
+    /// [`probe_backend_epoch`]). Clients whose `__malkuth_nonce` cookie
+    /// matches it have already seen the current build.
+    epoch: std::sync::Arc<tokio::sync::RwLock<String>>,
 }
 
 /// Probe the `--serve` backend's reachability with `GET /readyz`.
@@ -239,6 +261,90 @@ fn probe_backend(url: &str) -> BackendState {
         Some(_) => BackendState::Up,
         None => BackendState::Down,
     }
+}
+
+/// Lowercase hex encoder (no external dependency, mirrors `base64_encode`'s
+/// self-contained style).
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+/// Probe the `--serve` backend's document root (`GET /`) and derive a build
+/// token: the first 12 hex chars of the SHA-256 over the response body,
+/// taken only when the backend answers 200 with an HTML document.
+///
+/// The token lets the serve-mode front door tell "this client has already
+/// seen the current build" apart from "a new build landed since the
+/// client's last visit": every rebuild changes the served `index.html`
+/// (hashed asset references) and therefore the token, so each client is
+/// shown the landing interstitial exactly once per build — including
+/// clients that first visit long after the rebuild.
+///
+/// Non-HTML answers (API-only backends), non-200 statuses, empty bodies,
+/// and transport failures yield `None`; the caller then keeps the previous
+/// token, degrading to the plain first-visit behaviour for backends that
+/// serve no HTML document.
+fn probe_backend_epoch(url: &str) -> Option<String> {
+    use sha2::Digest;
+    let host_port = url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .split(['/', '?'])
+        .next()
+        .unwrap_or("");
+    let addr: std::net::SocketAddr = host_port.parse().ok()?;
+    let mut stream = match std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+    use std::io::{Read, Write};
+    // HTTP/1.0 + Connection: close keeps the exchange EOF-delimited without
+    // a chunked/keep-alive parser; no Accept-Encoding means an identity
+    // body, so the hash is over the exact bytes a browser would receive.
+    let req = format!(
+        "GET / HTTP/1.0\r\nHost: {host_port}\r\nAccept: text/html\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(req.as_bytes()).ok()?;
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(1500)));
+    let mut buf = Vec::with_capacity(8 * 1024);
+    // A read timeout surfaces as an error after partial data; bytes read so
+    // far are retained in `buf`, which is still a stable hash input.
+    let _ = stream.read_to_end(&mut buf);
+    if buf.len() > 512 * 1024 {
+        buf.truncate(512 * 1024);
+    }
+    let head_end = buf.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let head = std::str::from_utf8(&buf[..head_end]).ok()?;
+    let mut lines = head.split("\r\n");
+    let status_is_200 = lines
+        .next()?
+        .split_whitespace()
+        .nth(1)
+        .is_some_and(|code| code == "200");
+    if !status_is_200 {
+        return None;
+    }
+    let is_html = lines.any(|l| {
+        l.split_once(':').is_some_and(|(name, value)| {
+            name.trim().eq_ignore_ascii_case("content-type")
+                && value.to_ascii_lowercase().contains("text/html")
+        })
+    });
+    if !is_html {
+        return None;
+    }
+    let body = &buf[head_end + 4..];
+    if body.is_empty() {
+        return None;
+    }
+    let hash = sha2::Sha256::digest(body);
+    Some(hex_encode(&hash)[..12].to_string())
 }
 
 /// Read one HTTP status line (until `\n`, capped at 64 bytes) with a total
@@ -329,6 +435,7 @@ async fn build_spa_init(state: &InfoState, lang: &str) -> serde_json::Value {
         "watch_paths": state.watch_paths,
         "proxy_endpoint": state.proxy_endpoint,
         "version": state.version,
+        "epoch": state.epoch.read().await.clone(),
         "logo_base64": base64_encode(LOGO_BYTES),
     })
 }
@@ -379,6 +486,18 @@ fn backend_host_port(backend: &str) -> Option<&str> {
     (!host_port.is_empty()).then_some(host_port)
 }
 
+/// Build the `__malkuth_nonce` Set-Cookie value that marks a client as
+/// having seen the `epoch` build. Long-lived on purpose: the landing
+/// interstitial is driven by build-token mismatch (every recompile
+/// changes the token), not by cookie expiry, so a client is never dumped
+/// back onto the landing page mid-session for a purely timed reason.
+fn nonce_cookie(epoch: &str) -> header::HeaderValue {
+    let raw = format!("__malkuth_nonce={epoch}; max-age=604800; path=/");
+    header::HeaderValue::from_str(&raw).unwrap_or_else(|_| {
+        header::HeaderValue::from_static("__malkuth_nonce=1; max-age=604800; path=/")
+    })
+}
+
 /// Reverse-proxy an HTTP/1.1 upgrade handshake (WebSocket or other) to the
 /// `--serve` backend over a raw TCP tunnel. reqwest strips hop-by-hop
 /// headers and has no upgrade semantics, so the handshake is written to the
@@ -387,7 +506,7 @@ fn backend_host_port(backend: &str) -> Option<&str> {
 /// (e.g. 404/426) pass through with their full body, with the same
 /// semantics as [`proxy_to_backend`]: only transport failures and
 /// 502/503/504 fall back to the landing page.
-async fn proxy_upgrade(req: Request, backend: &str) -> Result<Response, ()> {
+async fn proxy_upgrade(req: Request, backend: &str, epoch: &str) -> Result<Response, ()> {
     let (mut parts, body) = req.into_parts();
 
     // hyper stores the pending upgrade in the request extensions. Every
@@ -395,7 +514,7 @@ async fn proxy_upgrade(req: Request, backend: &str) -> Result<Response, ()> {
     // means the server cannot upgrade this connection, so fall back to the
     // plain proxy rather than answering 500.
     let Some(on_upgrade) = parts.extensions.remove::<OnUpgrade>() else {
-        return proxy_to_backend_parts(parts, body, backend).await;
+        return proxy_to_backend_parts(parts, body, backend, epoch).await;
     };
 
     let Some(host_port) = backend_host_port(backend) else {
@@ -572,10 +691,9 @@ async fn proxy_upgrade(req: Request, backend: &str) -> Result<Response, ()> {
     let status_code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
     let mut response = Response::new(axum::body::Body::from(resp_body));
     *response.status_mut() = status_code;
-    response.headers_mut().append(
-        header::SET_COOKIE,
-        header::HeaderValue::from_static("__malkuth_nonce=1; max-age=1800; path=/"),
-    );
+    response
+        .headers_mut()
+        .append(header::SET_COOKIE, nonce_cookie(epoch));
     for value in backend_cookies {
         if let Ok(v) = header::HeaderValue::from_bytes(&value) {
             response.headers_mut().append(header::SET_COOKIE, v);
@@ -756,9 +874,9 @@ async fn read_some(
     Ok(n)
 }
 
-async fn proxy_to_backend(req: Request, backend: &str) -> Result<Response, ()> {
+async fn proxy_to_backend(req: Request, backend: &str, epoch: &str) -> Result<Response, ()> {
     let (parts, body) = req.into_parts();
-    proxy_to_backend_parts(parts, body, backend).await
+    proxy_to_backend_parts(parts, body, backend, epoch).await
 }
 
 /// Plain-HTTP forward of a request to the `--serve` backend (reqwest; no
@@ -768,6 +886,7 @@ async fn proxy_to_backend_parts(
     parts: axum::http::request::Parts,
     body: axum::body::Body,
     backend: &str,
+    epoch: &str,
 ) -> Result<Response, ()> {
     let path = parts.uri.path_and_query().map_or("/", |pq| pq.as_str());
     let url = format!("{}{}", backend.trim_end_matches('/'), path);
@@ -856,10 +975,9 @@ async fn proxy_to_backend_parts(
     let mut response = Response::new(axum::body::Body::from(resp_body));
     *response.status_mut() = status;
 
-    response.headers_mut().append(
-        header::SET_COOKIE,
-        header::HeaderValue::from_static("__malkuth_nonce=1; max-age=1800; path=/"),
-    );
+    response
+        .headers_mut()
+        .append(header::SET_COOKIE, nonce_cookie(epoch));
     for value in backend_cookies {
         if let Ok(v) = header::HeaderValue::from_bytes(&value) {
             response.headers_mut().append(header::SET_COOKIE, v);
@@ -878,19 +996,50 @@ async fn proxy_to_backend_parts(
     Ok(response)
 }
 
-/// Read the `__malkuth_nonce` cookie value as a retry counter (0 = first visit).
-fn read_nonce(req: &Request) -> u8 {
+/// Read the raw `__malkuth_nonce` cookie value ("" = absent). The value is
+/// compared against the backend's current build token: matching means the
+/// client has already seen (and been redirected past the landing page for)
+/// the build currently served.
+fn read_nonce(req: &Request) -> String {
     let cookie_header = req.headers().get(header::COOKIE);
     let Some(cookies) = cookie_header.and_then(|v| v.to_str().ok()) else {
-        return 0;
+        return String::new();
     };
     for part in cookies.split(';') {
         let kv = part.trim();
         if let Some(val) = kv.strip_prefix("__malkuth_nonce=") {
-            return val.parse::<u8>().unwrap_or(0);
+            return val.trim().to_string();
         }
     }
-    0
+    String::new()
+}
+
+/// Whether a request that lacks a token for the current build should be
+/// answered with the landing interstitial instead of being forwarded.
+/// Only human-facing document loads qualify — they are the requests whose
+/// response renders as a page, so serving the landing there steers the
+/// client into the fresh build (countdown → cookie → reload). Everything
+/// else (API/XHR calls, POSTs, probes, asset fetches with `Accept: */*`)
+/// is forwarded so a previous-build session and machine clients keep
+/// working.
+fn request_interceptable(req: &Request) -> bool {
+    if !matches!(
+        *req.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD
+    ) {
+        return false;
+    }
+    if let Some(dest) = req
+        .headers()
+        .get("sec-fetch-dest")
+        .and_then(|v| v.to_str().ok())
+    {
+        return matches!(dest, "document" | "iframe");
+    }
+    req.headers()
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|a| a.to_ascii_lowercase().contains("text/html"))
 }
 
 /// JSON probe endpoint for polling landing page.
@@ -961,6 +1110,7 @@ async fn serve_probe(lang: &str, state: &InfoState) -> Response {
         "state": probe_state,
         "message": message,
         "progress": progress,
+        "epoch": state.epoch.read().await.clone(),
         "vttys": [{
             "name": vtty_name,
             "log": log,
@@ -1024,6 +1174,7 @@ async fn serve_landing(lang: &str, state: &InfoState) -> Response {
     ctx.insert("version", &state.version);
     ctx.insert("status_text", init_msg);
     ctx.insert("initial_state", init_state);
+    ctx.insert("malkuth_epoch", &*state.epoch.read().await);
     ctx.insert("task_label", "");
     ctx.insert(
         "redirect_before",
@@ -1102,15 +1253,26 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
                     .is_some_and(|v| v.as_bytes() == h.as_bytes())
             });
         if allowed {
+            let epoch = state.epoch.read().await.clone();
             let nonce = read_nonce(&req);
-            if nonce == 1 {
+            let seen_current_build = !nonce.is_empty() && nonce == epoch;
+            // Requests without a token for the current build still pass
+            // through when they cannot render the interstitial: WebSocket
+            // upgrades, and non-document API/XHR traffic — a still-running
+            // SPA from the previous build must keep functioning until its
+            // next document navigation, which IS intercepted and funnels
+            // the client through the landing page into the new build.
+            let intercept = !seen_current_build
+                && !is_upgrade_request(req.headers())
+                && request_interceptable(&req);
+            if !intercept {
                 // Upgrade handshakes (WebSocket etc.) cannot go through the
                 // reqwest forwarder — detect them from the headers before
                 // consuming the request and tunnel them instead.
                 let proxy_result = if is_upgrade_request(req.headers()) {
-                    proxy_upgrade(req, backend).await
+                    proxy_upgrade(req, backend, &epoch).await
                 } else {
-                    proxy_to_backend(req, backend).await
+                    proxy_to_backend(req, backend, &epoch).await
                 };
                 if let Ok(resp) = proxy_result {
                     return resp;
@@ -1181,6 +1343,9 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
     context.insert("initial_state", "");
     context.insert("task", task);
     context.insert("version", &state.version);
+    // No --serve backend on this path: the cookie token stays at its
+    // legacy constant so the template renders a valid cookie write.
+    context.insert("malkuth_epoch", "1");
 
     let install_method = detect_install_method();
     context.insert(
@@ -1527,6 +1692,7 @@ mod tests {
         ctx.insert("initial_state", "");
         ctx.insert("task", "Startup");
         ctx.insert("logo_base64", "dGVzdA==");
+        ctx.insert("malkuth_epoch", "1");
         ctx.insert("proxy_label", "Proxy");
         ctx.insert("watch_label", "Watching");
         ctx.insert("version", "0.2.0");
@@ -1576,6 +1742,7 @@ mod tests {
         ctx.insert("initial_state", "offline");
         ctx.insert("task", "Landing");
         ctx.insert("logo_base64", "dGVzdA==");
+        ctx.insert("malkuth_epoch", "1");
         ctx.insert("proxy_label", "Proxy");
         ctx.insert("watch_label", "Watching");
         ctx.insert("version", "0.2.8");
@@ -1629,6 +1796,7 @@ mod tests {
         ctx.insert("initial_state", "starting");
         ctx.insert("task", "Landing");
         ctx.insert("logo_base64", "dGVzdA==");
+        ctx.insert("malkuth_epoch", "1");
         ctx.insert("proxy_label", "Proxy");
         ctx.insert("watch_label", "Watching");
         ctx.insert("version", "0.2.10");
@@ -1676,7 +1844,7 @@ mod tests {
             .uri("/")
             .body(axum::body::Body::empty())
             .unwrap();
-        let resp = proxy_to_backend(req, &format!("http://{backend}"))
+        let resp = proxy_to_backend(req, &format!("http://{backend}"), "1")
             .await
             .expect("proxy should succeed");
 
@@ -1733,7 +1901,7 @@ mod tests {
                 .uri("/")
                 .body(axum::body::Body::empty())
                 .unwrap();
-            let resp = proxy_to_backend(req, &format!("http://{backend}"))
+            let resp = proxy_to_backend(req, &format!("http://{backend}"), "1")
                 .await
                 .unwrap_or_else(|_| panic!("status `{status_line}` must pass through"));
 
@@ -1762,7 +1930,7 @@ mod tests {
             .uri("/")
             .body(axum::body::Body::empty())
             .unwrap();
-        let resp = proxy_to_backend(req, &format!("http://{backend}"))
+        let resp = proxy_to_backend(req, &format!("http://{backend}"), "1")
             .await
             .expect("301 must pass through instead of being followed");
 
@@ -1794,7 +1962,7 @@ mod tests {
                 .body(axum::body::Body::empty())
                 .unwrap();
             assert!(
-                proxy_to_backend(req, &format!("http://{backend}"))
+                proxy_to_backend(req, &format!("http://{backend}"), "1")
                     .await
                     .is_err(),
                 "status `{status_line}` must fall back to the landing page"
@@ -1942,7 +2110,7 @@ mod tests {
         let on_upgrade = hyper::upgrade::on(&mut req);
         req.extensions_mut().insert(on_upgrade);
 
-        let resp = proxy_upgrade(req, &format!("http://127.0.0.1:{port}"))
+        let resp = proxy_upgrade(req, &format!("http://127.0.0.1:{port}"), "1")
             .await
             .expect("101 must pass through");
         assert_eq!(resp.status(), StatusCode::SWITCHING_PROTOCOLS);
@@ -1978,7 +2146,7 @@ mod tests {
         let on_upgrade = hyper::upgrade::on(&mut req);
         req.extensions_mut().insert(on_upgrade);
 
-        let resp = proxy_upgrade(req, &format!("http://{backend}"))
+        let resp = proxy_upgrade(req, &format!("http://{backend}"), "1")
             .await
             .expect("404 must pass through instead of being masked");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -2014,7 +2182,7 @@ mod tests {
         let on_upgrade = hyper::upgrade::on(&mut req);
         req.extensions_mut().insert(on_upgrade);
 
-        let resp = proxy_upgrade(req, &format!("http://{backend}"))
+        let resp = proxy_upgrade(req, &format!("http://{backend}"), "1")
             .await
             .expect("chunked 200 must pass through");
         assert_eq!(resp.status(), StatusCode::OK);
@@ -2043,7 +2211,7 @@ mod tests {
         let on_upgrade = hyper::upgrade::on(&mut req);
         req.extensions_mut().insert(on_upgrade);
         assert!(
-            proxy_upgrade(req, &format!("http://127.0.0.1:{port}"))
+            proxy_upgrade(req, &format!("http://127.0.0.1:{port}"), "1")
                 .await
                 .is_err(),
             "unreachable backend must fall back to the landing page"
@@ -2067,7 +2235,7 @@ mod tests {
             let on_upgrade = hyper::upgrade::on(&mut req);
             req.extensions_mut().insert(on_upgrade);
             assert!(
-                proxy_upgrade(req, &format!("http://{backend}"))
+                proxy_upgrade(req, &format!("http://{backend}"), "1")
                     .await
                     .is_err(),
                 "status `{status_line}` must fall back to the landing page"
@@ -2147,5 +2315,345 @@ mod tests {
             out[i * 4..i * 4 + 4].copy_from_slice(&hh.to_be_bytes());
         }
         out
+    }
+
+    // ── Build-epoch landing interstitial ─────────────────────────────
+
+    #[test]
+    fn test_probe_backend_epoch_hashes_html() {
+        let html = "<html><body>build A</body></html>";
+        let hp = spawn_stub_backend(Box::leak(
+            format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{html}", html.len())
+                .into_boxed_str(),
+        ));
+        let first = probe_backend_epoch(&hp).expect("HTML document must yield a token");
+        assert_eq!(first.len(), 12, "token is a 12-char hex prefix");
+        assert!(first.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // Identical body → identical token (content-addressed).
+        let hp = spawn_stub_backend(Box::leak(
+            format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{html}", html.len())
+                .into_boxed_str(),
+        ));
+        assert_eq!(probe_backend_epoch(&hp).as_deref(), Some(first.as_str()));
+
+        // Changed body (a rebuild) → different token.
+        let rebuilt = "<html><body>build B with new asset hashes</body></html>";
+        let hp = spawn_stub_backend(Box::leak(
+            format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{rebuilt}", rebuilt.len())
+                .into_boxed_str(),
+        ));
+        let second = probe_backend_epoch(&hp).expect("rebuilt HTML must yield a token");
+        assert_ne!(first, second, "a rebuild must change the token");
+    }
+
+    #[test]
+    fn test_probe_backend_epoch_rejects_non_html() {
+        // JSON answer (API-only backend) → no token.
+        let hp = spawn_stub_backend(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}",
+        );
+        assert_eq!(probe_backend_epoch(&hp), None);
+
+        // Non-200 status → no token.
+        let hp = spawn_stub_backend(
+            "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+        );
+        assert_eq!(probe_backend_epoch(&hp), None);
+
+        // Nothing listening → no token.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        assert_eq!(probe_backend_epoch(&format!("127.0.0.1:{port}")), None);
+    }
+
+    #[test]
+    fn test_read_nonce_raw_value() {
+        let req = Request::builder()
+            .header(
+                header::COOKIE,
+                "theme=dark; __malkuth_nonce=deadbeefcafe; other=1",
+            )
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(read_nonce(&req), "deadbeefcafe");
+
+        let req = Request::builder()
+            .header(header::COOKIE, "theme=dark")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(read_nonce(&req), "");
+
+        let req = Request::builder().body(axum::body::Body::empty()).unwrap();
+        assert_eq!(read_nonce(&req), "");
+    }
+
+    #[test]
+    fn test_request_interceptable_classification() {
+        let build = |method: &str, hdrs: &[(&str, &str)]| -> Request {
+            let mut b = Request::builder().method(method).uri("/");
+            for (n, v) in hdrs {
+                b = b.header(*n, *v);
+            }
+            b.body(axum::body::Body::empty()).unwrap()
+        };
+
+        // Document loads are intercepted (browser navigation).
+        assert!(request_interceptable(&build(
+            "GET",
+            &[("accept", "text/html,application/xhtml+xml,*/*;q=0.8")]
+        )));
+        assert!(request_interceptable(&build(
+            "GET",
+            &[("sec-fetch-dest", "document")]
+        )));
+        assert!(request_interceptable(&build(
+            "GET",
+            &[("sec-fetch-dest", "iframe"), ("accept", "*/*")]
+        )));
+
+        // API / XHR / machine traffic is forwarded untouched.
+        assert!(!request_interceptable(&build(
+            "GET",
+            &[("accept", "application/json")]
+        )));
+        assert!(!request_interceptable(&build("GET", &[("accept", "*/*")])));
+        assert!(!request_interceptable(&build(
+            "GET",
+            &[("sec-fetch-dest", "empty"), ("accept", "text/html")]
+        )));
+        assert!(!request_interceptable(&build(
+            "POST",
+            &[("accept", "text/html")]
+        )));
+    }
+
+    /// A persistent stub backend: answers any number of connections,
+    /// serving `/` with a swappable HTML document (to simulate a
+    /// rebuild), `/api/data` with JSON, and `/readyz` with 200.
+    struct RebuildableBackend {
+        port: u16,
+        doc: std::sync::Arc<std::sync::Mutex<String>>,
+    }
+
+    impl RebuildableBackend {
+        fn start() -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let doc = std::sync::Arc::new(std::sync::Mutex::new(
+                "<html><body>app build one</body></html>".to_string(),
+            ));
+            let doc2 = std::sync::Arc::clone(&doc);
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { continue };
+                    let doc = std::sync::Arc::clone(&doc2);
+                    std::thread::spawn(move || {
+                        use std::io::{Read, Write};
+                        let mut buf = [0u8; 2048];
+                        let _ = stream.read(&mut buf);
+                        let head = String::from_utf8_lossy(&buf);
+                        let path = head
+                            .split_whitespace()
+                            .nth(1)
+                            .unwrap_or("/")
+                            .split('?')
+                            .next()
+                            .unwrap_or("/")
+                            .to_string();
+                        let (ctype, body) = match path.as_str() {
+                            "/readyz" => ("text/plain", "ok".to_string()),
+                            "/api/data" => ("application/json", r#"{"data":42}"#.to_string()),
+                            _ => ("text/html; charset=utf-8", doc.lock().unwrap().clone()),
+                        };
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        let _ = stream.write_all(resp.as_bytes());
+                    });
+                }
+            });
+            Self { port, doc }
+        }
+
+        fn url(&self) -> String {
+            format!("http://127.0.0.1:{}", self.port)
+        }
+
+        /// Swap the served document — a "rebuild".
+        fn rebuild(&self, html: &str) {
+            *self.doc.lock().unwrap() = html.to_string();
+        }
+    }
+
+    /// End-to-end serve-door behaviour, driven through the real router:
+    /// first document visit → landing; API traffic without a token →
+    /// forwarded (and stamped with the build token); document visit with
+    /// the current token → forwarded; after a rebuild the old token no
+    /// longer unlocks the document, while API traffic keeps flowing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_serve_door_landing_per_build() {
+        let backend = RebuildableBackend::start();
+
+        let router = info_router(
+            "test".to_string(),
+            InfoStatus::Landing,
+            vec![],
+            None,
+            vec![],
+            Some(backend.url()),
+            vec![],
+            std::sync::Arc::new(std::sync::Mutex::new(None)),
+            std::sync::Arc::new(std::sync::Mutex::new(vec![])),
+            std::sync::Arc::new(std::sync::Mutex::new(vec![])),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let door = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+
+        // Machine client for the door: no env proxies, no cookie store,
+        // no redirect following — the nonce cookie is driven explicitly.
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let door_url = format!("http://{door}");
+
+        // 1. First document visit (browser navigation): landing page, not
+        //    the app. Must hold for both the real SPA landing and the
+        //    minimal stub fallback.
+        let resp = client
+            .get(format!("{door_url}/"))
+            .header("accept", "text/html,application/xhtml+xml,*/*;q=0.8")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(
+            resp.headers()
+                .get(header::CONTENT_TYPE)
+                .is_some_and(|v| v.as_bytes().starts_with(b"text/html"))
+        );
+        let body = resp.text().await.unwrap();
+        assert!(
+            !body.contains("app build one"),
+            "first document visit must see the landing page, not the backend document"
+        );
+
+        // 2. API traffic without a token: forwarded, and the response
+        //    stamps the current build token.
+        let resp = client
+            .get(format!("{door_url}/api/data"))
+            .header("accept", "application/json")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let stamp = resp
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .expect("proxied response must stamp the build token")
+            .to_string();
+        let epoch = stamp
+            .strip_prefix("__malkuth_nonce=")
+            .and_then(|rest| rest.split(';').next())
+            .expect("stamp must be the __malkuth_nonce cookie")
+            .to_string();
+        assert_eq!(epoch.len(), 12, "token must be the hashed document");
+        let body = resp.text().await.unwrap();
+        assert_eq!(body, "{\"data\":42}", "API traffic must reach the backend");
+
+        // 3. Document visit with the current token: forwarded to the app.
+        let resp = client
+            .get(format!("{door_url}/"))
+            .header("accept", "text/html")
+            .header(header::COOKIE, format!("__malkuth_nonce={epoch}"))
+            .send()
+            .await
+            .unwrap();
+        let body = resp.text().await.unwrap();
+        assert!(
+            body.contains("app build one"),
+            "a matching token must unlock the backend document"
+        );
+
+        // 4. Rebuild: wait for the probe loop to pick up the new document
+        //    (poll the stamped token on the API path), then verify the old
+        //    token re-locks the document while API traffic keeps flowing.
+        backend.rebuild("<html><body>app build two</body></html>");
+        let mut new_epoch = None;
+        for _ in 0..80 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let resp = client
+                .get(format!("{door_url}/api/data"))
+                .header("accept", "application/json")
+                .send()
+                .await
+                .unwrap();
+            let stamp = resp
+                .headers()
+                .get(header::SET_COOKIE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            if let Some(e) = stamp
+                .strip_prefix("__malkuth_nonce=")
+                .and_then(|rest| rest.split(';').next())
+            {
+                if e != epoch {
+                    new_epoch = Some(e.to_string());
+                    break;
+                }
+            }
+        }
+        let new_epoch = new_epoch.expect("probe loop must observe the rebuilt document token");
+
+        // Old token: landing again (the once-per-build interstitial).
+        let resp = client
+            .get(format!("{door_url}/"))
+            .header("accept", "text/html")
+            .header(header::COOKIE, format!("__malkuth_nonce={epoch}"))
+            .send()
+            .await
+            .unwrap();
+        let body = resp.text().await.unwrap();
+        assert!(
+            !body.contains("app build"),
+            "a stale token must re-show the landing page after a rebuild"
+        );
+
+        // New token: the rebuilt document.
+        let resp = client
+            .get(format!("{door_url}/"))
+            .header("accept", "text/html")
+            .header(header::COOKIE, format!("__malkuth_nonce={new_epoch}"))
+            .send()
+            .await
+            .unwrap();
+        let body = resp.text().await.unwrap();
+        assert!(
+            body.contains("app build two"),
+            "the new token must unlock the rebuilt document"
+        );
+
+        // Old-token API traffic still flows (previous-build sessions keep
+        // working until their next document navigation).
+        let resp = client
+            .get(format!("{door_url}/api/data"))
+            .header("accept", "application/json")
+            .header(header::COOKIE, format!("__malkuth_nonce={epoch}"))
+            .send()
+            .await
+            .unwrap();
+        let body = resp.text().await.unwrap();
+        assert_eq!(body, "{\"data\":42}");
     }
 }

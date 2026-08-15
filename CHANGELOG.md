@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.15] - 2026-08-15
+
+### Added
+
+- Bind the serve-mode landing interstitial to a per-build token derived from the backend's served document, so every client sees the landing page exactly once per rebuild (first visits included) instead of once per cookie lifetime.
+- Forward non-document API/XHR traffic from previous-build sessions through the serve door while their document loads are intercepted, keeping stale SPAs functional across a rebuild until their next navigation.
+
+### Changed
+
+- Extend the `__malkuth_nonce` cookie lifetime from 30 minutes to 7 days; re-showing the landing page is now driven by build-token mismatch rather than cookie expiry.
+
 ## [0.2.14] - 2026-08-14
 
 ### Added

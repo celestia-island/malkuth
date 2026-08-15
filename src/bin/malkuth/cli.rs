@@ -110,6 +110,15 @@ pub struct Args {
     /// (k8s-style): connection failure shows an offline notice; a 503
     /// readiness response shows a starting-up notice; any other HTTP
     /// response counts as reachable. HTTPS backends cannot be probed.
+    ///
+    /// The door also derives a build token from the backend's served `/`
+    /// document (SHA-256 of the HTML) and mirrors it into the client's
+    /// `__malkuth_nonce` cookie. A client whose cookie matches the current
+    /// token is forwarded immediately; a client without a token (first
+    /// visit) or with a token from an earlier build (the backend was
+    /// rebuilt) first sees the landing page once — its countdown then
+    /// re-enters the fresh build. Non-document API/XHR traffic is always
+    /// forwarded so previous-build sessions keep working across a rebuild.
     #[arg(long = "serve", value_name = "URL")]
     pub serve: Option<String>,
 
