@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.17] - 2026-08-15
+
+### Fixed
+
+- Lay the landing page info rows out as a two-column grid with a shrinkable, left-aligned value column so long watch paths truncate with an ellipsis at any viewport width instead of overflowing the card, and unify the row alignment (labels and values share one left edge).
+
 ## [0.2.16] - 2026-08-15
 
 ### Fixed

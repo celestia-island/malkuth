@@ -114,40 +114,47 @@
     0%, 100% { opacity: 1; }
     50% { opacity: 0.7; }
   }
+  /* Two-column grid (label | value) with a shrinkable value column: long
+     paths truncate with an ellipsis at whatever width is available instead
+     of pushing the card wider, and all cells share one left edge. */
   .info-row {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: minmax(70px, auto) minmax(0, 1fr);
+    align-items: start;
+    column-gap: 12px;
     padding: 8px 0;
     border-bottom: 1px solid var(--divider);
     font-size: 0.8125rem;
-    gap: 12px;
   }
   .info-row:last-of-type { border-bottom: none; }
   .info-label {
     color: var(--label);
-    flex-shrink: 0;
-    min-width: 70px;
     text-align: left;
+    white-space: nowrap;
   }
   .info-value {
     color: var(--value);
     font-weight: 500;
     font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
-    text-align: right;
-    word-break: break-all;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .watch-list {
     display: flex;
     flex-direction: column;
     gap: 4px;
-    text-align: right;
+    text-align: left;
+    /* min-width: 0 lets the grid track shrink so the ellipsis engages. */
+    min-width: 0;
   }
   .watch-item {
     font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
     font-size: 0.75rem;
     color: var(--value);
-    max-width: 260px;
+    /* Fill the value column; the ellipsis truncates as needed at any width. */
+    max-width: 100%;
     position: relative;
     cursor: pointer;
   }
