@@ -255,14 +255,18 @@ body {
 
 /* ── Info Row ── */
 
+/* Two-column grid (label | value) with a shrinkable value column: long
+   paths truncate with an ellipsis at whatever width is available instead
+   of pushing the card wider, and every cell shares one left edge so the
+   rows read as a balanced, uniformly left-aligned block. */
 .info-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(70px, auto) minmax(0, 1fr);
+  align-items: start;
+  column-gap: 12px;
   padding: 8px 0;
   border-bottom: 1px solid var(--color-divider);
   font-size: 0.8125rem;
-  gap: 12px;
 
   &:last-of-type {
     border-bottom: none;
@@ -270,24 +274,28 @@ body {
 
   &__label {
     color: var(--color-label);
-    flex-shrink: 0;
-    min-width: 70px;
     text-align: left;
+    white-space: nowrap;
   }
 
   &__value {
     color: var(--color-value);
     font-weight: 500;
     font-family: var(--font-mono);
-    text-align: right;
-    word-break: break-all;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   &__watch {
     display: flex;
     flex-direction: column;
     gap: 4px;
-    text-align: right;
+    text-align: left;
+    /* min-width: 0 lets the grid track actually shrink below the content
+       width so the ellipsis engages instead of overflowing the card. */
+    min-width: 0;
   }
 }
 
@@ -297,7 +305,9 @@ body {
   font-family: var(--font-mono);
   font-size: 0.75rem;
   color: var(--color-value);
-  max-width: 260px;
+  /* Fill the value column: the ellipsis above truncates as needed at any
+     viewport width (the old fixed 260px cap overflowed narrow cards). */
+  max-width: 100%;
   position: relative;
   cursor: pointer;
 
