@@ -315,17 +315,18 @@ fn probe_backend_epoch(url: &str) -> Option<String> {
     let mut buf = Vec::with_capacity(8 * 1024);
     // A read timeout surfaces as an error after partial data; bytes read so
     // far are retained in `buf`, which is still a stable hash input.
-    let read = stream.read_to_end(&mut buf);
-    if read.is_err() {
-        // Body incomplete within the read budget (slow/trickling backend):
-        // hash what arrived so the token stays deterministic. A partial
-        // hash can differ from the full-body hash stamped on proxied
-        // responses, costing one extra landing interstitial until the
-        // next probe completes — warn so ops can trace it.
+    if stream.read_to_end(&mut buf).is_err() {
+        // Body incomplete within the read budget (slow/trickling backend).
+        // Hashing the partial bytes would risk a token that flips between
+        // probe cycles whenever the delivery time jitters around the
+        // budget, re-showing the landing interstitial on every flip.
+        // Keep the previous token instead: one missed update costs at
+        // most a late landing cycle, never a flap.
         tracing::warn!(
             bytes = buf.len(),
-            "epoch probe body read incomplete; hashing partial body"
+            "epoch probe body read incomplete; keeping previous build token"
         );
+        return None;
     }
     if buf.len() > 512 * 1024 {
         buf.truncate(512 * 1024);
@@ -2354,6 +2355,29 @@ mod tests {
         ));
         let second = probe_backend_epoch(&hp).expect("rebuilt HTML must yield a token");
         assert_ne!(first, second, "a rebuild must change the token");
+    }
+
+    /// A backend that sends its head plus a partial body and then stalls
+    /// (never closes within the read budget) must NOT yield a token: the
+    /// partial hash could flip between probe cycles whenever the delivery
+    /// time jitters around the budget, re-showing the landing page on
+    /// every flip. The previous token must be kept instead (None here).
+    #[test]
+    fn test_probe_backend_epoch_rejects_partial_body() {
+        let hp = spawn_custom_backend(|mut stream| {
+            use std::io::Write;
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: 100\r\n\r\n<html><body>part",
+            );
+            // Hold the connection open well past the probe budget without
+            // delivering the remaining body bytes.
+            std::thread::sleep(Duration::from_millis(3000));
+        });
+        assert_eq!(
+            probe_backend_epoch(&hp),
+            None,
+            "a stalled partial body must not be hashed into a build token"
+        );
     }
 
     #[test]

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.16] - 2026-08-15
+
+### Fixed
+
+- Keep the previous build token when the epoch probe's body read times out instead of hashing the partial body, which could flip the token between probe cycles on backends whose document delivery time jitters around the read budget.
+
 ## [0.2.15] - 2026-08-15
 
 ### Added
