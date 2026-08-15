@@ -315,7 +315,18 @@ fn probe_backend_epoch(url: &str) -> Option<String> {
     let mut buf = Vec::with_capacity(8 * 1024);
     // A read timeout surfaces as an error after partial data; bytes read so
     // far are retained in `buf`, which is still a stable hash input.
-    let _ = stream.read_to_end(&mut buf);
+    let read = stream.read_to_end(&mut buf);
+    if read.is_err() {
+        // Body incomplete within the read budget (slow/trickling backend):
+        // hash what arrived so the token stays deterministic. A partial
+        // hash can differ from the full-body hash stamped on proxied
+        // responses, costing one extra landing interstitial until the
+        // next probe completes — warn so ops can trace it.
+        tracing::warn!(
+            bytes = buf.len(),
+            "epoch probe body read incomplete; hashing partial body"
+        );
+    }
     if buf.len() > 512 * 1024 {
         buf.truncate(512 * 1024);
     }
@@ -1230,7 +1241,6 @@ async fn serve_landing(lang: &str, state: &InfoState) -> Response {
     ctx.insert("copied_msg", "");
     ctx.insert("copy_fail_msg", "");
     ctx.insert("logo_base64", &base64_encode(LOGO_BYTES));
-    ctx.insert("landing_nonce", &0u8);
 
     match tera::Tera::one_off(TEMPLATE, &ctx, false) {
         Ok(html) => Html(html).into_response(),
@@ -1339,7 +1349,6 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
     );
     context.insert("ready", &ready);
     context.insert("landing", &landing);
-    context.insert("landing_nonce", &0u8);
     context.insert("initial_state", "");
     context.insert("task", task);
     context.insert("version", &state.version);
