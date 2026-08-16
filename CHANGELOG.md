@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.18] - 2026-08-16
+
+### Fixed
+
+- Make "Refresh Now" on the serve-mode landing page stamp the `__malkuth_nonce` cookie with the build token the door currently serves (probed live before reloading) instead of deleting it, so a manual refresh re-enters the backend immediately; deleting the token guaranteed the next document load was intercepted again, which trapped clients that had already spent their countdown (e.g. cancelled at the last tick by pinning a binary's log tooltip) in a landing-page loop while the backend was briefly unreachable mid-restart.
+- Poll every 2s from the already-redirected state (cookie matches the served build yet the landing page is shown) so a client bounced back by a transient proxy failure during a backend restart recovers on its own instead of sitting on a dead page until a manual reopen.
+- Track the live build token in the landing page's background probe so a backend rebuild that happens while the page is open re-stamps the cookie with the fresh token before the ready-reload, instead of bouncing off the door with a stale one.
+- Report a `serve` capability flag from both the JSON probe and the SPA init (true only for a `--serve` door whose `--serve-host` allowlist admits the request's Host) and gate the landing page's poll-driven ready-reload on it, so a page served by a non-proxy door — no `--serve` backend, or a restricted Host — never reloads itself in a loop it cannot exit; this also fixes the pre-existing loop for non-serve doors in the building state.
+
 ## [0.2.17] - 2026-08-15
 
 ### Fixed
