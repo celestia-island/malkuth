@@ -399,7 +399,7 @@ fn read_http_status_code(stream: &mut std::net::TcpStream, budget: Duration) -> 
     code_part.split_whitespace().next()?.parse().ok()
 }
 
-async fn build_spa_init(state: &InfoState, lang: &str) -> serde_json::Value {
+async fn build_spa_init(state: &InfoState, lang: &str, allowed: bool) -> serde_json::Value {
     let i18n = get_i18n(lang);
     let (spa_state, message) = if state.serve_backend.is_some() {
         // Serve mode: reflect the real-time backend health so the landing
@@ -449,11 +449,16 @@ async fn build_spa_init(state: &InfoState, lang: &str) -> serde_json::Value {
         "version": state.version,
         "epoch": state.epoch.read().await.clone(),
         "logo_base64": base64_encode(LOGO_BYTES),
+        // Whether a reload of this origin can actually be proxied into the
+        // backend (see `info_page`'s `serve_allowed`). The landing page uses
+        // it to skip its poll-driven ready-reload on doors that can only
+        // re-render themselves, where reloading is a no-op loop.
+        "serve": state.serve_backend.is_some() && allowed,
     })
 }
 
-async fn serve_spa(state: &InfoState, lang: &str) -> Response {
-    let init_data = build_spa_init(state, lang).await;
+async fn serve_spa(state: &InfoState, lang: &str, allowed: bool) -> Response {
+    let init_data = build_spa_init(state, lang, allowed).await;
     let init_json = serde_json::to_string(&init_data).unwrap_or_default();
     let init_script = format!("<script>window.__MALKUTH_INIT__ = {};</script>", init_json);
     let result = LANDING_PAGE_HTML.replacen("</head>", &format!("{init_script}</head>"), 1);
@@ -1055,7 +1060,7 @@ fn request_interceptable(req: &Request) -> bool {
 }
 
 /// JSON probe endpoint for polling landing page.
-async fn serve_probe(lang: &str, state: &InfoState) -> Response {
+async fn serve_probe(lang: &str, state: &InfoState, allowed: bool) -> Response {
     let backend_state = *state.backend_state.read().await;
     let backend_up = state.serve_backend.is_some() && backend_state == BackendState::Up;
 
@@ -1123,6 +1128,12 @@ async fn serve_probe(lang: &str, state: &InfoState) -> Response {
         "message": message,
         "progress": progress,
         "epoch": state.epoch.read().await.clone(),
+        // Whether the polling client may act on "ready" with a stamp+reload:
+        // only doors that will actually proxy this origin qualify (see
+        // `info_page`'s `serve_allowed`). Without this a landing page served
+        // by a non-proxy door (no --serve, or a --serve-host mismatch) would
+        // reload itself in a loop, since its reload can never reach a backend.
+        "serve": state.serve_backend.is_some() && allowed,
         "vttys": [{
             "name": vtty_name,
             "log": log,
@@ -1252,17 +1263,27 @@ async fn serve_landing(lang: &str, state: &InfoState) -> Response {
 async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Response {
     let lang = detect_language(req.headers());
 
+    // Whether this request's origin (Host header) may be proxied to the
+    // --serve backend. Computed once, up front, so the JSON probe and the
+    // SPA init report the same capability the document path enforces —
+    // a landing page told "serve: false" must never assume a reload can
+    // carry it into the backend (no --serve backend configured, or a
+    // --serve-host restriction excluding this origin), or its poll-driven
+    // ready-reload would loop forever on a page that can only re-render
+    // itself.
+    let serve_allowed = state.serve_hosts.is_empty()
+        || state.serve_hosts.iter().any(|h| {
+            req.headers()
+                .get(header::HOST)
+                .is_some_and(|v| v.as_bytes() == h.as_bytes())
+        });
+
     if req.headers().get("x-malkuth-probe").is_some() {
-        return serve_probe(&lang, &state).await;
+        return serve_probe(&lang, &state, serve_allowed).await;
     }
 
     if let Some(ref backend) = state.serve_backend {
-        let allowed = state.serve_hosts.is_empty()
-            || state.serve_hosts.iter().any(|h| {
-                req.headers()
-                    .get(header::HOST)
-                    .is_some_and(|v| v.as_bytes() == h.as_bytes())
-            });
+        let allowed = serve_allowed;
         if allowed {
             let epoch = state.epoch.read().await.clone();
             let nonce = read_nonce(&req);
@@ -1290,14 +1311,14 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
                 }
             }
             if !LANDING_PAGE_HTML.starts_with("<html><body><h1>Malkuth</h1>") {
-                return serve_spa(&state, &lang).await;
+                return serve_spa(&state, &lang, allowed).await;
             }
             return serve_landing(&lang, &state).await;
         }
     }
 
     if !LANDING_PAGE_HTML.starts_with("<html><body><h1>Malkuth</h1>") {
-        return serve_spa(&state, &lang).await;
+        return serve_spa(&state, &lang, serve_allowed).await;
     }
 
     // Normal (non-serve) rendering below
@@ -2688,5 +2709,128 @@ mod tests {
             .unwrap();
         let body = resp.text().await.unwrap();
         assert_eq!(body, "{\"data\":42}");
+    }
+
+    /// The JSON probe and the SPA init must tell the landing page whether
+    /// its origin can actually be proxied into the backend, so the page
+    /// never enters a poll-driven reload loop on a door that can only
+    /// re-render itself. `serve` is true only for a `--serve` door whose
+    /// `--serve-host` allowlist admits the request's Host; false for
+    /// host mismatches and for plain info doors without `--serve`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_probe_reports_serve_capability() {
+        // Serve a router on a pre-bound listener. `serve_hosts_mode`:
+        // "empty" (no restriction), "own" (restrict to this door's own
+        // host:port — what reqwest sends as Host by default), or
+        // "foreign" (restrict to an unrelated host, so this origin is
+        // never proxied).
+        async fn spawn_router(
+            serve_backend: Option<String>,
+            serve_hosts_mode: &str,
+        ) -> (reqwest::Client, String) {
+            // Bind first so the door's own host:port is known before the
+            // router (and its --serve-host allowlist) is constructed.
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let door = listener.local_addr().unwrap();
+            let serve_hosts = match serve_hosts_mode {
+                "own" => vec![door.to_string()],
+                "foreign" => vec!["other.example".to_string()],
+                _ => vec![],
+            };
+            let router = info_router(
+                "test".to_string(),
+                InfoStatus::Landing,
+                vec![],
+                None,
+                vec![],
+                serve_backend,
+                serve_hosts,
+                std::sync::Arc::new(std::sync::Mutex::new(None)),
+                std::sync::Arc::new(std::sync::Mutex::new(vec![])),
+                std::sync::Arc::new(std::sync::Mutex::new(vec![])),
+            );
+            tokio::spawn(async move {
+                let _ = axum::serve(listener, router).await;
+            });
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap();
+            (client, format!("http://{door}"))
+        }
+
+        async fn probe_serve(client: &reqwest::Client, door_url: &str) -> bool {
+            let body = client
+                .get(format!("{door_url}/"))
+                .header("x-malkuth-probe", "1")
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+            json.get("serve")
+                .and_then(|v| v.as_bool())
+                .expect("probe JSON must carry a boolean serve capability")
+        }
+
+        let backend = RebuildableBackend::start();
+
+        // 1. Plain info door (no --serve): never proxied.
+        let (client, door_url) = spawn_router(None, "empty").await;
+        assert!(
+            !probe_serve(&client, &door_url).await,
+            "a door without --serve must report serve=false"
+        );
+
+        // 2. Serve door without host restrictions: proxied for any Host.
+        let (client, door_url) = spawn_router(Some(backend.url()), "empty").await;
+        assert!(
+            probe_serve(&client, &door_url).await,
+            "an unrestricted --serve door must report serve=true"
+        );
+
+        // 3. Serve door restricted to this door's own Host (what reqwest
+        //    sends by default): the probe must agree with the document
+        //    path — allowed.
+        let (client, door_url) = spawn_router(Some(backend.url()), "own").await;
+        assert!(
+            probe_serve(&client, &door_url).await,
+            "a --serve-host matching the request Host must report serve=true"
+        );
+
+        // The SPA init must agree with the probe for the same origin.
+        let body = client
+            .get(format!("{door_url}/"))
+            .header("accept", "text/html")
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        if let Some(start) = body.find("__MALKUTH_INIT__ = ") {
+            let rest = &body[start + "__MALKUTH_INIT__ = ".len()..];
+            let end = rest.find("</script>").expect("init script must terminate");
+            let json_str = rest[..end].trim().trim_end_matches(';');
+            let json: serde_json::Value =
+                serde_json::from_str(json_str).expect("init must be valid JSON");
+            assert_eq!(
+                json.get("serve").and_then(|v| v.as_bool()),
+                Some(true),
+                "the SPA init must report serve=true on an allowed origin"
+            );
+        }
+
+        // 4. Serve door restricted to a different Host: this origin is not
+        //    proxied — the probe must say so, or a landing page polling
+        //    "ready" would reload itself in a loop.
+        let (client, door_url) = spawn_router(Some(backend.url()), "foreign").await;
+        assert!(
+            !probe_serve(&client, &door_url).await,
+            "a --serve-host mismatch must report serve=false"
+        );
     }
 }

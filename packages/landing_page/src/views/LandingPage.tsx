@@ -285,6 +285,14 @@ export default defineComponent({
     // re-showing this page exactly once per build.
     let initEpoch = '1'
 
+    // Whether this origin is served through malkuth's reverse proxy
+    // (`--serve` + a matching `--serve-host`). On doors that can only
+    // re-render the info page (no --serve backend, or a restricted host)
+    // a reload can never carry the client into a backend, so every
+    // reload-driven recovery path below must be skipped there — polling
+    // "ready" and reloading would loop forever on a static page.
+    let canProxy = true
+
     function setNonceCookie() {
       document.cookie = `__malkuth_nonce=${initEpoch}; max-age=604800; path=/`
     }
@@ -310,6 +318,7 @@ export default defineComponent({
       binaries.value = init.binaries || []
       version.value = init.version || '0.2.4'
       initEpoch = init.epoch || '1'
+      canProxy = init.serve !== false
       const s = init.state || 'landing'
       state.value = s as any
       statusMessage.value = init.message || ''
@@ -326,11 +335,18 @@ export default defineComponent({
 
       if (getCookie('__malkuth_nonce') === initEpoch) {
         // The cookie already matches the served build, yet the landing
-        // page is shown: a redirect was already attempted (and failed or
-        // was cancelled). Show the refresh action only — no countdown,
-        // no cancel button.
+        // page is shown: a redirect was already attempted (the reload was
+        // answered by this page because the proxy could not reach the
+        // backend — e.g. mid-restart — or the redirect was cancelled).
+        // Show the refresh action only — no countdown, no cancel button.
+        // Keep polling on proxy doors: they only bounce a matching
+        // cookie back here while the backend is unreachable, so the page
+        // recovers by itself instead of waiting for a manual click.
         redirectAttempted.value = true
         showRefresh.value = true
+        if (canProxy) {
+          pollTimer = setInterval(probe, 2000)
+        }
         return
       }
 
@@ -538,8 +554,24 @@ export default defineComponent({
     }
 
     function doRefresh() {
-      document.cookie = '__malkuth_nonce=; max-age=0; path=/'
-      location.reload()
+      // "Refresh now" must re-enter the fresh build immediately: ask the
+      // door for the build token it currently serves, stamp the nonce
+      // cookie with it, and reload straight through the proxy. Deleting
+      // the cookie (the previous behavior) guaranteed the next document
+      // load was intercepted again — a client that had already spent its
+      // countdown (e.g. cancelled by pinning a binary's log tooltip at
+      // the last tick) bounced back onto this page with no countdown
+      // left, trapping it on the interstitial.
+      fetch('/', { headers: { 'X-Malkuth-Probe': '1' } })
+        .then(r => r.json())
+        .then(d => {
+          if (d && d.epoch) initEpoch = d.epoch
+        })
+        .catch(() => {})
+        .finally(() => {
+          setNonceCookie()
+          location.reload()
+        })
     }
 
     function formatTime(ts: number): string {
@@ -572,7 +604,20 @@ export default defineComponent({
         .then(r => r.json())
         .then(d => {
           statusMessage.value = d.message || ''
+          // Track the live build token: this page render may be older
+          // than the build the door serves now (backend rebuilt while
+          // the page was open). Stamping a stale token would bounce the
+          // ready-reload straight back onto the landing page.
+          if (d.epoch) initEpoch = d.epoch
+          if (d.serve !== undefined) canProxy = d.serve !== false
           if (d.state === 'ready') {
+            // Only a proxy door can turn this reload into a real entry
+            // into the backend; on a static info door reloading is a
+            // no-op that would loop (probe always reports ready there).
+            if (!canProxy) {
+              state.value = 'ready'
+              return
+            }
             setNonceCookie()
             location.reload()
           } else if (d.state === 'offline') {
