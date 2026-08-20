@@ -119,7 +119,40 @@ impl PodManager {
                 }
                 self.publish_backends().await;
             } else {
-                warn!(pod = id, port, "pod did not become ready in time");
+                // Readiness missed its initial window (slow start: cold DB
+                // recovery, slow imports, …) but the pod process is still
+                // alive. Previously the pod was then NEVER registered — the
+                // sticky proxy kept an empty ring and reset every
+                // connection (the node-3 8421 outage) until malkuth itself
+                // restarted. Keep probing in a race against pod exit: the
+                // moment the port answers, register; if the pod dies first,
+                // fall through to the respawn path as before.
+                warn!(pod = id, port, "pod did not become ready in time; continuing to probe while it lives");
+                let mut late_ready = false;
+                loop {
+                    tokio::select! {
+                        biased;
+                        ready = self.probe_ready(port) => {
+                            if ready {
+                                late_ready = true;
+                                break;
+                            }
+                            sleep(Duration::from_secs(2)).await;
+                        },
+                        status = child.wait() => {
+                            warn!(pod = id, ?status, "pod exited before becoming ready");
+                            break;
+                        },
+                    }
+                }
+                if late_ready {
+                    info!(pod = id, port, "pod became ready late; registering with proxy");
+                    {
+                        let mut meta = self.meta.lock().await;
+                        meta.insert(id, PodMeta { port });
+                    }
+                    self.publish_backends().await;
+                }
             }
 
             // Wait for either a natural exit or an explicit restart request.
@@ -219,6 +252,15 @@ impl PodManager {
             sleep(Duration::from_millis(150)).await;
         }
         false
+    }
+
+    /// Single readiness probe (one TCP connect attempt). Used by the
+    /// late-readiness loop after the initial window is missed.
+    async fn probe_ready(&self, port: u16) -> bool {
+        let addr: SocketAddr = format!("{}:{}", self.host, port)
+            .parse()
+            .unwrap_or_else(|_| format!("127.0.0.1:{port}").parse().unwrap());
+        TcpStream::connect(addr).await.is_ok()
     }
 }
 
