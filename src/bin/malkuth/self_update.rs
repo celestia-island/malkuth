@@ -69,23 +69,28 @@ pub fn inherited_listener_fd() -> Option<i32> {
 mod tests {
     use super::*;
 
+    /// All inherited-fd cases in ONE test: they mutate the same process
+    /// environment variable, so running them as separate #[test]s races
+    /// (one test's remove_var lands between another's set_var and assert)
+    /// and flakes on loaded CI runners. Sequential here, deterministic.
     #[test]
-    fn inherited_fd_none_when_env_unset() {
+    fn inherited_fd_env_handling() {
+        // Unset → None.
         unsafe { std::env::remove_var(LISTEN_FD_ENV) };
         assert!(inherited_listener_fd().is_none());
-    }
 
-    #[test]
-    fn inherited_fd_parses_valid() {
+        // Valid fd number → Some(fd).
         unsafe { std::env::set_var(LISTEN_FD_ENV, "5") };
         assert_eq!(inherited_listener_fd(), Some(5));
-        unsafe { std::env::remove_var(LISTEN_FD_ENV) };
-    }
 
-    #[test]
-    fn inherited_fd_ignores_invalid() {
+        // Non-numeric → None.
         unsafe { std::env::set_var(LISTEN_FD_ENV, "not_a_number") };
         assert!(inherited_listener_fd().is_none());
+
+        // Below the std-fd range → None.
+        unsafe { std::env::set_var(LISTEN_FD_ENV, "2") };
+        assert!(inherited_listener_fd().is_none());
+
         unsafe { std::env::remove_var(LISTEN_FD_ENV) };
     }
 }
