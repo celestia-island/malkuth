@@ -78,6 +78,14 @@ impl PodManager {
         }
     }
 
+    /// Override the initial readiness window (tests only; production keeps
+    /// the 30s default).
+    #[cfg(test)]
+    pub(crate) fn with_readiness_timeout(mut self, d: Duration) -> Self {
+        self.readiness_timeout = d;
+        self
+    }
+
     /// Spawn one supervision task per pod and return.
     pub async fn run(self: Arc<Self>) {
         for &id in self.ports.keys() {
@@ -111,7 +119,23 @@ impl PodManager {
                     continue;
                 }
             };
-            if self.wait_ready(port).await {
+            // Whether the child is still running when readiness handling
+            // finishes, and whether a restart was already requested during
+            // that window (the request must not be lost).
+            let mut pod_alive = true;
+            let mut restart_now = false;
+            if port == 0 {
+                // No --proxy was configured (--serve-only front door), so
+                // no backend port was assigned: readiness probing is
+                // meaningless — connect() to port 0 can never succeed, and
+                // probing forever would strand the supervision task before
+                // the select! below (which is the only consumer of restart
+                // notifications). Skip straight to supervision.
+                info!(
+                    pod = id,
+                    "no proxy port assigned (--serve-only); readiness probing skipped"
+                );
+            } else if self.wait_ready(port).await {
                 info!(pod = id, port, "pod ready");
                 {
                     let mut meta = self.meta.lock().await;
@@ -124,29 +148,62 @@ impl PodManager {
                 // alive. Previously the pod was then NEVER registered — the
                 // sticky proxy kept an empty ring and reset every
                 // connection (the node-3 8421 outage) until malkuth itself
-                // restarted. Keep probing in a race against pod exit: the
-                // moment the port answers, register; if the pod dies first,
-                // fall through to the respawn path as before.
-                warn!(pod = id, port, "pod did not become ready in time; continuing to probe while it lives");
+                // restarted. Keep probing in a race against pod exit and
+                // restart requests: the moment the port answers, register;
+                // if the pod dies first, fall through to the respawn path;
+                // if a rolling restart is requested meanwhile, drain and
+                // respawn immediately (the notification would otherwise
+                // wait for a consumer that is parked in this loop).
+                warn!(
+                    pod = id,
+                    port, "pod did not become ready in time; continuing to probe while it lives"
+                );
                 let mut late_ready = false;
+                let mut first_probe = true;
                 loop {
+                    if !first_probe {
+                        // Pause between probes — raced against restart and
+                        // exit so a request arriving during the pause is
+                        // honored promptly, not after the full pause.
+                        tokio::select! {
+                            biased;
+                            _ = notify.notified() => {
+                                restart_now = true;
+                                break;
+                            },
+                            _ = sleep(Duration::from_secs(2)) => {},
+                            status = child.wait() => {
+                                warn!(pod = id, ?status, "pod exited before becoming ready");
+                                pod_alive = false;
+                                break;
+                            },
+                        }
+                    }
+                    first_probe = false;
                     tokio::select! {
                         biased;
+                        _ = notify.notified() => {
+                            restart_now = true;
+                            break;
+                        },
                         ready = self.probe_ready(port) => {
                             if ready {
                                 late_ready = true;
                                 break;
                             }
-                            sleep(Duration::from_secs(2)).await;
                         },
                         status = child.wait() => {
                             warn!(pod = id, ?status, "pod exited before becoming ready");
+                            pod_alive = false;
                             break;
                         },
                     }
                 }
                 if late_ready {
-                    info!(pod = id, port, "pod became ready late; registering with proxy");
+                    info!(
+                        pod = id,
+                        port, "pod became ready late; registering with proxy"
+                    );
                     {
                         let mut meta = self.meta.lock().await;
                         meta.insert(id, PodMeta { port });
@@ -156,14 +213,32 @@ impl PodManager {
             }
 
             // Wait for either a natural exit or an explicit restart request.
-            tokio::select! {
-                status = child.wait() => {
-                    warn!(pod = id, ?status, "pod exited");
-                }
-                _ = notify.notified() => {
-                    info!(pod = id, "draining pod for restart");
-                    let _ = child.start_kill();
-                    let _ = tokio::time::timeout(Duration::from_secs(self.drain_secs.max(1)), child.wait()).await;
+            // A restart requested while readiness was being probed (or a pod
+            // that already exited during that probing) must skip the wait
+            // entirely — the notification permit is consumed, not parked.
+            if restart_now {
+                info!(
+                    pod = id,
+                    "draining pod for restart (requested during readiness probing)"
+                );
+                let _ = child.start_kill();
+                let _ =
+                    tokio::time::timeout(Duration::from_secs(self.drain_secs.max(1)), child.wait())
+                        .await;
+            } else if pod_alive {
+                tokio::select! {
+                    status = child.wait() => {
+                        warn!(pod = id, ?status, "pod exited");
+                    }
+                    _ = notify.notified() => {
+                        info!(pod = id, "draining pod for restart");
+                        let _ = child.start_kill();
+                        let _ = tokio::time::timeout(
+                            Duration::from_secs(self.drain_secs.max(1)),
+                            child.wait(),
+                        )
+                        .await;
+                    }
                 }
             }
 
@@ -299,5 +374,119 @@ mod tests {
         assert_eq!(m.len(), 3);
         assert_eq!(m[&0], 3001);
         assert_eq!(m[&2], 3003);
+    }
+
+    /// A marker line the fake pod prints on every spawn: `SPAWNED-<pid>`.
+    /// The pool pipes child stdout into `runtime_log`, so counting distinct
+    /// markers observes real child replacement.
+    const MARKER_PREFIX: &str = "SPAWNED-";
+
+    fn marker_pids(log: &Arc<StdMutex<Vec<String>>>) -> Vec<u32> {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter_map(|l| l.strip_prefix(MARKER_PREFIX)?.parse().ok())
+            .collect()
+    }
+
+    async fn wait_for_two_spawns(log: &Arc<StdMutex<Vec<String>>>) -> bool {
+        // restart_one must drain + respawn within a few seconds (drain 1s
+        // + backoff 150ms + spawn); without the fix the notification is
+        // never consumed and a second spawn never happens. 10s is generous.
+        for _ in 0..100 {
+            if marker_pids(log).len() >= 2 {
+                return true;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        false
+    }
+
+    fn fake_pod_command() -> Vec<String> {
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            format!("echo {MARKER_PREFIX}$$; exec sleep 60"),
+        ]
+    }
+
+    fn manager(
+        port: u16,
+        log: Arc<StdMutex<Vec<String>>>,
+        readiness_timeout: Option<Duration>,
+    ) -> Arc<PodManager> {
+        let mgr = PodManager::new(
+            "127.0.0.1".into(),
+            "PORT".into(),
+            fake_pod_command(),
+            None,
+            HashMap::from([(0, port)]),
+            1,
+            log,
+        );
+        let mgr = match readiness_timeout {
+            Some(d) => mgr.with_readiness_timeout(d),
+            None => mgr,
+        };
+        Arc::new(mgr)
+    }
+
+    /// Regression (--serve-only, no --proxy → port 0): a rolling restart
+    /// requested by the watcher must replace the child even though no
+    /// backend port exists to probe. Before the fix the supervision task
+    /// parked forever in the late-readiness probe loop (connect to port 0
+    /// never succeeds) and the restart notification went unconsumed — the
+    /// node-2 evernight-server-malkuth incident.
+    #[tokio::test]
+    async fn restart_replaces_child_without_proxy_port() {
+        let log = Arc::new(StdMutex::new(Vec::new()));
+        let mgr = manager(0, Arc::clone(&log), None);
+        mgr.clone().run().await;
+
+        // First spawn must appear promptly.
+        for _ in 0..100 {
+            if !marker_pids(&log).is_empty() {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(marker_pids(&log).len(), 1, "first spawn missing");
+
+        mgr.restart_one(0).await;
+        assert!(
+            wait_for_two_spawns(&log).await,
+            "restart without --proxy never respawned the pod (stuck probe loop)"
+        );
+        let pids = marker_pids(&log);
+        assert_eq!(pids.len(), 2);
+        assert_ne!(pids[0], pids[1], "restart must spawn a new process");
+    }
+
+    /// Regression (slow readiness): a restart requested while the pool is
+    /// still probing a not-yet-ready port must be honored instead of being
+    /// parked until the pod happens to become ready or die.
+    #[tokio::test]
+    async fn restart_during_readiness_probing_is_honored() {
+        let log = Arc::new(StdMutex::new(Vec::new()));
+        // A high port nothing listens on: initial window short so we land
+        // in the late-probe loop quickly.
+        let mgr = manager(0xF00D, Arc::clone(&log), Some(Duration::from_millis(300)));
+        mgr.clone().run().await;
+
+        for _ in 0..100 {
+            if !marker_pids(&log).is_empty() {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(marker_pids(&log).len(), 1, "first spawn missing");
+
+        // Still inside the probe window/loop when the request arrives.
+        sleep(Duration::from_millis(700)).await;
+        mgr.restart_one(0).await;
+        assert!(
+            wait_for_two_spawns(&log).await,
+            "restart during readiness probing never respawned the pod"
+        );
     }
 }
