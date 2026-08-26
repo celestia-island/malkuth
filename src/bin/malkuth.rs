@@ -10,6 +10,8 @@ mod db_backup;
 #[path = "malkuth/ipc_proxy.rs"]
 #[cfg(feature = "ipc")]
 mod ipc_proxy;
+#[path = "malkuth/log_forward.rs"]
+mod log_forward;
 #[path = "malkuth/pool.rs"]
 mod pool;
 #[path = "malkuth/proxy.rs"]
