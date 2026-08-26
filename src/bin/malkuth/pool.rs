@@ -16,7 +16,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
     net::TcpStream,
     process::{Child, Command},
     sync::{Mutex, Notify},
@@ -274,41 +273,16 @@ impl PodManager {
         info!(pod = id, port, program, "spawning pod");
         let mut child = cmd.spawn()?;
 
-        let max_lines = 500usize;
+        // #61 piped the child's stdio purely into the in-memory ring (VTTY
+        // view) — the lines never reached tracing, so supervised pods had
+        // zero journald visibility (2026-08-26 incident review). forward()
+        // keeps the ring capture AND re-emits under the `malkuth::pod`
+        // target, with rate-limited shedding that never stops draining.
         if let Some(stdout) = child.stdout.take() {
-            let log = Arc::clone(&self.runtime_log);
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stdout).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    let t = line.trim().to_string();
-                    if !t.is_empty() {
-                        if let Ok(mut g) = log.lock() {
-                            g.push(t);
-                            if g.len() > max_lines {
-                                g.remove(0);
-                            }
-                        }
-                    }
-                }
-            });
+            crate::log_forward::forward(stdout, id, "stdout", Arc::clone(&self.runtime_log));
         }
-
         if let Some(stderr) = child.stderr.take() {
-            let log = Arc::clone(&self.runtime_log);
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    let t = line.trim().to_string();
-                    if !t.is_empty() {
-                        if let Ok(mut g) = log.lock() {
-                            g.push(t);
-                            if g.len() > max_lines {
-                                g.remove(0);
-                            }
-                        }
-                    }
-                }
-            });
+            crate::log_forward::forward(stderr, id, "stderr", Arc::clone(&self.runtime_log));
         }
 
         Ok(child)
