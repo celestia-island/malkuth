@@ -712,3 +712,11 @@ body {
     top: 20px;
   }
 }
+
+/* Mobile web parity (2026-08-30, sibling of hikari foundation.scss): kill the
+   browser default tap highlight — the translucent blue/gray overlay
+   Android/WebKit paints over tappable elements on touch (inherited). */
+html {
+  -webkit-tap-highlight-color: transparent;
+  tap-highlight-color: transparent;
+}
