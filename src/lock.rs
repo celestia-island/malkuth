@@ -53,6 +53,18 @@ impl Drop for FileGuard {
 
 #[async_trait]
 impl CoordinationLock for FileLock {
+    /// Acquire an exclusive `flock` on the lock file for `key` with a single
+    /// non-blocking `LOCK_EX | LOCK_NB` try.
+    ///
+    /// # Semantics
+    ///
+    /// - The lock lives until [`LockGuard::release`], the guard's `Drop`
+    ///   best-effort fallback, or process exit (the kernel releases a `flock`
+    ///   when the process or its file descriptor goes away).
+    /// - `lease` is **ignored** — there is no TTL and no automatic expiry.
+    ///
+    /// On contention this returns [`LockError::Contended`] immediately; it
+    /// never queues or waits.
     async fn acquire(&self, key: &str, _lease: Duration) -> Result<Box<dyn LockGuard>, LockError> {
         let root = self.root.clone();
         let path = root.join(sanitize(key));

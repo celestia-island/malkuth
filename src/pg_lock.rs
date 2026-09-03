@@ -26,6 +26,8 @@ impl PgLock {
     }
 }
 
+/// Guard for a held pg session-level advisory lock. Intentionally no `Drop`:
+/// only an explicit `release()` (or the connection closing) frees the lock.
 struct PgGuard {
     client: Arc<Client>,
     key: i64,
@@ -44,6 +46,25 @@ impl LockGuard for PgGuard {
 
 #[async_trait]
 impl CoordinationLock for PgLock {
+    /// Acquire the session-level advisory lock for `key` with a single
+    /// non-blocking `pg_try_advisory_lock` try.
+    ///
+    /// # Semantics
+    ///
+    /// PostgreSQL session-level advisory locks are bound to the lifetime of
+    /// the underlying connection, **not** to the returned guard:
+    ///
+    /// - The lock is held until [`LockGuard::release`] runs
+    ///   `pg_advisory_unlock` on that session, or the connection closes.
+    /// - `lease` is **ignored** — there is no TTL and no automatic expiry.
+    ///   Dropping the returned guard without calling `release()` does **not**
+    ///   unlock: the advisory lock stays held on the shared session until it
+    ///   is explicitly released or the connection goes away.
+    /// - A crashed process loses the lock naturally when its connection
+    ///   drops — connection liveness is the only expiry signal.
+    ///
+    /// On contention this returns [`LockError::Contended`] immediately; it
+    /// never queues or waits.
     async fn acquire(&self, key: &str, _lease: Duration) -> Result<Box<dyn LockGuard>, LockError> {
         let k = key_to_i64(key);
         let row = self

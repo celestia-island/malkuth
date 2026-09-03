@@ -6,8 +6,9 @@
 //! - [`InstanceRegistry`] tracks who is online / draining (rolling update).
 //! - [`LeaderElector`] is the lease-election contract for active-passive HA.
 //!
-//! Concrete backends live in the `malkuth` crate (file-lock here, pg / lease
-//! staged). Nothing in this module pulls in a runtime or framework.
+//! Concrete backends live in the `malkuth` crate (`lock` file-lock, `lease`
+//! file-lease and `pg_lock` pg advisory-lock). Nothing in this module pulls
+//! in a runtime or framework.
 
 use std::time::Duration;
 
@@ -34,7 +35,10 @@ pub enum LockError {
     Unavailable(&'static str),
 }
 
-/// A held lock. Dropping or calling [`release`](LockGuard::release) frees it.
+/// A held lock. Freed by an explicit [`release`](LockGuard::release); dropping
+/// the guard is best-effort and backend-dependent (e.g. the pg advisory-lock
+/// backend keeps the lock on its session until `release()` or the underlying
+/// connection closes — dropping the guard alone does not unlock it).
 #[async_trait]
 pub trait LockGuard: Send + Sync {
     /// Release the lock explicitly.
@@ -44,8 +48,22 @@ pub trait LockGuard: Send + Sync {
 /// A coordination lock backend.
 #[async_trait]
 pub trait CoordinationLock: Send + Sync {
-    /// Acquire (or queue for) the lock named `key`, waiting up to `lease`
-    /// for ownership. The returned guard frees the lock on release/drop.
+    /// Acquire the lock named `key`, or fail immediately with
+    /// [`LockError::Contended`] if another live owner holds it — no backend
+    /// queues or waits.
+    ///
+    /// The `lease` parameter is **advisory** and its meaning differs per
+    /// backend; callers must not assume the lock automatically expires:
+    ///
+    /// - `LeaseLock` (feature `lease`) honors it as the lease **TTL** — the
+    ///   only backend with real expiry, renewed while the guard lives.
+    /// - `FileLock` ignores it: the `flock` lives until `release()`, the
+    ///   guard's `Drop` fallback, or process exit.
+    /// - `PgLock` (feature `pg-lock`) ignores it: the session-level advisory
+    ///   lock lives until `release()` or the connection closes.
+    ///
+    /// See each implementation's documentation for the exact semantics and
+    /// for how its guard is freed.
     async fn acquire(&self, key: &str, lease: Duration) -> Result<Box<dyn LockGuard>, LockError>;
 }
 
