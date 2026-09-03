@@ -13,6 +13,9 @@ categories = ["asynchronous", "network-programming", "development-tools"]
 publish = true
 exclude = ["docs/", "scripts/", ".github/", "justfile", "rust-toolchain.toml"]
 
+[lints]
+workspace = true
+
 [package.metadata.docs.rs]
 all-features = true
 
@@ -128,3 +131,9 @@ required-features = ["file-lock", "lease"]
 [profile.release]
 opt-level = 3
 lto = "thin"
+
+[workspace.lints.rust]
+warnings = "deny"
+
+[workspace.lints.clippy]
+all = "deny"
