@@ -105,6 +105,21 @@ fn next_owner() -> String {
 
 #[async_trait]
 impl CoordinationLock for LeaseLock {
+    /// Acquire the file lease for `key` with a single non-blocking try.
+    ///
+    /// # Semantics
+    ///
+    /// Unlike the other backends, `lease` **is** honored — as the lease
+    /// **TTL**, not a wait duration: it is written into the lease record and
+    /// a background task renews it (TTL/3 cadence) while the guard lives. If
+    /// the holder crashes or stops renewing, the lease expires on its own and
+    /// another owner may take over — this is the only backend with true
+    /// automatic expiry. [`LockGuard::release`] (or the guard's `Drop`
+    /// fallback) removes the lease file immediately when the caller is done.
+    ///
+    /// On contention (a live, unexpired lease held by another owner) this
+    /// returns [`LockError::Contended`] immediately; it never queues or
+    /// waits for the lease to lapse.
     async fn acquire(&self, key: &str, lease: Duration) -> Result<Box<dyn LockGuard>, LockError> {
         let root = self.root.clone();
         let key_msg = key.to_string();

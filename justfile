@@ -46,8 +46,8 @@ fmt:
 fmt-check:
     cargo fmt --all -- --check
 
-# Type-check all targets and features.
-check:
+# Type-check all targets and features (format gate included).
+check: fmt-check
     cargo check --all-targets --all-features
 
 # Clippy with -D warnings.
