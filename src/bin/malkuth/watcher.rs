@@ -133,9 +133,13 @@ pub fn spawn(paths: Vec<PathBuf>, debounce_secs: u64) -> mpsc::Receiver<Vec<Path
                 // Snapshot identities at fire time, not at event time: the
                 // deploy's write has settled by the end of the debounce
                 // window, so the snapshot reflects the replacement's final
-                // inode and the poll backstop stays quiet about it.
+                // inode and the poll backstop stays quiet about it. Only
+                // watched paths are tracked; deliveries may also name files
+                // under a watched root for the consumer's benefit.
                 for w in &changed {
-                    identity.insert(w.clone(), file_identity(w).ok());
+                    if identity.contains_key(w) {
+                        identity.insert(w.clone(), file_identity(w).ok());
+                    }
                 }
                 info!(?changed, "file change → schedule restart");
                 if tx_signal.blocking_send(changed).is_err() {
@@ -172,7 +176,7 @@ pub fn spawn(paths: Vec<PathBuf>, debounce_secs: u64) -> mpsc::Receiver<Vec<Path
                     // re-arm usually just re-watches the inode another arm
                     // (parent watch or poll) already reported.
                     let mut changed = false;
-                    for w in recovered.iter().flat_map(|p| changed_roots(p, &paths)) {
+                    for w in recovered.iter().flat_map(|p| relevant_paths(p, &paths)) {
                         let id = file_identity(&w).ok();
                         if identity.get(&w) != Some(&id) {
                             changed = true;
@@ -254,17 +258,18 @@ pub fn spawn(paths: Vec<PathBuf>, debounce_secs: u64) -> mpsc::Receiver<Vec<Path
                         ));
                     }
                 }
-                // Map event paths to watched roots. Events that name none of
-                // them (churn from unrelated siblings in a watched parent
-                // directory — logs, temp files, other deploy targets) must be
-                // dropped entirely: opening a debounce window for them would
-                // couple the service's own restart logging (or any neighbor
-                // activity) back into the watcher and loop restarts.
+                // Deliver event paths that name a watched change. Events that
+                // name none (churn from unrelated siblings in a watched
+                // parent directory — logs, temp files, other deploy targets)
+                // must be dropped entirely: opening a debounce window for
+                // them would couple the service's own restart logging (or
+                // any neighbor activity) back into the watcher and loop
+                // restarts.
                 let mut hit = false;
                 for p in &ev.paths {
-                    for w in changed_roots(p, &paths) {
+                    for w in relevant_paths(p, &paths) {
                         hit = true;
-                        pending.insert(w.clone());
+                        pending.insert(w);
                     }
                 }
                 if !hit {
@@ -335,19 +340,24 @@ fn parent_dirs(paths: &[PathBuf]) -> Vec<PathBuf> {
     dirs
 }
 
-/// Resolve an event path to the watched roots whose change it signals: the
-/// root itself, or anything under a watched (recursive) root. Events are only
-/// ever mapped when they NAME a watched path: a rename-over replacement's
-/// destination is the watched name itself (IN_MOVED_TO/IN_CREATE), while
-/// temp-file churn from unrelated siblings in the deploy directory must not
-/// restart the service — anything the inotify arms fail to name is confirmed
-/// (within `POLL_INTERVAL`) by the identity poll instead.
-fn changed_roots(ev_path: &Path, roots: &[PathBuf]) -> Vec<PathBuf> {
-    roots
+/// The event paths that name a real change the supervisor should see: a
+/// watched path itself, or any path under a watched (recursive) root. Events
+/// are delivered verbatim — the consumer matches changed *files* against the
+/// supervised binary path, so a rename-over inside a watched directory must
+/// deliver the new file's path, not just the directory root. Sibling churn in
+/// a watched parent directory (temp files, logs, other deploy targets) is
+/// rejected: opening a debounce window for it would couple the service's own
+/// restart logging (or any neighbor activity) back into the watcher and loop
+/// restarts.
+fn relevant_paths(ev_path: &Path, roots: &[PathBuf]) -> Vec<PathBuf> {
+    if roots
         .iter()
-        .filter(|r| ev_path == r.as_path() || ev_path.starts_with(r.as_path()))
-        .cloned()
-        .collect()
+        .any(|r| ev_path == r.as_path() || ev_path.starts_with(r.as_path()))
+    {
+        vec![ev_path.to_path_buf()]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Cheap identity of a watched path used by the poll fallback: a rename-over
@@ -483,29 +493,32 @@ mod tests {
     }
 
     #[test]
-    fn event_paths_map_to_watched_roots() {
+    fn event_paths_deliver_verbatim_or_drop() {
         let roots = vec![
             PathBuf::from("/srv/app/dist"),
             PathBuf::from("/usr/local/bin/tool"),
         ];
-        // Direct hit on a watched path.
+        // Direct hit on a watched path delivers itself.
         assert_eq!(
-            changed_roots(&PathBuf::from("/usr/local/bin/tool"), &roots),
+            relevant_paths(&PathBuf::from("/usr/local/bin/tool"), &roots),
             vec![PathBuf::from("/usr/local/bin/tool")]
         );
-        // Temp/sibling names in the watched file's parent dir do NOT map:
-        // mapping them would restart the service on any sibling churn in
+        // A child under a watched directory delivers ITSELF, not the root:
+        // the consumer matches changed files against the supervised binary
+        // path, so a rename-over inside a watched dir must keep its name.
+        assert_eq!(
+            relevant_paths(&PathBuf::from("/srv/app/dist/assets/x.js"), &roots),
+            vec![PathBuf::from("/srv/app/dist/assets/x.js")]
+        );
+        // Temp/sibling names in a watched file's parent dir are dropped:
+        // delivering them would restart the service on any sibling churn in
         // the deploy directory (restart storm). The replacement is caught
         // when it lands under the watched name, or by the poll fallback.
-        assert!(changed_roots(&PathBuf::from("/usr/local/bin/tool.new"), &roots).is_empty());
-        // A child under a watched directory maps to that directory.
-        assert_eq!(
-            changed_roots(&PathBuf::from("/srv/app/dist/assets/x.js"), &roots),
-            vec![PathBuf::from("/srv/app/dist")]
-        );
-        // Unrelated paths map to nothing.
-        assert!(changed_roots(&PathBuf::from("/opt/other/x"), &roots).is_empty());
-        assert!(changed_roots(&PathBuf::from("/srv/app/dist2"), &roots).is_empty());
+        assert!(relevant_paths(&PathBuf::from("/usr/local/bin/tool.new"), &roots).is_empty());
+        // Unrelated paths are dropped.
+        assert!(relevant_paths(&PathBuf::from("/opt/other/x"), &roots).is_empty());
+        // Component boundary: dist2 is not under dist.
+        assert!(relevant_paths(&PathBuf::from("/srv/app/dist2"), &roots).is_empty());
     }
 
     #[test]
