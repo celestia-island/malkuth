@@ -29,6 +29,12 @@
 //! inotify arm can report (NFS attribute races, MOVE_SELF gaps). Events from
 //! the parent arm are only honored when they name a watched path directly —
 //! sibling churn in the deploy directory must not restart the service.
+//! When an event does name a watched root (Remove, or the MOVE_SELF
+//! Modify-Name shape), the root's watch is re-armed so it tracks the inode
+//! that now sits at the path. Known limit: nested content under a watched
+//! directory root is only covered by the recursive arm — between a
+//! directory-swap deploy and the re-arm, deep changes may go unseen until
+//! the next signal; the poll stats the root itself, not its subtree.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -37,7 +43,7 @@ use std::{
 };
 use tokio::sync::mpsc;
 
-use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher, event::ModifyKind};
 use tracing::{debug, info, warn};
 
 /// Default debounce when no explicit value is given.
@@ -91,10 +97,10 @@ pub fn spawn(paths: Vec<PathBuf>, debounce_secs: u64) -> mpsc::Receiver<Vec<Path
                 .map(|p| (p, RecursiveMode::NonRecursive)),
         );
         // Watch arms whose watch failed to arm, with the instant to retry at.
-        // A watch root removed at runtime also lands here when its Remove
-        // event fires (see the event pass below). Best-effort: inotify gaps
-        // like MOVE_SELF renames emit no usable event; those are backstopped
-        // by the poll fallback below instead.
+        // A watch root replaced or removed at runtime also lands here when
+        // its Remove / Modify-Name event fires (see the event pass below).
+        // Best-effort: inotify gaps like silent MOVE_SELF self-renames emit
+        // no usable event; those are backstopped by the poll fallback below.
         let mut failed: Vec<(PathBuf, RecursiveMode, Instant)> = Vec::new();
         for (p, mode) in &watch_list {
             if !arm_watch(&mut watcher, p, *mode) {
@@ -237,10 +243,10 @@ pub fn spawn(paths: Vec<PathBuf>, debounce_secs: u64) -> mpsc::Receiver<Vec<Path
                 // route it back to the retry list so it re-arms when the
                 // path comes back (NFS remount, deploy-time rename, ...).
                 for p in &ev.paths {
-                    if watched_root_removed(&ev.kind, p, &paths)
+                    if watch_needs_rearm(&ev.kind, p, &paths)
                         && !failed.iter().any(|(fp, _, _)| fp == p)
                     {
-                        debug!(path = %p.display(), "watch root removed, will re-arm");
+                        debug!(path = %p.display(), kind = ?ev.kind, "watch root replaced, will re-arm");
                         failed.push((
                             p.clone(),
                             RecursiveMode::Recursive,
@@ -296,9 +302,19 @@ fn arm_watch(watcher: &mut RecommendedWatcher, path: &Path, mode: RecursiveMode)
     }
 }
 
-/// True when the event says a watched root directory itself was removed.
-fn watched_root_removed(kind: &EventKind, p: &Path, roots: &[PathBuf]) -> bool {
-    matches!(kind, EventKind::Remove(_)) && roots.iter().any(|r| r == p)
+/// True when the event says a watched root's own inode was removed or
+/// replaced, so its watch must be re-armed against whatever now sits at the
+/// path. Remove covers deletion; the rename-over and directory-swap deploys
+/// kill the old inode with MOVE_SELF, which notify surfaces as
+/// `Modify(Name(_))` naming the root rather than as Remove.
+fn watch_needs_rearm(kind: &EventKind, p: &Path, roots: &[PathBuf]) -> bool {
+    if !roots.iter().any(|r| r == p) {
+        return false;
+    }
+    matches!(
+        kind,
+        EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
+    )
 }
 
 /// Unique parent directories of the watched paths, skipping parents that are
@@ -490,6 +506,44 @@ mod tests {
         // Unrelated paths map to nothing.
         assert!(changed_roots(&PathBuf::from("/opt/other/x"), &roots).is_empty());
         assert!(changed_roots(&PathBuf::from("/srv/app/dist2"), &roots).is_empty());
+    }
+
+    #[test]
+    fn watch_root_removal_and_move_self_rearm() {
+        let roots = vec![PathBuf::from("/usr/local/bin/tool")];
+        let root = Path::new("/usr/local/bin/tool");
+        // Deletion of the root re-arms.
+        assert!(watch_needs_rearm(
+            &EventKind::Remove(notify::event::RemoveKind::File),
+            root,
+            &roots
+        ));
+        // MOVE_SELF (rename-over, directory swap) surfaces as Modify(Name)
+        // naming the root and must re-arm too — the old inode's watch would
+        // otherwise go deaf against the replacement.
+        assert!(watch_needs_rearm(
+            &EventKind::Modify(ModifyKind::Name(notify::event::RenameMode::Any)),
+            root,
+            &roots
+        ));
+        // Ordinary content/metadata events on the root do not re-arm.
+        assert!(!watch_needs_rearm(
+            &EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Any)),
+            root,
+            &roots
+        ));
+        // The same events for a non-watched path never re-arm.
+        let sibling = Path::new("/usr/local/bin/tool.new");
+        assert!(!watch_needs_rearm(
+            &EventKind::Modify(ModifyKind::Name(notify::event::RenameMode::Any)),
+            sibling,
+            &roots
+        ));
+        assert!(!watch_needs_rearm(
+            &EventKind::Remove(notify::event::RemoveKind::File),
+            sibling,
+            &roots
+        ));
     }
 
     #[test]
