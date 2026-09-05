@@ -43,7 +43,10 @@ graceful shutdown, health probes, coordination locks, and rolling updates:
 ## As a CLI
 
 ```
-malkuth [--watch PATH]... [--build CMD] [--debounce SECS] [--proxy PUBLIC:LO-HI] [--pod-count N] -- <cmd> [args...]
+malkuth [--watch PATH]... [--build CMD | --build-stage NAME=CMD]... [--install CMD]
+        [--watch-remote URL#REF] [--remote-poll-secs SECS] [--debounce SECS]
+        [--pause-file PATH] [--build-lock PATH]
+        [--proxy PUBLIC:LO-HI] [--pod-count N] -- <cmd> [args...]
 ```
 
 Run 5 parallel copies of your server (each listening on the `PORT` env var →
@@ -59,6 +62,48 @@ The proxy routes each **client IP** to a fixed backend via consistent hashing, s
 a client keeps hitting the same pod until that pod restarts or scales down — the
 basis for gray release / rolling restart. On a file change it drains and
 restarts one pod at a time.
+
+### Multi-stage build pipeline (0.3.0)
+
+A trigger — a debounced file change, or an upstream ref movement seen by
+`--watch-remote` — can run a composable deploy pipeline instead of a single
+`--build` command:
+
+```bash
+malkuth --watch /usr/local/bin/my-svc \
+        --build-lock /run/lock/my-svc-build.lock \
+        --pause-file /srv/my-svc/.deploy-pause \
+        --watch-remote https://github.com/org/repo.git#master --remote-poll-secs 120 \
+        --build-stage deps='pnpm install --frozen-lockfile' \
+        --build-stage web='pnpm -C packages/webui build' \
+        --build-stage bin='cargo build --release -p core' \
+        --install 'sudo /usr/local/lib/my-svc/install.sh' \
+        -- /usr/local/bin/my-svc
+```
+
+- `--build-stage NAME=CMD` (repeatable): sequential, fail-stop stages. The
+  first non-zero exit skips the rest, the install hook and the restart.
+  `--build CMD` remains the single anonymous stage (mutually exclusive with
+  `--build-stage`).
+- `--install CMD`: privileged install hook that runs after all stages
+  succeeded — point it at a sudoers-narrowed root helper that copies the
+  artifact into the deploy path. Its failure counts as a pipeline failure.
+- `--watch-remote URL#REF`: polls `git ls-remote` and fires the same pipeline
+  when the upstream SHA moves (local checkout paths work too; the first poll
+  only primes the baseline). Stages and the install hook receive
+  `MALKUTH_TRIGGER=files|remote` and, on remote triggers, `MALKUTH_REMOTE_SHA`.
+- `--pause-file PATH`: while the file exists, triggers are skipped — the
+  manual-deploy handshake.
+- `--build-lock PATH`: an exclusive flock held for the pipeline's duration so
+  sibling units or external build scripts sharing one source checkout cannot
+  interleave builds.
+- Failure backoff: consecutive pipeline failures delay the next attempt
+  exponentially (30 s → 15 min cap); one success resets it.
+
+The restart decision is unchanged from the single-command era: restart when
+the pipeline changed the watched paths' mtimes, or when the supervised binary
+itself was replaced; a build that produced no visible change skips the
+restart.
 
 ### npx (no Rust toolchain required)
 

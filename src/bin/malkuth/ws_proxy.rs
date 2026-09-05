@@ -69,7 +69,7 @@ async fn handle_ws_client(
     // Use the client IP as the fallback routing key.
     let route_key = path_map
         .iter()
-        .find(|(k, _)| client_ip.contains(k.as_str()) || false)
+        .find(|(k, _)| client_ip.contains(k.as_str()))
         .map(|(_, v)| v.clone())
         .unwrap_or(client_ip.clone());
 

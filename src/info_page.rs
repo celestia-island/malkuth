@@ -1064,7 +1064,7 @@ async fn serve_probe(lang: &str, state: &InfoState, allowed: bool) -> Response {
     let backend_state = *state.backend_state.read().await;
     let backend_up = state.serve_backend.is_some() && backend_state == BackendState::Up;
 
-    let (probe_state, msg) = if !state.serve_backend.is_some() || backend_up {
+    let (probe_state, msg) = if state.serve_backend.is_none() || backend_up {
         ("ready", "")
     } else if backend_state == BackendState::Unknown {
         ("landing", "")
@@ -1155,7 +1155,7 @@ async fn serve_landing(lang: &str, state: &InfoState) -> Response {
     let backend_state = *state.backend_state.read().await;
     let backend_up = state.serve_backend.is_some() && backend_state == BackendState::Up;
 
-    let init_state: &str = if !state.serve_backend.is_some() || backend_up {
+    let init_state: &str = if state.serve_backend.is_none() || backend_up {
         "ready"
     } else if backend_state == BackendState::Unknown {
         "landing"

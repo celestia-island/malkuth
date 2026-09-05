@@ -30,6 +30,47 @@ pub struct Args {
     #[arg(long = "build", value_name = "CMD")]
     pub build: Option<String>,
 
+    /// Named build stage `NAME=CMD` (repeatable). Stages run sequentially
+    /// after a trigger; the first non-zero exit stops the pipeline and skips
+    /// the restart (and the install hook). `--build` is the single anonymous
+    /// stage — the two flags are mutually exclusive.
+    #[arg(
+        long = "build-stage",
+        value_name = "NAME=CMD",
+        conflicts_with = "build"
+    )]
+    pub build_stage: Vec<String>,
+
+    /// Privileged install hook (shell command) run after all build stages
+    /// succeeded — typically `sudo /usr/local/lib/<svc>/install.sh`, a
+    /// sudoers-narrowed root helper that copies the artifact into the deploy
+    /// path. Its failure counts as a pipeline failure (no restart).
+    #[arg(long = "install", value_name = "CMD")]
+    pub install: Option<String>,
+
+    /// Poll a git remote for ref movement, e.g.
+    /// `--watch-remote https://github.com/org/repo.git#master`. A new upstream
+    /// SHA triggers the same build pipeline as a file change (local checkout
+    /// paths work too). The first poll only primes the baseline.
+    #[arg(long = "watch-remote", value_name = "URL#REF")]
+    pub watch_remote: Option<String>,
+
+    /// `git ls-remote` poll interval for `--watch-remote`, in seconds
+    /// (default: 300; clamped to a 10 s minimum).
+    #[arg(long = "remote-poll-secs", default_value = "300")]
+    pub remote_poll_secs: u64,
+
+    /// While this file exists, triggers (build + restart) are skipped — the
+    /// manual-deploy handshake for operators and other agents.
+    #[arg(long = "pause-file", value_name = "PATH")]
+    pub pause_file: Option<PathBuf>,
+
+    /// Exclusive flock held for the pipeline's duration so several
+    /// supervised units (or external build scripts) sharing one source
+    /// checkout cannot interleave builds. A busy lock skips the trigger.
+    #[arg(long = "build-lock", value_name = "PATH")]
+    pub build_lock: Option<PathBuf>,
+
     /// File-change debounce window in seconds (default: 3).
     #[arg(long = "debounce", default_value = "3")]
     pub debounce: u64,
