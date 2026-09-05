@@ -12,6 +12,8 @@ mod db_backup;
 mod ipc_proxy;
 #[path = "malkuth/log_forward.rs"]
 mod log_forward;
+#[path = "malkuth/pipeline.rs"]
+mod pipeline;
 #[path = "malkuth/pool.rs"]
 mod pool;
 #[path = "malkuth/proxy.rs"]
@@ -36,7 +38,6 @@ use pool::{PodManager, assign_ports};
 use proxy::ProxyState;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use tracing::{error, info, warn};
 
 const DEFAULT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -409,136 +410,169 @@ async fn main() {
 
     let build_progress: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let build_log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let bl_watcher = build_log.clone();
-    let bp_watcher = build_progress.clone();
+
+    // Pipeline composition: the legacy `--build` is one anonymous stage;
+    // named `--build-stage` specs run in order after it is absent; the
+    // privileged `--install` hook runs last, only on full stage success.
+    let mut stages: Vec<pipeline::BuildStage> = Vec::new();
+    if let Some(cmd) = args.build.clone() {
+        stages.push(pipeline::BuildStage { name: None, cmd });
+    }
+    for spec in &args.build_stage {
+        match pipeline::BuildStage::parse(spec) {
+            Ok(stage) => stages.push(stage),
+            Err(e) => {
+                error!("{e}");
+                std::process::exit(2);
+            }
+        }
+    }
+    let install_cmd = args.install.clone();
+
+    // Triggers — debounced file changes and (optionally) upstream ref
+    // movement — merge into one pipeline stream.
+    let (trig_tx, mut trig_rx) = tokio::sync::mpsc::channel::<pipeline::Trigger>(16);
     if !args.watch.is_empty() {
-        let mut rx = watcher::spawn(args.watch.clone(), args.debounce);
-        let build_cmd = args.build.clone();
+        let rx = watcher::spawn(args.watch.clone(), args.debounce);
+        pipeline::forward_file_triggers(rx, trig_tx.clone());
+    }
+    if let Some(spec) = &args.watch_remote {
+        if let Err(e) = pipeline::spawn_remote_poller(spec, args.remote_poll_secs, trig_tx.clone())
+        {
+            error!("{e}");
+            std::process::exit(2);
+        }
+    }
+    drop(trig_tx);
+
+    if !stages.is_empty() || install_cmd.is_some() || !args.watch.is_empty() {
         let watch_paths = args.watch.clone();
+        let pause_file = args.pause_file.clone();
+        let build_lock = args.build_lock.clone();
         let binary_path: Option<PathBuf> = args
             .command
             .first()
             .map(|c| normalize_path(&PathBuf::from(c)));
         let pod_count = args.pod_count.max(1);
         let manager = Arc::clone(&manager);
+        let bl = build_log.clone();
+        let bp = build_progress.clone();
         tokio::spawn(async move {
             let mut next_pod: usize = 0;
-            while let Some(paths) = rx.recv().await {
-                // A change to the supervised binary itself must restart the pods
-                // even when the build command produces identical output (e.g. a
-                // replaced /usr/local/bin/arona with an unchanged vite build).
-                let binary_changed = binary_path
-                    .as_ref()
-                    .is_some_and(|bp| paths.iter().any(|p| normalize_path(p) == *bp));
-                // Run optional build command before restarting.
-                // Only restart if the build actually produced changed output
-                // (or the supervised binary itself changed).
-                if let Some(ref cmd) = build_cmd {
-                    info!(cmd, "running build command");
-                    let before = snapshot_mtimes(&watch_paths);
+            let mut backoff = pipeline::FailureBackoff::new();
+            while let Some(trigger) = trig_rx.recv().await {
+                // Manual-deploy handshake: a present pause file skips the
+                // whole trigger (build and restart).
+                if let Some(p) = &pause_file {
+                    if p.exists() {
+                        info!(path = %p.display(), "pause file present, skipping trigger");
+                        continue;
+                    }
+                }
+                // Failure backoff: triggers arriving inside the window are
+                // dropped; the next file change or remote poll retries.
+                if backoff.is_blocked() {
+                    info!("pipeline in failure backoff, skipping trigger");
+                    continue;
+                }
+                // Cross-unit build lock: another builder (a sibling malkuth
+                // unit or an external script) holds the source checkout.
+                // An un-openable lock path proceeds unlocked (Disabled).
+                let _lock_guard = match &build_lock {
+                    Some(p) => match pipeline::acquire_build_lock(p) {
+                        pipeline::LockOutcome::Acquired(guard) => Some(guard),
+                        pipeline::LockOutcome::Busy => continue,
+                        pipeline::LockOutcome::Disabled => None,
+                    },
+                    None => None,
+                };
 
-                    use tokio::io::{AsyncBufReadExt, BufReader};
-                    use tokio::process::Command as TokioCommand;
+                let (trigger_paths, remote_sha) = match &trigger {
+                    pipeline::Trigger::Files(paths) => (Some(paths.clone()), None),
+                    pipeline::Trigger::Remote(sha) => (None, Some(sha.clone())),
+                };
+                // A change to the supervised binary itself must restart the
+                // pods even when the pipeline produces identical output.
+                let binary_changed = trigger_paths.as_ref().is_some_and(|paths| {
+                    binary_path
+                        .as_ref()
+                        .is_some_and(|bp| paths.iter().any(|p| normalize_path(p) == *bp))
+                });
+                // Trigger metadata for stage/install scripts.
+                let mut envs: Vec<(&str, String)> =
+                    vec![("MALKUTH_TRIGGER", trigger.kind().to_string())];
+                if let Some(sha) = &remote_sha {
+                    envs.push(("MALKUTH_REMOTE_SHA", sha.clone()));
+                }
 
-                    let progress = bp_watcher.clone();
-                    let log_lines = bl_watcher.clone();
-
-                    let child = TokioCommand::new("sh")
-                        .arg("-c")
-                        .arg(cmd)
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::inherit())
-                        .spawn();
-
-                    match child {
-                        Ok(mut child) => {
-                            if let Some(stdout) = child.stdout.take() {
-                                let mut lines = BufReader::new(stdout).lines();
-                                loop {
-                                    tokio::select! {
-                                        line = lines.next_line() => {
-                                            match line {
-                                                Ok(Some(l)) => {
-                                                    let t = l.trim().to_string();
-                                                    if !t.is_empty() {
-                                                        if let Ok(mut g) = log_lines.lock() {
-                                                            g.push(t.clone());
-                                                            if g.len() > 50 { g.remove(0); }
-                                                        }
-                                                        if let Ok(mut g) = progress.lock() {
-                                                            *g = Some(t);
-                                                        }
-                                                    }
-                                                }
-                                                _ => break,
-                                            }
-                                        }
-                                        _ = tokio::signal::ctrl_c() => { break; }
-                                    }
-                                }
-                            }
-                            let status = child.wait().await;
-                            if let Ok(mut g) = progress.lock() {
-                                *g = None;
-                            }
-                            match status {
-                                Ok(s) if s.success() => {
-                                    let after = snapshot_mtimes(&watch_paths);
-                                    if mtimes_changed(&before, &after) {
-                                        info!(
-                                            cmd,
-                                            "build produced changes, proceeding with restart"
-                                        );
-                                    } else if binary_changed {
-                                        info!(
-                                            ?paths,
-                                            "supervised binary changed, restarting regardless of build output"
-                                        );
-                                    } else {
-                                        info!(cmd, "build produced no changes, skipping restart");
-                                        continue;
-                                    }
-                                }
-                                Ok(s) => {
-                                    warn!(cmd, code = %s, "build failed");
-                                    if binary_changed {
-                                        info!(
-                                            ?paths,
-                                            "supervised binary changed, restarting despite build failure"
-                                        );
-                                    } else {
-                                        continue;
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!(cmd, error = %e, "build command error");
-                                    if binary_changed {
-                                        info!(
-                                            ?paths,
-                                            "supervised binary changed, restarting despite build error"
-                                        );
-                                    } else {
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!(cmd, error = %e, "build spawn failed");
-                            if binary_changed {
-                                info!(
-                                    ?paths,
-                                    "supervised binary changed, restarting despite build spawn failure"
-                                );
-                            } else {
-                                continue;
-                            }
+                // Run the pipeline: stages sequentially (fail-stop), then
+                // the install hook. Only restart if the pipeline actually
+                // produced changed output (or the supervised binary itself
+                // changed).
+                let before = snapshot_mtimes(&watch_paths);
+                let mut failure: Option<String> = None;
+                for stage in &stages {
+                    if let Some(name) = &stage.name {
+                        info!(stage = %name, cmd = %stage.cmd, "pipeline stage start");
+                    }
+                    if let Err(e) =
+                        pipeline::run_shell_stage(Some(stage), &stage.cmd, &envs, &bp, &bl).await
+                    {
+                        warn!(cmd = %stage.cmd, error = %e, "pipeline stage failed");
+                        failure = Some(format!("stage: {e}"));
+                        break;
+                    }
+                }
+                if failure.is_none() {
+                    if let Some(cmd) = &install_cmd {
+                        info!(cmd, "install hook start");
+                        let hook = pipeline::BuildStage {
+                            name: Some("install".to_string()),
+                            cmd: cmd.clone(),
+                        };
+                        if let Err(e) =
+                            pipeline::run_shell_stage(Some(&hook), cmd, &envs, &bp, &bl).await
+                        {
+                            warn!(cmd, error = %e, "install hook failed");
+                            failure = Some(format!("install: {e}"));
                         }
                     }
                 }
+
+                if let Some(why) = failure {
+                    let delay = backoff.record_failure();
+                    warn!(why, retry_after = ?delay, "pipeline failed, backing off");
+                    if binary_changed {
+                        info!(
+                            ?trigger,
+                            "supervised binary changed, restarting despite pipeline failure"
+                        );
+                    } else {
+                        continue;
+                    }
+                } else {
+                    backoff.record_success();
+                    let after = snapshot_mtimes(&watch_paths);
+                    if mtimes_changed(&before, &after) {
+                        info!("pipeline produced changes, proceeding with restart");
+                    } else if binary_changed {
+                        info!(
+                            ?trigger,
+                            "supervised binary changed, restarting regardless of pipeline output"
+                        );
+                    } else if !stages.is_empty() || install_cmd.is_some() {
+                        info!("pipeline produced no changes, skipping restart");
+                        continue;
+                    }
+                }
+
                 let id = next_pod % pod_count;
                 next_pod = next_pod.wrapping_add(1);
-                info!(pod = id, "rolling restart triggered");
+                info!(
+                    pod = id,
+                    trigger = trigger.kind(),
+                    "rolling restart triggered"
+                );
                 manager.restart_one(id).await;
             }
         });
