@@ -303,7 +303,10 @@ body {
 
 .watch-item {
   font-family: var(--font-mono);
-  font-size: 0.75rem;
+  /* Same value-cell role as .info-row__value in the sibling row: share its
+     size and weight so the two info rows read as one uniform block. */
+  font-size: 0.8125rem;
+  font-weight: 500;
   color: var(--color-value);
   /* Fill the value column: the ellipsis above truncates as needed at any
      viewport width (the old fixed 260px cap overflowed narrow cards). */
