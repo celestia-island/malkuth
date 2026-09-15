@@ -15,6 +15,7 @@ jobs:
   check:
     name: fmt + check + clippy + test (${{ matrix.os }})
     runs-on: [self-hosted, linux, x64, local]
+    timeout-minutes: 300
 
     permissions:
       contents: read
@@ -110,6 +111,7 @@ jobs:
   integration:
     name: python integration tests (CLI + test-app)
     runs-on: [self-hosted, linux, x64, local]
+    timeout-minutes: 180
     permissions:
       contents: read
     steps:
