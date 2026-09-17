@@ -1,0 +1,17 @@
+name: Release Notes
+
+# Generates the standard categorized release body whenever a v* tag lands on
+# master: every merged PR since the previous tag, grouped by gitmoji. The
+# release is created as a draft so a human can curate before publishing
+# (shared workflow in celestia-devtools, see its README "Release Notes").
+
+on:
+  push:
+    tags: [v*]
+
+permissions:
+  contents: write
+
+jobs:
+  release-notes:
+    uses: celestia-island/celestia-devtools/.github/workflows/release-notes.yml@master
