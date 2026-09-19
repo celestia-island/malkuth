@@ -34,20 +34,6 @@ jobs:
           toolchain: ${{ matrix.rust }}
           components: rustfmt, clippy
 
-      - name: Cache cargo
-        uses: actions/cache@v4
-        continue-on-error: true
-        with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry/index/
-            ${{ env.CARGO_HOME }}/registry/cache/
-            ${{ env.CARGO_HOME }}/git/db/
-            target
-          key: ${{ matrix.os }}-${{ matrix.rust }}-cargo-${{ hashFiles('**/Cargo.toml') }}
-          restore-keys: |
-            ${{ matrix.os }}-${{ matrix.rust }}-cargo-
-            ${{ matrix.os }}-cargo-
-
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -121,20 +107,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        continue-on-error: true
-        with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry/index/
-            ${{ env.CARGO_HOME }}/registry/cache/
-            ${{ env.CARGO_HOME }}/git/db/
-            target
-          key: ubuntu-integration-cargo-${{ hashFiles('**/Cargo.toml') }}
-          restore-keys: |
-            ubuntu-integration-cargo-
-            ubuntu-latest-stable-cargo-
 
       - name: Build CLI + test-app
         run: cargo build --features cli,worker && cargo build --example test_app --features tcp,worker,signals
