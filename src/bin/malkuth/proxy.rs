@@ -159,6 +159,12 @@ impl ProxyState {
 /// Run the proxy on `public` until the process exits.
 pub async fn run_proxy(public: SocketAddr, state: Arc<ProxyState>) -> io::Result<()> {
     let listener = TcpListener::bind(public).await?;
+    run_proxy_on(listener, state).await
+}
+
+/// Listener-injected variant (tests bind an ephemeral port).
+pub async fn run_proxy_on(listener: TcpListener, state: Arc<ProxyState>) -> io::Result<()> {
+    let public = listener.local_addr()?;
     info!(event = "proxy_listening", %public, "sticky reverse proxy accepting");
     loop {
         let (client, peer) = match listener.accept().await {
@@ -189,7 +195,13 @@ async fn handle_client(
         let backend = match state.pick(&client_ip, &dead) {
             Some(b) => b,
             None => {
-                debug!(%peer, "no healthy backend; closing client");
+                // No backend answered (pod restarting / crashed). Closing the
+                // connection degrades into a bare 502 at whatever fronts this
+                // proxy — serve an explicit maintenance page instead, so the
+                // operator's browser pauses briefly and self-retries.
+                debug!(%peer, "no healthy backend; serving maintenance page");
+                let _ = client.write_all(maintenance_response().as_slice()).await;
+                let _ = client.shutdown().await;
                 return Ok(());
             }
         };
@@ -205,6 +217,64 @@ async fn handle_client(
     let _ = io::copy_bidirectional(&mut client, &mut upstream).await?;
     Ok(())
 }
+
+use tokio::io::AsyncWriteExt as _;
+
+/// The no-backend maintenance response: HTTP 503 with `Retry-After` and a
+/// self-contained page that reloads the original URL automatically, so a pod
+/// restart (seconds) degrades into a brief pause instead of a blanket 502.
+/// Byte-oriented by design — the proxy is protocol-agnostic and this is the
+/// one place it speaks HTTP.
+fn maintenance_response() -> Vec<u8> {
+    let body = MAINTENANCE_BODY;
+    format!(
+        "HTTP/1.1 503 Service Unavailable\r\n\
+         Content-Type: text/html; charset=utf-8\r\n\
+         Cache-Control: no-store\r\n\
+         Retry-After: 3\r\n\
+         X-Content-Type-Options: nosniff\r\n\
+         Connection: close\r\n\
+         Content-Length: {}\r\n\
+         \r\n\
+         {body}",
+        body.len()
+    )
+    .into_bytes()
+}
+
+const MAINTENANCE_BODY: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta http-equiv="refresh" content="3">
+<title>Malkuth — service restarting</title>
+<style>
+  *{box-sizing:border-box}html,body{height:100%}
+  body{margin:0;display:grid;place-items:center;padding:24px;background:#101418;color:#e8eaf0;
+    font:15px/1.7 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  main{text-align:center;max-width:34rem}
+  .ring{width:44px;height:44px;margin:0 auto 18px;border-radius:50%;
+    border:3px solid rgba(148,163,184,.25);border-top-color:#7aa2f7;animation:spin 1s linear infinite}
+  h1{font-size:18px;font-weight:600;margin:0}
+  p{color:rgba(203,213,225,.8);font-size:14px}
+  .alt{color:rgba(148,163,184,.7);font-size:12.5px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion:reduce){.ring{animation:none;opacity:.6}}
+</style>
+</head>
+<body>
+<main role="status">
+  <div class="ring" aria-hidden="true"></div>
+  <h1>Service is restarting</h1>
+  <p>This page will retry automatically — usually ready within seconds.</p>
+  <p class="alt" lang="zh-Hans">服务正在重启，本页会自动重试，通常几秒内即可恢复。</p>
+</main>
+<script>setTimeout(function(){location.reload()},3000)</script>
+</body>
+</html>
+"#;
 
 /// fnv-1a 64-bit.
 fn hash64(s: impl AsRef<str>) -> u64 {
@@ -258,5 +328,45 @@ mod tests {
             let b = ring.route_excluding(k, &dead).unwrap();
             assert_ne!(b.addr.port(), 1);
         }
+    }
+
+    #[test]
+    fn maintenance_head_declares_the_exact_body_length() {
+        let resp = maintenance_response();
+        let text = std::str::from_utf8(&resp).unwrap();
+        let (head, body) = text.split_once("\r\n\r\n").unwrap();
+        let len: usize = head
+            .lines()
+            .find_map(|l| l.strip_prefix("Content-Length: "))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(len, body.len(), "declared vs actual body bytes");
+        assert!(head.contains("HTTP/1.1 503 Service Unavailable"));
+        assert!(head.contains("Retry-After: 3"));
+        assert!(head.contains("X-Content-Type-Options: nosniff"));
+        assert!(head.contains("Cache-Control: no-store"));
+    }
+
+    #[tokio::test]
+    async fn no_backend_serves_the_maintenance_page_instead_of_hanging_up() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let state = std::sync::Arc::new(ProxyState::new(Duration::from_secs(30)));
+        // Empty ring: every client must get the maintenance page.
+        let server = tokio::spawn(run_proxy_on(listener, state));
+
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        c.write_all(b"GET / HTTP/1.1\r\nHost: demo\r\n\r\n")
+            .await
+            .unwrap();
+        let mut seen = Vec::new();
+        c.read_to_end(&mut seen).await.unwrap();
+        let text = String::from_utf8_lossy(&seen);
+        assert!(text.starts_with("HTTP/1.1 503"), "got: {text}");
+        assert!(text.contains("Service is restarting"), "{text}");
+        assert!(text.contains("服务正在重启"), "{text}");
+        server.abort();
     }
 }
