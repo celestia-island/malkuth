@@ -150,6 +150,38 @@ pub fn run_backup(cfg: &DbBackupConfig, uri: &str) -> Result<PathBuf, String> {
     Ok(final_path)
 }
 
+/// Strip the trailing `-<YYYYMMDD>-<HHMMSS>` stamp (as produced by
+/// [`run_backup`]) from a dump file base name, returning the `<host>-<db>`
+/// grouping key. The stamp must be stripped as a whole: it contains a `-`
+/// itself, so peeling a single `-<HHMMSS>` tail would group by day and let
+/// old backups survive forever. Returns the input unchanged when no
+/// well-formed stamp suffix is present.
+fn strip_stamp(base: &str) -> &str {
+    // "YYYYMMDD-HHMMSS" = 15 bytes, plus the '-' that separates it from the
+    // `<host>-<db>` prefix.
+    const STAMP_LEN: usize = 15;
+    const FULL_SUFFIX_LEN: usize = STAMP_LEN + 1;
+    let bytes = base.as_bytes();
+    if bytes.len() < FULL_SUFFIX_LEN + 1 {
+        return base;
+    }
+    let stamp_start = bytes.len() - STAMP_LEN;
+    let stamp = &bytes[stamp_start..];
+    let well_formed = stamp[8] == b'-'
+        && stamp
+            .iter()
+            .enumerate()
+            .all(|(i, &c)| i == 8 || c.is_ascii_digit())
+        && bytes[stamp_start - 1] == b'-';
+    if well_formed {
+        // The cut point is the '-' byte before the stamp; ASCII bytes are
+        // always char boundaries, so this slice cannot panic.
+        &base[..stamp_start - 1]
+    } else {
+        base
+    }
+}
+
 /// Trim the backup directory to the newest `retain` dumps per database.
 pub fn rotate(cfg: &DbBackupConfig) {
     let Ok(entries) = std::fs::read_dir(&cfg.dir) else {
@@ -162,16 +194,16 @@ pub fn rotate(cfg: &DbBackupConfig) {
         if !name.ends_with(".dump") && !name.ends_with(".dump.age") {
             continue;
         }
-        // Group by `<host>-<db>`: strip the trailing `-<timestamp>` segment.
+        // Group by `<host>-<db>`: strip the whole `-<timestamp>` stamp so
+        // that the retain window spans days instead of resetting at midnight.
         let base = name.strip_suffix(".age").unwrap_or(&name);
         let base = base.strip_suffix(".dump").unwrap_or(base);
-        let prefix = match base.rfind('-') {
-            Some(i) => base[..i].to_string(),
-            None => base.to_string(),
-        };
+        let prefix = strip_stamp(base).to_string();
         by_prefix.entry(prefix).or_default().push(e.path());
     }
     for (_prefix, mut files) in by_prefix {
+        // Fixed-width zero-padded stamps sort lexicographically in
+        // chronological order.
         files.sort();
         if files.len() > cfg.retain {
             for stale in files.iter().take(files.len() - cfg.retain) {
@@ -269,7 +301,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for i in 0..5 {
-            std::fs::write(dir.join(format!("host-db-20260805-0000{i}.dump")), b"x").unwrap();
+            // Real stamp shape: 8-digit date + '-' + 6-digit time.
+            std::fs::write(dir.join(format!("host-db-20260805-00000{i}.dump")), b"x").unwrap();
         }
         let cfg = DbBackupConfig {
             dir: dir.clone(),
@@ -285,6 +318,84 @@ mod tests {
             .filter(|n| n.ends_with(".dump"))
             .collect();
         assert_eq!(left.len(), 3, "kept {left:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rotates_stale_dumps_across_days() {
+        // Regression: the stamp itself contains a '-', so grouping must peel
+        // the whole `-<YYYYMMDD>-<HHMMSS>` suffix. Grouping by day would keep
+        // `retain` dumps per day and never clean older days (unbounded disk).
+        let dir =
+            std::env::temp_dir().join(format!("malkuth-dbbackup-days-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let days = [
+            ("20260801", "000000"),
+            ("20260801", "120000"),
+            ("20260802", "000000"),
+            ("20260802", "120000"),
+            ("20260803", "000000"),
+            ("20260803", "120000"),
+        ];
+        for (day, time) in days {
+            std::fs::write(dir.join(format!("host-db-{day}-{time}.dump")), b"x").unwrap();
+        }
+        let cfg = DbBackupConfig {
+            dir: dir.clone(),
+            retain: 2,
+            key: None,
+            uris: vec![],
+        };
+        rotate(&cfg);
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            vec![
+                "host-db-20260803-000000.dump".to_string(),
+                "host-db-20260803-120000.dump".to_string(),
+            ],
+            "old-day dumps must be rotated out, kept {left:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rotates_encrypted_dumps_across_days() {
+        // `.dump.age` files group under `<host>-<db>` as well; hyphenated
+        // host/db labels must not split the group.
+        let dir = std::env::temp_dir().join(format!("malkuth-dbbackup-age-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for day in ["20260801", "20260802"] {
+            std::fs::write(
+                dir.join(format!("node-1-chest-db-{day}-235900.dump.age")),
+                b"x",
+            )
+            .unwrap();
+        }
+        let cfg = DbBackupConfig {
+            dir: dir.clone(),
+            retain: 1,
+            key: None,
+            uris: vec![],
+        };
+        rotate(&cfg);
+        let left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            left,
+            vec!["node-1-chest-db-20260802-235900.dump.age".to_string()],
+            "kept {left:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
