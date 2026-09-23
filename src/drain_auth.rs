@@ -4,16 +4,21 @@
 //!
 //! # Flow
 //!
-//! 1. entelecheia OreXis audits a RestartProposal → returns GateDecision
-//! 2. If Allow/Review(confirmed) → the approval is recorded via `approve()`
+//! 1. An external auditor or a human operator decides a restart proposal is
+//!    allowed (the upstream audit tooling itself is out of scope here).
+//! 2. The deciding side records the outcome via [`ApprovalRegistry::approve`],
+//!    passing the exact `proposal_id` and `worker_id`.
 //! 3. malkuth receives a DrainRequest → `validate_drain_request()` checks
-//!    that the proposal_id is registered and approved
-//! 4. If the proposal is unknown or was blocked, the drain is rejected
+//!    that a live approval entry exists whose stored `proposal_id` AND
+//!    `worker_id` both match the request exactly.
+//! 4. Unknown, expired, or blocked proposals are rejected.
 //!
 //! # Security guarantee
 //!
-//! Without a valid entry in the [`ApprovalRegistry`], no drain can proceed.
-//! Empty or fabricated `proposal_id` values are rejected at the gate.
+//! Without an approval entry whose `proposal_id` and `worker_id` match the
+//! request exactly, no drain can proceed. Empty or fabricated `proposal_id`
+//! values are rejected at the gate: an approval recorded for one proposal
+//! never vouches for a different or replayed id.
 
 use std::sync::RwLock;
 use std::time::{Duration, SystemTime};
@@ -29,6 +34,7 @@ pub enum GateDecision {
 /// An approved restart proposal registered in the authorization gate.
 #[derive(Debug, Clone)]
 struct ApprovalEntry {
+    proposal_id: String,
     worker_id: String,
     decision: GateDecision,
     approved_at: SystemTime,
@@ -53,9 +59,9 @@ impl ApprovalRegistry {
         }
     }
 
-    /// Register an approved proposal. Called after OreXis or human
-    /// confirms a restart is authorized.
-    pub fn approve(&self, _proposal_id: &str, worker_id: &str, decision: GateDecision) {
+    /// Register an approved proposal. Called after an external auditor or
+    /// human confirms a restart is authorized.
+    pub fn approve(&self, proposal_id: &str, worker_id: &str, decision: GateDecision) {
         if decision == GateDecision::Block {
             return;
         }
@@ -66,17 +72,24 @@ impl ApprovalRegistry {
             entries.remove(0);
         }
         entries.push(ApprovalEntry {
+            proposal_id: proposal_id.into(),
             worker_id: worker_id.into(),
             decision,
             approved_at: SystemTime::now(),
         });
     }
 
-    /// Check whether a proposal is approved for a given worker.
-    pub fn is_approved(&self, _proposal_id: &str, worker_id: &str) -> bool {
+    /// Check whether a proposal is approved for a given worker. The stored
+    /// `proposal_id` must match exactly: an approval recorded for one
+    /// proposal must never authorize a different or fabricated id, even for
+    /// the same worker.
+    pub fn is_approved(&self, proposal_id: &str, worker_id: &str) -> bool {
         let entries = self.entries.read().unwrap();
         entries.iter().any(|e| {
-            e.worker_id == worker_id && e.decision != GateDecision::Block && e.is_valid(self.ttl)
+            e.proposal_id == proposal_id
+                && e.worker_id == worker_id
+                && e.decision != GateDecision::Block
+                && e.is_valid(self.ttl)
         })
     }
 
@@ -117,7 +130,7 @@ pub fn validate_drain_request(
     if worker_id.is_empty() {
         return Err("Drain request rejected: empty worker_id".into());
     }
-    // ── Authorization gate: verify proposal is approved ──────────
+    // ── Authorization gate: verify this exact proposal is approved ──
     if !registry.is_approved(proposal_id, worker_id) {
         return Err(format!(
             "Drain request rejected: proposal_id '{}' is not approved for worker '{}'",
@@ -218,7 +231,18 @@ mod tests {
         let reg = ApprovalRegistry::new(10, Duration::ZERO);
         reg.approve("p6", "chest", GateDecision::Allow);
         std::thread::sleep(Duration::from_millis(10));
-        let _reg2 = ApprovalRegistry::new(10, Duration::ZERO);
         assert!(validate_drain_request("chest", "p6", None, &reg).is_err());
+    }
+
+    #[test]
+    fn test_forged_proposal_id_rejected() {
+        // An approval recorded for `p-abc` must never vouch for another id —
+        // not for a fabricated one, not for the same id under another worker.
+        let reg = registry();
+        reg.approve("p-abc", "chest", GateDecision::Allow);
+        assert!(reg.is_approved("p-abc", "chest"));
+        assert!(!reg.is_approved("p-forged", "chest"));
+        assert!(validate_drain_request("chest", "p-forged", None, &reg).is_err());
+        assert!(!reg.is_approved("p-abc", "evernight"));
     }
 }
