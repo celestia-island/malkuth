@@ -71,7 +71,7 @@ impl LeaderElector for LeaseLeaderElector {
             node_id: self.node_id.clone(),
             leader_instance_id: self.instance_id.clone(),
             term,
-            acquired_at: iso_now(),
+            acquired_at: epoch_now_label(),
             lease_ttl_secs: ttl.as_secs().try_into().unwrap_or(u32::MAX),
         };
         *self
@@ -115,8 +115,23 @@ impl LeaderElector for LeaseLeaderElector {
     }
 }
 
-fn iso_now() -> String {
-    // Minimal ISO-8601-ish timestamp without a date crate (seconds precision).
+/// Builds the `LeaderAnnounce::acquired_at` label.
+///
+/// Returns `"epoch:<unix-seconds>"`, e.g. `"epoch:1758700000"` — a label, not an
+/// ISO-8601 timestamp (the previous name `iso_now` promised a format this never
+/// produced). Kept in this shape on purpose:
+///
+/// - `acquired_at` is already published over the `Lifecycle.LeaderAnnounce`
+///   wire, so switching to RFC 3339 would change the payload for every consumer;
+/// - `chrono` is only available behind the optional `cli` feature, so producing
+///   a real ISO string here would either add a mandatory dependency or hand-roll
+///   civil-date math.
+///
+/// This is the only producer of `acquired_at` in the crate; note that
+/// `InstanceInfo::started_at` carries an ISO-8601 string instead (see
+/// `types.rs`), so the two registry/leader timestamps deliberately differ in
+/// format — if they are ever unified, migrate every consumer at once.
+fn epoch_now_label() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
