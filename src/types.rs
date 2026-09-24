@@ -98,6 +98,9 @@ pub struct InstanceInfo {
     pub group: String,
     pub role: InstanceRole,
     pub generation: u64,
+    /// Instance start time as an ISO-8601 UTC string (the in-repo fixture is
+    /// `"1970-01-01T00:00:00Z"`, see `registry.rs` tests) — unlike
+    /// `LeaderAnnounce::acquired_at`, which uses an `epoch:<secs>` label.
     pub started_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
@@ -125,6 +128,9 @@ pub struct LeaderAnnounce {
     pub node_id: String,
     pub leader_instance_id: String,
     pub term: u64,
+    /// Lease acquisition time in the `"epoch:<unix-seconds>"` label shape
+    /// produced by `leader::epoch_now_label()` — **not** ISO-8601, so it differs
+    /// from `InstanceInfo::started_at` above; that helper documents why.
     pub acquired_at: String,
     pub lease_ttl_secs: u32,
 }
