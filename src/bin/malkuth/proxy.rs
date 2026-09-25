@@ -247,19 +247,26 @@ const MAINTENANCE_BODY: &str = r#"<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="dark light">
 <meta http-equiv="refresh" content="3">
 <title>Malkuth — service restarting</title>
 <style>
   *{box-sizing:border-box}html,body{height:100%}
-  body{margin:0;display:grid;place-items:center;padding:24px;background:#101418;color:#e8eaf0;
+  :root{--bg:#101418;--fg:#e8eaf0;--muted:rgba(203,213,225,.8);--faint:rgba(148,163,184,.7);
+    --ring:rgba(148,163,184,.25);--ring-top:#7aa2f7}
+  /* Light palette mirrors the info page's light scheme (bg/fg tokens). */
+  @media (prefers-color-scheme: light){
+    :root{--bg:#f5f5f0;--fg:#333340;--muted:rgba(30,30,50,.75);--faint:rgba(30,30,50,.55);
+      --ring:rgba(30,30,50,.14);--ring-top:#4c6ef5}
+  }
+  body{margin:0;display:grid;place-items:center;padding:24px;background:var(--bg);color:var(--fg);
     font:15px/1.7 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
   main{text-align:center;max-width:34rem}
   .ring{width:44px;height:44px;margin:0 auto 18px;border-radius:50%;
-    border:3px solid rgba(148,163,184,.25);border-top-color:#7aa2f7;animation:spin 1s linear infinite}
+    border:3px solid var(--ring);border-top-color:var(--ring-top);animation:spin 1s linear infinite}
   h1{font-size:18px;font-weight:600;margin:0}
-  p{color:rgba(203,213,225,.8);font-size:14px}
-  .alt{color:rgba(148,163,184,.7);font-size:12.5px}
+  p{color:var(--muted);font-size:14px}
+  .alt{color:var(--faint);font-size:12.5px}
   @keyframes spin{to{transform:rotate(360deg)}}
   @media (prefers-reduced-motion:reduce){.ring{animation:none;opacity:.6}}
 </style>
@@ -346,6 +353,136 @@ mod tests {
         assert!(head.contains("Retry-After: 3"));
         assert!(head.contains("X-Content-Type-Options: nosniff"));
         assert!(head.contains("Cache-Control: no-store"));
+    }
+
+    #[test]
+    fn maintenance_page_honors_the_light_color_scheme() {
+        // Regression guard for #138: the maintenance page shipped dark-only
+        // (`color-scheme: dark` + hardcoded dark palette), so light-mode
+        // visitors saw an all-dark page for the whole restart window even
+        // though the info page supports both schemes.
+        let body = MAINTENANCE_BODY;
+        assert!(
+            body.contains(r#"<meta name="color-scheme" content="dark light">"#),
+            "color-scheme meta must declare both schemes"
+        );
+        let (before_light, from_light) = body
+            .split_once("@media (prefers-color-scheme: light)")
+            .expect("light-scheme media query must exist");
+        // Exactly one light query, and no unresolved conflict markers: a
+        // both-sides-kept merge that duplicates the block (drifted copy LAST
+        // wins the cascade) or leaves `<<<<<<<` in place would otherwise pass
+        // every pin below while rendering the wrong palette.
+        assert_eq!(
+            body.matches("@media (prefers-color-scheme: light)").count(),
+            1,
+            "exactly one light media query expected (duplicate block?)"
+        );
+        assert!(
+            !body.contains("<<<<<<<") && !body.contains(">>>>>>>"),
+            "unresolved merge-conflict markers in the page"
+        );
+        // The match must sit in LIVE CSS, not inside an unclosed comment: a
+        // merge-conflict resolution that comments out the WHOLE @media
+        // construct still lets split_once match the commented text, so the
+        // guard would otherwise pin a dead block. Unclosed comment spanning
+        // the match ⇔ the last "/*" in before_light is not followed by "*/".
+        let unclosed = match (before_light.rfind("/*"), before_light.rfind("*/")) {
+            (Some(open), Some(close)) => open > close,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        assert!(
+            !unclosed,
+            "light media query sits inside an unclosed CSS comment"
+        );
+        // Comment balance across the WHOLE style element: a dropped `*/`
+        // anywhere after the light block silently kills every consumption
+        // rule (body/.ring/p/.alt) while textual contains-pins still match
+        // the commented text. Balanced pairs that comment out a single rule
+        // are NOT caught — that failure is visually total (unstyled page in
+        // both schemes), unlike the silent wrong-palette regression this
+        // guard targets.
+        let style = body
+            .split_once("<style>")
+            .and_then(|(_, rest)| rest.split_once("</style>").map(|(s, _)| s))
+            .expect("<style> element");
+        assert_eq!(
+            style.matches("/*").count(),
+            style.matches("*/").count(),
+            "unbalanced CSS comments in <style> — a rule set is dead"
+        );
+        // The light block is the `:root{...}` rule right after the query; the
+        // closing brace of that rule ends the slice. Pin the whole declaration
+        // set (whitespace-insensitive) instead of checking token presence: an
+        // interior comment-out, a reorder, or a missing token must all fail.
+        let light_block = from_light.split('}').next().unwrap_or_default();
+        assert!(
+            !light_block.contains("/*") && !light_block.contains("*/"),
+            "light block must not contain comment markers"
+        );
+        let light_decls: String = light_block.chars().filter(|c| !c.is_whitespace()).collect();
+        // bg/fg derive from the info page's light scheme so "mirrors the info
+        // page" is a machine-checked relation rather than a restated literal;
+        // the two asserts below self-prove the parse (a broken pattern cannot
+        // read as green). Accent tokens stay literal — a deliberate commit
+        // that moves both the page and this expectation is out of scope for
+        // a regression guard.
+        let info_decls: String = include_str!("../../info_page/template.html")
+            .split_once("@media (prefers-color-scheme: light)")
+            .expect("info page must keep a light scheme")
+            .1
+            .split('}')
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        fn decl_token<'a>(decls: &'a str, name: &str) -> &'a str {
+            decls
+                .split_once(&format!("{name}:"))
+                .map_or("", |(_, rest)| rest.split(';').next().unwrap_or(""))
+        }
+        assert_eq!(
+            decl_token(&info_decls, "--bg"),
+            "#f5f5f0",
+            "info-page parse self-proof (bg)"
+        );
+        assert_eq!(
+            decl_token(&info_decls, "--fg"),
+            "#333340",
+            "info-page parse self-proof (fg)"
+        );
+        assert_eq!(
+            light_decls,
+            format!(
+                "{{:root{{--bg:{};--fg:{};--muted:rgba(30,30,50,.75);\
+                 --faint:rgba(30,30,50,.55);--ring:rgba(30,30,50,.14);\
+                 --ring-top:#4c6ef5",
+                decl_token(&info_decls, "--bg"),
+                decl_token(&info_decls, "--fg"),
+            ),
+            "light block must be exactly this declaration set (no comments, no value drift)"
+        );
+        // Dark stays the default outside the light query.
+        assert!(
+            before_light.contains("--bg:#101418"),
+            "dark tokens remain the default outside the light block"
+        );
+        // Definitions alone do not render anything — pin the consumption side
+        // too, so a partial revert to hardcoded dark values (while keeping the
+        // variable definitions) cannot silently re-break light mode.
+        for consumed in [
+            "background:var(--bg);color:var(--fg)",
+            "border:3px solid var(--ring);border-top-color:var(--ring-top)",
+            "p{color:var(--muted)",
+            ".alt{color:var(--faint)",
+        ] {
+            assert!(
+                body.contains(consumed),
+                "page must consume the theme variables: missing `{consumed}`"
+            );
+        }
     }
 
     #[tokio::test]
