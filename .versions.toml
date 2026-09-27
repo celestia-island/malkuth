@@ -1,0 +1,11 @@
+# Version-track baselines for `celestia-devtools verify-versions`.
+#
+# malkuth is a single-crate repo: the cargo baseline resolves from the root
+# [package].version (0.3.x line) and needs no pin. The npm side has exactly
+# one private package (packages/landing_page, deployed but never published),
+# so the publishable-majority heuristic has nothing to vote on — pin the
+# baseline explicitly so the track is gated instead of silently skipped
+# (2026-09-27, devtools fail-closed change).
+
+[track]
+npm = "0.2.18"
