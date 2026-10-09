@@ -198,10 +198,21 @@ async fn handle_client(
                 // No backend answered (pod restarting / crashed). Closing the
                 // connection degrades into a bare 502 at whatever fronts this
                 // proxy — serve an explicit maintenance page instead, so the
-                // operator's browser pauses briefly and self-retries.
-                debug!(%peer, "no healthy backend; serving maintenance page");
-                let _ = client.write_all(maintenance_response().as_slice()).await;
-                let _ = client.shutdown().await;
+                // operator's browser pauses briefly and self-retries. But the
+                // proxy is protocol-agnostic: speak HTTP only to clients that
+                // announced an HTTP request. Raw stream clients (line
+                // protocols, database drivers, …) must keep the legacy
+                // hangup — handing them a well-formed out-of-protocol reply
+                // turns "connection dropped, retry" into "parse this as your
+                // answer, give up" (regressed every line-protocol consumer;
+                // see the CLI integration tests vs #138).
+                if client_looks_like_http(&client).await {
+                    debug!(%peer, "no healthy backend; serving maintenance page");
+                    let _ = client.write_all(maintenance_response().as_slice()).await;
+                    let _ = client.shutdown().await;
+                } else {
+                    debug!(%peer, "no healthy backend; closing client");
+                }
                 return Ok(());
             }
         };
@@ -220,11 +231,40 @@ async fn handle_client(
 
 use tokio::io::AsyncWriteExt as _;
 
+/// How long to wait for a silent client's first bytes before giving up on the
+/// maintenance page. HTTP clients send the request line immediately after
+/// connecting; server-speaks-first protocols and silent clients simply time
+/// out into the legacy hangup. Paid only on the no-backend path.
+const HTTP_SNIFF_WINDOW: Duration = Duration::from_millis(500);
+
+/// Request methods that mark the client as HTTP (RFC 9110 §9 + RFC 5789).
+const HTTP_METHODS: [&str; 9] = [
+    "GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH",
+];
+
+/// Does the client's first byte burst look like an HTTP request line? Peeks
+/// without consuming, so a "no" (or a timeout — silent / server-first client)
+/// leaves the socket byte-for-byte untouched for the legacy hangup path.
+async fn client_looks_like_http(client: &TcpStream) -> bool {
+    let mut buf = [0u8; 16];
+    let n = match tokio::time::timeout(HTTP_SNIFF_WINDOW, client.peek(&mut buf)).await {
+        Ok(Ok(n)) => n,
+        _ => return false, // silent / errored client: not HTTP
+    };
+    let head = &buf[..n];
+    HTTP_METHODS.iter().any(|m| {
+        head.len() > m.len()
+            && head[..m.len()].eq_ignore_ascii_case(m.as_bytes())
+            && head[m.len()] == b' '
+    })
+}
+
 /// The no-backend maintenance response: HTTP 503 with `Retry-After` and a
 /// self-contained page that reloads the original URL automatically, so a pod
 /// restart (seconds) degrades into a brief pause instead of a blanket 502.
 /// Byte-oriented by design — the proxy is protocol-agnostic and this is the
-/// one place it speaks HTTP.
+/// one place it speaks HTTP; it is only served to clients whose first bytes
+/// announce an HTTP request (see `client_looks_like_http`).
 fn maintenance_response() -> Vec<u8> {
     let body = MAINTENANCE_BODY;
     format!(
@@ -505,5 +545,65 @@ mod tests {
         assert!(text.contains("Service is restarting"), "{text}");
         assert!(text.contains("服务正在重启"), "{text}");
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn no_backend_still_hangs_up_for_non_http_clients() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let state = std::sync::Arc::new(ProxyState::new(Duration::from_secs(30)));
+        // Empty ring: a line-protocol client speaks but not HTTP, so it must
+        // get the legacy hangup — zero application bytes. A well-formed
+        // out-of-protocol reply would be swallowed as the actual answer by
+        // naive clients and defeat their retry-on-disconnect logic (#138).
+        let server = tokio::spawn(run_proxy_on(listener, state));
+
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let _ = c.write_all(b"ping\n").await; // may already hit a reset; fine
+        let mut seen = Vec::new();
+        // Bare drop: the client observes a clean EOF (0 bytes) or a
+        // connection reset — never application data.
+        let res = c.read_to_end(&mut seen).await;
+        assert!(
+            seen.is_empty() || res.is_err(),
+            "non-HTTP client got application bytes: {:?}",
+            String::from_utf8_lossy(&seen)
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn http_method_detector_matches_request_lines_only() {
+        // (payload, expected) — sniff must be method-line sensitive, not
+        // substring sensitive.
+        let cases: &[(&[u8], bool)] = &[
+            (b"GET / HTTP/1.1\r\n", true),
+            (b"patch /x HTTP/1.0\r\n", true), // case-insensitive method
+            (b"ping\n", false),
+            (b"health\n", false),
+            (b"GETFUL of nothing\n", false), // method must be followed by SP
+            (b"ET / HTTP/1.1\r\n", false),   // not a known method
+            (b"", false),                    // empty burst
+        ];
+        for (payload, expected) in cases {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let state = std::sync::Arc::new(ProxyState::new(Duration::from_secs(30)));
+            let server = tokio::spawn(run_proxy_on(listener, state));
+            let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let _ = c.write_all(payload).await;
+            let mut seen = Vec::new();
+            let res = c.read_to_end(&mut seen).await;
+            let got_page = seen.starts_with(b"HTTP/1.1 503");
+            assert_eq!(
+                got_page,
+                *expected,
+                "payload {payload:?}: page={got_page} (read {res:?}) body-start {:?}",
+                String::from_utf8_lossy(&seen[..seen.len().min(24)])
+            );
+            server.abort();
+        }
     }
 }
