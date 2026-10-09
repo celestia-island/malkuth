@@ -127,11 +127,21 @@ jobs:
         with:
           toolchain: stable
 
+      # The suite is not standard-library-only: test_cli_proxy_websocket.py needs the
+      # websocket client. Install it here instead of relying on whatever the runner
+      # image happens to carry — a bare `python3` used to make this job pass or fail
+      # by runner lottery. Kept ahead of the build so a broken environment fails fast.
+      - name: Prepare the Python test environment
+        run: |
+          python3 -m venv "$RUNNER_TEMP/pyvenv"
+          "$RUNNER_TEMP/pyvenv/bin/python" -m pip install --disable-pip-version-check --quiet -r scripts/requirements.txt
+
       - name: Build CLI + test-app
         run: cargo build --features cli,worker && cargo build --example test_app --features tcp,worker,signals
 
       - name: Run the Python scripts/ suite
-        run: python3 scripts/tests/run_all.py
+        run: |
+          "$RUNNER_TEMP/pyvenv/bin/python" scripts/tests/run_all.py
 
   verify-versions:
     name: Verify version consistency
