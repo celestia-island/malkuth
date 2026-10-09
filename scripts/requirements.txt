@@ -1,1 +1,5 @@
-# malkuth scripts/ tests use the Python standard library only — no pip deps.
+# malkuth scripts/ deps. Everything is the Python standard library except the
+# websocket client, which scripts/tests/test_cli_proxy_websocket.py needs to drive
+# the CLI's WebSocket proxy path. Install before running the suite:
+#   python3 -m venv .venv && .venv/bin/pip install -r scripts/requirements.txt
+websocket-client>=1.7.0
