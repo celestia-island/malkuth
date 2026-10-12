@@ -582,7 +582,9 @@ async fn main() {
     if let Some(dir) = args.db_backup_dir {
         let cfg = db_backup::DbBackupConfig {
             dir,
-            retain: args.db_backup_retain,
+            // Audit malkuth-R1-9: retain=0 would delete ALL backups in
+            // the group on the next rotation — clamp to 1 at construction.
+            retain: args.db_backup_retain.max(1),
             key: args.db_backup_key.clone(),
             uris: args.db_backup_uri.clone(),
         };

@@ -178,6 +178,7 @@ pub struct Args {
 
     /// Keep at most N dump files per database (default: 14).
     #[arg(long = "db-backup-retain", default_value = "14")]
+    #[arg(long = "db-backup-retain", default_value = "14")]
     pub db_backup_retain: usize,
 
     /// Encrypt every dump with `age -r <RECIPIENT>` (writes `.dump.age`).
