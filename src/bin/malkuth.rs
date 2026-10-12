@@ -657,7 +657,25 @@ async fn main() {
     }
 
     info!("malkuth supervisor ready; press Ctrl-C to stop");
-    signal::ctrl_c().await.ok();
+    // Audit malkuth-R1-4: systemd sends SIGTERM on stop/restart — the
+    // old ctrl_c-only await let SIGTERM take the default disposition,
+    // killing the supervisor with the pods orphaned (kill_on_drop never
+    // ran). SIGTERM now joins Ctrl-C on the shutdown path.
+    let mut term = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        Ok(s) => s,
+        Err(e) => {
+            // SIGTERM support is best-effort: without the handler the
+            // old default-disposition behavior would return.
+            error!(error = %e, "cannot install SIGTERM handler; SIGTERM will not stop gracefully");
+            signal::ctrl_c().await.ok();
+            info!("shutdown signal received; exiting (child pods killed via kill_on_drop)");
+            return;
+        }
+    };
+    tokio::select! {
+        _ = signal::ctrl_c() => {}
+        _ = term.recv() => {}
+    }
     info!("shutdown signal received; exiting (child pods killed via kill_on_drop)");
 }
 

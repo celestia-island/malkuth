@@ -27,6 +27,35 @@ use tracing::{info, warn};
 use crate::proxy::{Backend, ProxyState};
 
 /// Lightweight, lock-friendly per-pod metadata exposed to the proxy.
+/// Audit malkuth-R1-1: stop a managed pod with a drain escalation
+/// chain — SIGTERM first so the service can finish in-flight work,
+/// wait up to `drain_secs`, then SIGKILL and reap. The old call sites
+/// started with SIGKILL, which made `drain_secs` a meaningless wait
+/// cap and dropped in-flight requests on every restart.
+async fn stop_draining(child: &mut tokio::process::Child, drain_secs: u64) {
+    if let Some(pid) = child.id() {
+        // SAFETY: plain signal send to a live child pid; no memory ops.
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        }
+    }
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(drain_secs.max(1)),
+        child.wait(),
+    )
+    .await
+    {
+        // Exited within the drain window (gracefully or not).
+        Ok(_) => {}
+        Err(_) => {
+            // Failure means the child already exited; the reap below
+            // tolerates that.
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+        }
+    }
+}
+
 struct PodMeta {
     port: u16,
 }
@@ -220,10 +249,7 @@ impl PodManager {
                     pod = id,
                     "draining pod for restart (requested during readiness probing)"
                 );
-                let _ = child.start_kill();
-                let _ =
-                    tokio::time::timeout(Duration::from_secs(self.drain_secs.max(1)), child.wait())
-                        .await;
+                stop_draining(&mut child, self.drain_secs).await;
             } else if pod_alive {
                 tokio::select! {
                     status = child.wait() => {
@@ -231,12 +257,7 @@ impl PodManager {
                     }
                     _ = notify.notified() => {
                         info!(pod = id, "draining pod for restart");
-                        let _ = child.start_kill();
-                        let _ = tokio::time::timeout(
-                            Duration::from_secs(self.drain_secs.max(1)),
-                            child.wait(),
-                        )
-                        .await;
+                        stop_draining(&mut child, self.drain_secs).await;
                     }
                 }
             }
@@ -461,6 +482,73 @@ mod tests {
         assert!(
             wait_for_two_spawns(&log).await,
             "restart during readiness probing never respawned the pod"
+        );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod stop_draining_tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    fn spawn_sh(script: &'static str) -> tokio::process::Child {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c").arg(script).kill_on_drop(true);
+        cmd.spawn().expect("spawn sh")
+    }
+
+    /// Audit malkuth-R1-1: a service that honors SIGTERM exits within
+    /// the drain window — no escalation needed.
+    #[tokio::test]
+    async fn sigterm_graceful_exit_within_drain_window() {
+        let mut child = spawn_sh("sleep 30");
+        let started = std::time::Instant::now();
+        stop_draining(&mut child, 2).await;
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "a SIGTERM-honoring child must exit without escalation"
+        );
+        let status = child.try_wait().expect("reap").expect("exited");
+        assert!(
+            status.signal() == Some(libc::SIGTERM),
+            "the child must have died from SIGTERM, got {status:?}"
+        );
+    }
+
+    /// Audit malkuth-R1-1: a child that IGNORES SIGTERM gets escalated
+    /// to SIGKILL once the drain window elapses — stop_draining must
+    /// always terminate the child.
+    #[tokio::test]
+    async fn sigterm_ignoring_child_is_escalated_to_sigkill() {
+        // python3 holds SIG_IGN robustly (shell traps proved unreliable
+        // across sh variants — the child died before the window elapsed).
+        let mut child = {
+            let mut cmd = tokio::process::Command::new("python3");
+            cmd.arg("-c")
+                .arg("import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)")
+                .kill_on_drop(true);
+            cmd.spawn().expect("spawn python3")
+        };
+        // Give the child time to install its SIG_IGN handler: a SIGTERM
+        // landing during interpreter startup hits the default
+        // disposition and kills it instantly (not the scenario under
+        // test).
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let started = std::time::Instant::now();
+        stop_draining(&mut child, 1).await;
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_millis(900),
+            "the drain window must actually be honored before escalation"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "escalation must not hang: took {elapsed:?}"
+        );
+        let status = child.try_wait().expect("reap").expect("exited");
+        assert!(
+            status.signal() == Some(libc::SIGKILL),
+            "the child must have been SIGKILLed, got {status:?}"
         );
     }
 }
