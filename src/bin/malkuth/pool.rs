@@ -26,7 +26,6 @@ use tracing::{info, warn};
 
 use crate::proxy::{Backend, ProxyState};
 
-/// Lightweight, lock-friendly per-pod metadata exposed to the proxy.
 /// Audit malkuth-R1-1: stop a managed pod with a drain escalation
 /// chain — SIGTERM first so the service can finish in-flight work,
 /// wait up to `drain_secs`, then SIGKILL and reap. The old call sites

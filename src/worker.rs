@@ -256,7 +256,7 @@ pub(crate) async fn stop_draining(child: &mut Child, drain_secs: u64) {
         Ok(_) => {}
         Err(_) => {
             // Grace window elapsed: escalate to SIGKILL and reap.
-            child.start_kill();
+            let _ = child.start_kill();
             let _ = child.wait().await;
         }
     }
