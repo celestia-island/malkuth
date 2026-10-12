@@ -181,6 +181,13 @@ fn kill_process(pid: u32) -> std::io::Result<()> {
 pub fn acquire(proxy_port: u16) -> Result<SingletonGuard, SingletonError> {
     let lock_dir = lock_dir_path();
     fs::create_dir_all(&lock_dir).ok();
+    // Audit malkuth-R1-3: the lock directory must not be world-writable
+    // — a permissive mode lets any local user pre-plant lock files.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&lock_dir, std::fs::Permissions::from_mode(0o755));
+    }
     let lock_path = lock_dir.join(format!("malkuth-{proxy_port}.lock"));
 
     let meta = LockMeta {
@@ -233,7 +240,10 @@ fn lock_dir_path() -> PathBuf {
     }
     #[cfg(unix)]
     {
-        PathBuf::from("/tmp/malkuth-locks")
+        // Audit malkuth-R1-3: /run/malkuth is root-owned (mode 0755) on
+        // systemd systems — a local low-privilege user can no longer
+        // pre-plant lock files to weaponise the stale-instance kill.
+        PathBuf::from("/run/malkuth/locks")
     }
     #[cfg(windows)]
     {

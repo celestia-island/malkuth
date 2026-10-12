@@ -689,7 +689,10 @@ async fn run_daemon(config_path: &str) -> Result<(), String> {
         cfg.daemon
             .pid_file
             .clone()
-            .unwrap_or_else(|| "/tmp/malkuth-daemon.pid".into())
+            // Audit malkuth-R1-7: /run/malkuth is root-owned on systemd
+            // systems — a local user can no longer pre-plant a symlink
+            // that the File::create would follow.
+            .unwrap_or_else(|| "/run/malkuth/daemon.pid".into())
     };
 
     match acquire_daemon_lock(&pid_file) {
@@ -823,8 +826,23 @@ fn acquire_daemon_lock(pid_file: &str) -> Result<(), String> {
         }
     }
 
+    // Ensure the pid file's parent directory exists and is not
+    // world-writable (audit malkuth-R1-7).
+    if let Some(parent) = std::path::Path::new(pid_file).parent() {
+        let _ = fs::create_dir_all(parent);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
     // Write current PID
-    let mut f = fs::File::create(pid_file)
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(pid_file)
+        .or_else(|_| fs::File::create(pid_file))
         .map_err(|e| format!("cannot create pid file {}: {}", pid_file, e))?;
     let pid = std::process::id();
     write!(f, "{}", pid).map_err(|e| format!("cannot write pid file: {}", e))?;
