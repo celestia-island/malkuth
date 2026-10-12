@@ -539,9 +539,13 @@ async fn proxy_upgrade(req: Request, backend: &str, epoch: &str) -> Result<Respo
     };
     let path_and_query = parts.uri.path_and_query().map_or("/", |pq| pq.as_str());
 
+    // Audit malkuth-R1-6: cap the proxied body at 1 MiB — a client can
+    // no longer OOM the supervisor with a giant request body.
+    const MAX_PROXY_BODY_BYTES: usize = 1024 * 1024;
+
     // WS requests normally carry no body; if one does, read it fully so the
     // forwarded request is complete before the upgrade exchange starts.
-    let body_bytes = axum::body::to_bytes(body, usize::MAX)
+    let body_bytes = axum::body::to_bytes(body, MAX_PROXY_BODY_BYTES)
         .await
         .map_err(|_| ())?;
 
@@ -922,7 +926,7 @@ async fn proxy_to_backend_parts(
     let method = parts.method;
     let headers = parts.headers;
 
-    let body_bytes = axum::body::to_bytes(body, usize::MAX)
+    let body_bytes = axum::body::to_bytes(body, MAX_PROXY_BODY_BYTES)
         .await
         .map_err(|_| ())?;
 
