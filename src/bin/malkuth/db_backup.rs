@@ -91,7 +91,13 @@ pub fn run_backup(cfg: &DbBackupConfig, uri: &str) -> Result<PathBuf, String> {
         .map_err(|e| format!("create backup dir {}: {e}", dir.display()))?;
     // Backups may hold compliance-sensitive rows; keep the directory private.
     use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    if let Err(e) = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) {
+        tracing::warn!(
+            dir = %dir.display(),
+            error = %e,
+            "cannot restrict backup directory permissions to 0700"
+        );
+    }
 
     let host = sanitize_label(&hostname());
     let db = db_name_from_uri(uri);
@@ -224,7 +230,14 @@ pub async fn run_forever(cfg: DbBackupConfig) {
     }
     loop {
         for uri in &uris {
-            match run_backup(&cfg, uri) {
+            // Audit malkuth-R1-9: run_backup blocks on pg_dump (minutes
+            // per call) — spawn_blocking keeps the tokio worker free.
+            let cfg_clone = cfg.clone();
+            let uri_owned = uri.clone();
+            let result = tokio::task::spawn_blocking(move || run_backup(&cfg_clone, &uri_owned))
+                .await
+                .unwrap_or_else(|e| Err(format!("spawn_blocking join: {e}")));
+            match result {
                 Ok(_) => {}
                 Err(e) => error!(
                     db = db_name_from_uri(uri),
