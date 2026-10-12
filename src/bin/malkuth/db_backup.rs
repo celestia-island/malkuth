@@ -226,7 +226,11 @@ pub async fn run_forever(cfg: DbBackupConfig) {
         for uri in &uris {
             match run_backup(&cfg, uri) {
                 Ok(_) => {}
-                Err(e) => error!(uri, error = %e, "database backup failed"),
+                Err(e) => error!(
+                    db = db_name_from_uri(uri),
+                    error = %e,
+                    "database backup failed"
+                ),
             }
         }
         rotate(&cfg);

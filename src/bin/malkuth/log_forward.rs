@@ -32,6 +32,11 @@ const RATE_LIMIT_PER_SEC: u32 = 200;
 const SUMMARY_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Ring capacity kept in sync with the pool's historical 500-line cap.
+/// The maximum size of one log line pushed to the ring (audit
+/// malkuth-R1-8): a runaway child can emit megabyte-long lines and OOM
+/// the supervisor. Truncated lines get a `…` marker.
+const MAX_LOG_LINE_BYTES: usize = 64 * 1024;
+
 const RING_MAX_LINES: usize = 500;
 
 /// Spawn the forwarding task for one child stream.
@@ -67,6 +72,14 @@ pub(crate) fn forward(
             // so the VTTY view is unaffected by journald-side shedding.
             if let Ok(mut g) = runtime_log.lock() {
                 g.push(t.to_string());
+                // Audit malkuth-R1-8: cap the line length before pushing
+                // to the ring — a runaway child can emit a single line
+                // that is megabytes long and OOM the supervisor.
+                let mut t = t;
+                if t.len() > MAX_LOG_LINE_BYTES {
+                    t.truncate(MAX_LOG_LINE_BYTES);
+                    t.push('…');
+                }
                 if g.len() > RING_MAX_LINES {
                     g.remove(0);
                 }
