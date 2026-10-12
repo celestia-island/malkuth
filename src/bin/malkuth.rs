@@ -651,6 +651,23 @@ async fn main() {
                     return;
                 }
             };
+            // Audit malkuth-R1-6 (residual): the info page exposes build
+            // and runtime logs of the managed pods — a non-loopback bind
+            // means those logs are reachable from the network without
+            // authentication. Make the exposure explicit at startup so
+            // the operator consciously chose it.
+            let loopback = addr
+                .split_once(':')
+                .and_then(|(host, _)| host.parse::<std::net::IpAddr>().ok())
+                .map(|ip| ip.is_loopback())
+                .unwrap_or(false);
+            if !loopback {
+                warn!(
+                    addr = %addr,
+                    "info page bound to a NON-loopback address: build/runtime \
+                     logs are exposed without authentication"
+                );
+            }
             info!(addr = %addr, "info page listening");
             if let Err(e) = axum::serve(listener, router).await {
                 error!(error = %e, "info page server stopped");
