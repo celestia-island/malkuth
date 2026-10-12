@@ -34,7 +34,12 @@ impl LockGuard for FileGuard {
             unsafe {
                 libc::flock(file.as_raw_fd(), libc::LOCK_UN);
             }
-            let _ = std::fs::remove_file(&self.path);
+            // Audit malkuth-R1-10: DO NOT remove the lock file here —
+            // an unlink-then-create race lets a waiter holding an fd to
+            // the old inode acquire a lock on a file nobody else can
+            // see (classic double-holder). The file is a zero-byte
+            // sentinel; leaving it costs nothing and keeps every
+            // waiter's fd pointing at the same inode.
         }
     }
 }
@@ -46,7 +51,7 @@ impl Drop for FileGuard {
             unsafe {
                 libc::flock(file.as_raw_fd(), libc::LOCK_UN);
             }
-            let _ = std::fs::remove_file(&self.path);
+            // Same rationale as release(): never unlink the sentinel.
         }
     }
 }
