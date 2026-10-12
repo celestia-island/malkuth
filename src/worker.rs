@@ -206,7 +206,7 @@ async fn supervise_one(
                 }
             }
             _ = drain.wait_for_drain() => {
-                let _ = child.kill().await;
+                stop_draining(&mut child, 30).await;
                 break;
             }
             _ = async {
@@ -217,7 +217,7 @@ async fn supervise_one(
                 }
             } => {
                 info!(worker = %spec.id, "per-worker drain signal received");
-                let _ = child.kill().await;
+                stop_draining(&mut child, 30).await;
                 break;
             }
         }
@@ -230,6 +230,35 @@ async fn supervise_one(
         restart_policy: spec.restart_policy,
         restart_count,
         last_error,
+    }
+}
+
+/// Audit malkuth-R1-1: stop a managed worker with a drain escalation
+/// chain — SIGTERM first so the service can finish in-flight work, wait
+/// up to `drain_secs` (default 30s when no budget is wired; see
+/// drain_auth.rs for the authorization gate follow-up), then SIGKILL
+/// and reap. The old call sites used `kill()` (SIGKILL) directly,
+/// dropping in-flight requests on every drain.
+pub(crate) async fn stop_draining(child: &mut Child, drain_secs: u64) {
+    if let Some(pid) = child.id() {
+        // SAFETY: plain signal send to a live child pid; no memory ops.
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        }
+    }
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(drain_secs.max(1)),
+        child.wait(),
+    )
+    .await
+    {
+        // Exited within the drain window (gracefully or not).
+        Ok(_) => {}
+        Err(_) => {
+            // Grace window elapsed: escalate to SIGKILL and reap.
+            child.start_kill();
+            let _ = child.wait().await;
+        }
     }
 }
 
