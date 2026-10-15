@@ -70,16 +70,20 @@ pub(crate) fn forward(
 
             // Ring capture first — unconditional, even when rate-limited,
             // so the VTTY view is unaffected by journald-side shedding.
+            // Audit malkuth-R2-1: the R1-8 fix was dead code — the
+            // untruncated line was pushed BEFORE the truncation ran on a
+            // shadowed (never-used) copy, so a runaway child's megabyte
+            // line still entered the ring. Truncate FIRST, then push.
+            let ring_line = if t.len() > MAX_LOG_LINE_BYTES {
+                let mut cut = t.to_string();
+                cut.truncate(MAX_LOG_LINE_BYTES);
+                cut.push('…');
+                cut
+            } else {
+                t.to_string()
+            };
             if let Ok(mut g) = runtime_log.lock() {
-                g.push(t.to_string());
-                // Audit malkuth-R1-8: cap the line length before pushing
-                // to the ring — a runaway child can emit a single line
-                // that is megabytes long and OOM the supervisor.
-                let mut t = t;
-                if t.len() > MAX_LOG_LINE_BYTES {
-                    t.truncate(MAX_LOG_LINE_BYTES);
-                    t.push('…');
-                }
+                g.push(ring_line);
                 if g.len() > RING_MAX_LINES {
                     g.remove(0);
                 }

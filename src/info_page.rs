@@ -811,6 +811,13 @@ async fn read_response_body(
                 .map(str::trim)
                 .unwrap_or("");
             let size = usize::from_str_radix(size_hex, 16).map_err(|_| ())?;
+            // Audit malkuth-R2-3: reject oversized chunks and cap the
+            // total accumulated body — the raw-TCP proxy previously
+            // buffered without bound (same class as the reqwest side).
+            const MAX_PROXY_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+            if size > MAX_PROXY_RESPONSE_BYTES || out.len() + size > MAX_PROXY_RESPONSE_BYTES {
+                return Err(());
+            }
             if size == 0 {
                 // Trailer section, terminated by a blank line.
                 loop {
@@ -991,7 +998,20 @@ async fn proxy_to_backend_parts(
         })
         .map(|(n, v)| (n.as_str().to_string(), v.as_bytes().to_vec()))
         .collect();
+    // Audit malkuth-R2-3: cap the proxied response body — a
+    // compromised pod can stream an unbounded body and OOM the
+    // supervisor (the request side was capped in #153; this closes
+    // the response side).
+    const MAX_PROXY_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
+    if let Some(len) = resp.content_length() {
+        if len > MAX_PROXY_RESPONSE_BYTES {
+            return Err(());
+        }
+    }
     let resp_body = resp.bytes().await.map_err(|_| ())?;
+    if resp_body.len() as u64 > MAX_PROXY_RESPONSE_BYTES {
+        return Err(());
+    }
 
     let mut response = Response::new(axum::body::Body::from(resp_body));
     *response.status_mut() = status;

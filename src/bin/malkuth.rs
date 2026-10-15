@@ -842,6 +842,11 @@ fn acquire_daemon_lock(pid_file: &str) -> Result<(), String> {
                 }
             }
             warn!(old_pid, "stale pid file, removing");
+            // Audit malkuth-R2-2: actually remove the stale file and let
+            // the O_EXCL create below retry atomically — the old code
+            // warned "removing" but never removed, then fell into a
+            // truncating File::create that follows symlinks.
+            let _ = fs::remove_file(pid_file);
         }
     }
 
