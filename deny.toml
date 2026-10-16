@@ -1,0 +1,8 @@
+# cargo-deny policy. Run locally: cargo deny check.
+[bans]
+
+# TLS policy: rustls with the pure-Rust ring provider only. aws-lc-sys needs
+# NASM (and a C toolchain) installed to build at all — a build-host burden the
+# family removed by pinning every TLS path to ring. Keep it out permanently.
+[[bans.deny]]
+name = "aws-lc-sys"
