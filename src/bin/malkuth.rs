@@ -577,10 +577,9 @@ async fn main() {
             // and runtime logs of the managed pods — a non-loopback bind
             // means those logs are reachable from the network without
             // authentication. Make the exposure explicit at startup so
-            // the operator consciously chose it. (`addr` is already a
-            // parsed SocketAddr — the original string-split version never
-            // compiled behind the lib-level cli breakage.)
-            if !addr.ip().is_loopback() {
+            // the operator consciously chose it.
+            let loopback = addr.ip().is_loopback();
+            if !loopback {
                 warn!(
                     addr = %addr,
                     "info page bound to a NON-loopback address: build/runtime \

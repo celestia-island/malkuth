@@ -515,6 +515,8 @@ mod tests {
         // plain `one`/`two` messages would be rejected and leave an EMPTY
         // repo for ls-remote. The fixture repo opts out of any inherited
         // hooks: what it tests is probe_remote, not message linting.
+        // (Independently fixed by both #159 and the landing-identity
+        // branch; one block survives the merge.)
         run(&["config", "core.hooksPath", ""]);
         run(&["config", "user.email", "t@t"]);
         run(&["config", "user.name", "t"]);

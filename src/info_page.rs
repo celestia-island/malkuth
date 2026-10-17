@@ -17,13 +17,6 @@ include!(concat!(env!("OUT_DIR"), "/landing_page_html.rs"));
 
 const LOGO_BYTES: &[u8] = include_bytes!("info_page/logo.webp");
 
-/// Audit malkuth-R1-6: cap the proxied body at 1 MiB — a client can
-/// no longer OOM the supervisor with a giant request body. Module scope:
-/// both proxy paths (`proxy_upgrade` and `proxy_to_backend_parts`) share
-/// the cap (the fn-local original left the second use out of scope and
-/// broke the `cli` feature build).
-const MAX_PROXY_BODY_BYTES: usize = 1024 * 1024;
-
 fn base64_encode(bytes: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -758,6 +751,11 @@ fn is_upgrade_request(headers: &header::HeaderMap) -> bool {
                     .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
             })
 }
+
+/// Audit malkuth-R1-6: cap the proxied request body at 1 MiB — a client can
+/// no longer OOM the supervisor with a giant request body. Shared by both
+/// proxy paths ([`proxy_upgrade`] and [`proxy_to_backend_parts`]).
+const MAX_PROXY_BODY_BYTES: usize = 1024 * 1024;
 
 /// Extract the bare `host:port` of the `--serve` backend URL, dropping any
 /// scheme and path — plain HTTP only, mirroring [`probe_backend`].
