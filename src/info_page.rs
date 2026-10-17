@@ -1986,6 +1986,61 @@ mod tests {
         format!("http://{door}")
     }
 
+    /// The two-line wrap contract (2026-10-17 user direction): a binary
+    /// row that cannot fit on one line (phones) flips to TWO right-aligned
+    /// lines — separator hidden, both lines' boxes stretched onto one left
+    /// and one right edge. Pinned at the source level for BOTH rendering
+    /// surfaces: the server-side template and the embedded SPA build.
+    #[test]
+    fn test_binary_detail_two_line_wrap_contract() {
+        let t = include_str!("info_page/template.html");
+        // One-line state: a no-wrap flex row — never wraps mid-separator.
+        let detail = t.split(".binary-detail {").nth(1).unwrap_or("");
+        assert!(
+            detail.contains("display: flex") && detail.contains("flex-wrap: nowrap"),
+            "template one-line state is a no-wrap flex row"
+        );
+        // Two-line state: column, stretched boxes (both edges aligned),
+        // separator hidden.
+        assert!(
+            t.contains(".binary-detail.is-wrapped"),
+            "wrapped state class"
+        );
+        assert!(
+            t.contains("flex-direction: column") && t.contains("align-items: stretch"),
+            "wrapped state is a stretched column"
+        );
+        assert!(
+            t.contains(".binary-detail.is-wrapped .binary-sep"),
+            "separator hides in the wrapped state"
+        );
+        // The separator is its own element (no dangling literal " · " text
+        // between the spans) and the measured flip probe ships with it.
+        assert!(
+            t.contains("class=\"binary-sep\""),
+            "separator is a dedicated element"
+        );
+        assert!(
+            !t.contains("</span> · <span class=\"binary-hash\""),
+            "no literal separator text can dangle on wrap"
+        );
+        assert!(t.contains("probeDetailWrap"), "wrap probe script present");
+
+        // The SPA carries the same contract in its embedded build (skip on
+        // the pnpm-less fallback build — nothing embedded to pin there).
+        if LANDING_PAGE_HTML.starts_with("<html><body><h1>Malkuth</h1>") {
+            return;
+        }
+        assert!(
+            LANDING_PAGE_HTML.contains("is-wrapped"),
+            "embedded SPA CSS carries the two-line flip class"
+        );
+        assert!(
+            LANDING_PAGE_HTML.contains("__wrapProbe"),
+            "embedded SPA ships the wrap probe (property name survives minification)"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_landing_page_states_the_binary_identity_per_render() {
         let path = temp_binary("e2e");

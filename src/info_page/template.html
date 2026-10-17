@@ -414,6 +414,27 @@
     font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
     font-size: 0.6875rem;
     text-align: right;
+    /* 2026-10-17 user direction: the time · identity pair never wraps
+       mid-separator; when it cannot fit beside the name (phones) the
+       wrap probe below flips the block to TWO lines — column layout,
+       separator hidden, both lines' boxes stretched onto one left and
+       one right edge (the text stays right-aligned inside). */
+    display: flex;
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+    align-items: baseline;
+    column-gap: 0.6ch;
+  }
+  .binary-detail.is-wrapped {
+    flex-direction: column;
+    align-items: stretch;
+    row-gap: 2px;
+  }
+  .binary-detail.is-wrapped .binary-sep {
+    display: none;
+  }
+  .binary-sep {
+    flex: 0 0 auto;
   }
   .binary-time {
     cursor: pointer;
@@ -466,7 +487,7 @@
     {% for b in binaries %}
     <div class="binary-row">
       <span class="binary-name" data-copy="{{ b.name }}"><span>{{ b.name }}</span><span class="vtty-icon" data-vtty-name="{{ b.name }}"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></span><span class="binary-name-full">{{ b.name }}<br><span class="tooltip-hint" data-copy-hint="{{ copy_hint }}"></span></span></span>
-      <span class="binary-detail"><span class="binary-time" data-copy="{{ b.compile_time }}">{{ b.compile_time }}<span class="binary-time-full">{{ b.compile_time }}<br><span class="tooltip-hint" data-copy-hint="{{ copy_hint }}"></span></span></span> · <span class="binary-hash" data-copy="{{ b.hash }}"><span class="binary-hash-short">{{ b.hash_short }}</span><span class="binary-hash-full">{{ b.hash }}<br><span class="tooltip-hint" data-copy-hint="{{ copy_hint }}"></span></span></span></span>
+      <span class="binary-detail"><span class="binary-time" data-copy="{{ b.compile_time }}">{{ b.compile_time }}<span class="binary-time-full">{{ b.compile_time }}<br><span class="tooltip-hint" data-copy-hint="{{ copy_hint }}"></span></span></span><span class="binary-sep" aria-hidden="true">·</span><span class="binary-hash" data-copy="{{ b.hash }}"><span class="binary-hash-short">{{ b.hash_short }}</span><span class="binary-hash-full">{{ b.hash }}<br><span class="tooltip-hint" data-copy-hint="{{ copy_hint }}"></span></span></span></span>
     </div>
     {% endfor %}
   </div>
@@ -629,6 +650,34 @@
       if (!full) return;
       el.addEventListener("mouseenter", function(ev) { showPortalTooltip(el, full.innerHTML); ev.stopPropagation(); });
     });
+  });
+
+  // Binary-detail wrap probe (2026-10-17 user direction): when the
+  // `time · identity` pair cannot fit on ONE line beside the binary
+  // name (phones), the detail flips to two right-aligned lines with the
+  // separator hidden. Driven by real measurement: measure in the
+  // one-line state (class removed) then re-apply — the probe ends in
+  // the state it measured, so the ResizeObserver settles.
+  function probeDetailWrap(el) {
+    var kids = el.children;
+    if (!kids.length) return;
+    el.classList.remove("is-wrapped");
+    var gap = parseFloat(getComputedStyle(el).columnGap) || 0;
+    var oneLineWidth = 0;
+    for (var i = 0; i < kids.length; i++) oneLineWidth += kids[i].offsetWidth;
+    oneLineWidth += gap * (kids.length - 1);
+    el.classList.toggle("is-wrapped", oneLineWidth > el.clientWidth + 1);
+  }
+  document.querySelectorAll(".binary-detail").forEach(function(el) {
+    var check = function() { probeDetailWrap(el); };
+    check();
+    if (window.ResizeObserver) {
+      var ro = new ResizeObserver(check);
+      ro.observe(el);
+      el.__wrapProbe = ro;
+    } else {
+      window.addEventListener("resize", check);
+    }
   });
 
   // Watch-item tooltip also via portal

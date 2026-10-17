@@ -367,8 +367,44 @@ export default defineComponent({
       return match ? decodeURIComponent(match[2]) : null
     }
 
+    // ── Binary-detail wrap probe ─────────────────────────────────────
+    // 2026-10-17 user direction: when the `time · identity` pair cannot
+    // fit on one line beside the binary name (phones), the detail flips
+    // to two right-aligned lines with the separator hidden. The flip is
+    // driven by REAL measurement (children widths + gaps vs available
+    // width), not a breakpoint guess: measure in the one-line state
+    // (class removed), then re-apply — the probe ends in the same state
+    // it started from unless the verdict changed, so the ResizeObserver
+    // settles instead of oscillating.
+    function probeDetailWrap(): void {
+      document.querySelectorAll<HTMLElement>('.binary-detail').forEach((el) => {
+        const kids = Array.from(el.children) as HTMLElement[]
+        if (kids.length === 0) return
+        el.classList.remove('is-wrapped')
+        const gap = parseFloat(getComputedStyle(el).columnGap) || 0
+        let oneLineWidth = 0
+        for (const k of kids) oneLineWidth += k.offsetWidth
+        oneLineWidth += gap * (kids.length - 1)
+        el.classList.toggle('is-wrapped', oneLineWidth > el.clientWidth + 1)
+      })
+    }
+
+    function wireDetailWrapProbe(): void {
+      document.querySelectorAll<HTMLElement>('.binary-detail').forEach((el) => {
+        if ((el as HTMLElement & { __wrapProbe?: unknown }).__wrapProbe) return
+        const check = () => probeDetailWrap()
+        check()
+        if (typeof ResizeObserver !== 'undefined') {
+          const ro = new ResizeObserver(check)
+          ro.observe(el)
+          ;(el as HTMLElement & { __wrapProbe?: ResizeObserver }).__wrapProbe = ro
+        }
+      })
+    }
+
     onMounted(() => {
       loadInit()
+      wireDetailWrapProbe()
       const card = cardRef.value
       if (card) {
         card.addEventListener('animationend', () => {
@@ -376,6 +412,12 @@ export default defineComponent({
           card.style.overflow = 'visible'
         }, { once: true })
       }
+    })
+
+    watch(binaries, () => {
+      // The binaries list can (re)populate after mount; (re)wire the
+      // wrap probes for any freshly rendered .binary-detail rows.
+      nextTick(() => wireDetailWrapProbe())
     })
 
     watch(tooltip, (newVal) => {
@@ -685,7 +727,7 @@ export default defineComponent({
                     onMouseleave={hideTooltip}
                     onClick={() => copy(b.compile_time)}
                   >{b.compile_time}</span>
-                  <span class="binary-row__sep"> · </span>
+                  <span class="binary-row__sep" aria-hidden="true">·</span>
                   <span class="binary-row__hash"
                     onMouseenter={(e: MouseEvent) => showTextTooltip(e, b.hash + '\n' + t('click_to_copy', 'Click to copy'))}
                     onMouseleave={hideTooltip}

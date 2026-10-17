@@ -394,6 +394,28 @@ body {
   font-family: var(--font-mono);
   font-size: 0.6875rem;
   text-align: right;
+
+  /* 2026-10-17 user direction: the time · identity pair must never wrap
+     mid-separator. The detail is a no-wrap flex row; when it cannot fit
+     beside the name (phones), the wrap probe in LandingPage flips the
+     block to TWO lines — column layout, separator hidden, both lines'
+     boxes stretched onto ONE left and ONE right edge (the text keeps its
+     right alignment inside the stretched boxes). */
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  align-items: baseline;
+  column-gap: 0.6ch;
+
+  &.is-wrapped {
+    flex-direction: column;
+    align-items: stretch;
+    row-gap: 2px;
+  }
+
+  &.is-wrapped .binary-row__sep {
+    display: none;
+  }
 }
 
 /* ── Tooltip ── */
