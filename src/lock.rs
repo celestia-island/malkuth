@@ -21,9 +21,13 @@ impl FileLock {
     }
 }
 
+// FileGuard carries only the locked fd: the sentinel's path used to ride
+// along for the release-time unlink, but malkuth-R1-10 kept the file as a
+// zero-byte sentinel instead (an unlink-then-create race could mint a
+// double-holder) — the path has been dead state ever since, so it stays
+// out of the guard entirely.
 struct FileGuard {
     file: Option<std::fs::File>,
-    path: PathBuf,
 }
 
 #[async_trait]
@@ -95,10 +99,7 @@ impl CoordinationLock for FileLock {
                 }
                 return Err(LockError::Io(err));
             }
-            Ok(FileGuard {
-                file: Some(file),
-                path,
-            })
+            Ok(FileGuard { file: Some(file) })
         })
         .await
         .map_err(|e| LockError::Io(io::Error::other(format!("blocking task failed: {e}"))))?;
