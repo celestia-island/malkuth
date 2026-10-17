@@ -114,87 +114,6 @@ fn normalize_path(path: &Path) -> PathBuf {
     normalized
 }
 
-/// Collect metadata for a supervised binary: compile timestamp and SHA-256 hash.
-fn collect_binary_info(program: &str) -> Option<malkuth::info_page::BinaryInfo> {
-    let path = std::path::PathBuf::from(program);
-    if !path.exists() {
-        return None;
-    }
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| program.to_string());
-    let path_str = path.display().to_string();
-
-    let compile_time = path
-        .metadata()
-        .ok()
-        .and_then(|m| m.modified().ok())
-        .map(|t| {
-            let dt: chrono::DateTime<chrono::Local> = t.into();
-            dt.format("%Y-%m-%d %H:%M:%S").to_string()
-        })
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let hash = compute_file_hash(&path).unwrap_or_else(|_| "err".to_string());
-    let hash_trimmed = hash.trim_end_matches('=');
-    let hash_short = if hash_trimmed.len() > 6 {
-        hash_trimmed[hash_trimmed.len() - 6..].to_string()
-    } else {
-        hash_trimmed.to_string()
-    };
-
-    Some(malkuth::info_page::BinaryInfo {
-        name,
-        path: path_str,
-        compile_time,
-        hash,
-        hash_short,
-    })
-}
-
-fn compute_file_hash(path: &std::path::Path) -> Result<String, Box<dyn std::error::Error>> {
-    use sha2::Digest;
-    use std::io::Read;
-    let mut f = std::fs::File::open(path)?;
-    let mut hasher = sha2::Sha256::new();
-    let mut buf = [0u8; 8192];
-    loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    let result = hasher.finalize();
-    Ok(base32_encode(&result))
-}
-
-const BASE32_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-
-fn base32_encode(bytes: &[u8]) -> String {
-    let mut out = String::new();
-    let mut buf = 0u64;
-    let mut bits = 0;
-    for &b in bytes {
-        buf = (buf << 8) | u64::from(b);
-        bits += 8;
-        while bits >= 5 {
-            bits -= 5;
-            let idx = ((buf >> bits) & 0x1f) as usize;
-            out.push(BASE32_ALPHABET[idx] as char);
-        }
-    }
-    if bits > 0 {
-        let idx = ((buf << (5 - bits)) & 0x1f) as usize;
-        out.push(BASE32_ALPHABET[idx] as char);
-    }
-    while out.len() % 8 != 0 {
-        out.push('=');
-    }
-    out
-}
-
 /// Formats timestamps as local time `YYYY-MM-DD HH:MM:SS` (no timezone suffix),
 /// matching the format used by sibling celestia-island CLIs (e.g. lagrange).
 #[allow(dead_code)]
@@ -621,8 +540,11 @@ async fn main() {
             malkuth::info_page::InfoStatus::Working
         };
         let command_str = args.command.first().map(|s| s.as_str()).unwrap_or("");
-        let binaries = if args.info_landing {
-            collect_binary_info(command_str).into_iter().collect()
+        // The landing page collects the supervised binary's identity per
+        // render in the lib (a deploy can swap the file under a running
+        // malkuth) — the bin only hands the program path down.
+        let binary_programs = if args.info_landing && !command_str.is_empty() {
+            vec![command_str.to_string()]
         } else {
             vec![]
         };
@@ -637,7 +559,7 @@ async fn main() {
                 status,
                 if show_details { watch } else { vec![] },
                 if show_details { proxy } else { None },
-                binaries,
+                binary_programs,
                 serve_backend,
                 serve_hosts,
                 bp2,

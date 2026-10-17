@@ -509,12 +509,17 @@ mod tests {
         if !run(&["init", "-q"]).status.success() {
             return; // git unavailable in this environment; skip
         }
+        // A developer machine may carry a GLOBAL core.hooksPath (the
+        // celestia workspace ships one for its worktree linking, and its
+        // commit-msg hook enforces the org gitmoji format) — the fixture's
+        // plain `one`/`two` messages would be rejected and leave an EMPTY
+        // repo for ls-remote. The fixture repo opts out of any inherited
+        // hooks: what it tests is probe_remote, not message linting.
+        // (Independently fixed by both #159 and the landing-identity
+        // branch; one block survives the merge.)
+        run(&["config", "core.hooksPath", ""]);
         run(&["config", "user.email", "t@t"]);
         run(&["config", "user.name", "t"]);
-        // The throwaway repo must not inherit the host's global
-        // `core.hooksPath` (org commit-msg linters reject "one"/"two" and
-        // leave the repo commitless, which fails the probe below).
-        run(&["config", "core.hooksPath", ""]);
         std::fs::write(dir.join("f"), b"1").unwrap();
         run(&["add", "."]);
         run(&["commit", "-qm", "one"]);

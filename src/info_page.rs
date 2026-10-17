@@ -73,6 +73,13 @@ pub enum InfoStatus {
 }
 
 /// Information about a supervised binary for the landing page.
+///
+/// `hash`/`hash_short` carry the family build identity
+/// (`<branch>:<hash7>`, e.g. `master:c350cb4`) — the same line the Web UI
+/// status pill prints — whenever the binary itself states one (the
+/// `plana_build_info` version line baked into family binaries at build
+/// time; see [`collect_binary_info`]). Binaries without the convention
+/// keep the legacy content fingerprint (SHA-256, base32, last 6 chars).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BinaryInfo {
     pub name: String,
@@ -81,6 +88,254 @@ pub struct BinaryInfo {
     pub hash: String,
     #[serde(rename = "hash_short")]
     pub hash_short: String,
+}
+
+/// One cached collect: the binary's (mtime, size) when it was resolved,
+/// with the resulting info — a stat match serves the memo without reading
+/// the file.
+type BinaryInfoMemo = (std::time::SystemTime, u64, BinaryInfo);
+
+/// mtime+size-keyed memo of the last collect per binary: a landing-page
+/// render re-resolves the identity per request (deploys swap the watched
+/// binary without restarting malkuth — a startup-only snapshot would go
+/// stale forever), while the fallback path hashes the whole file and must
+/// not run per render for a 60 MB binary.
+static BINARY_INFO_CACHE: LazyLock<std::sync::Mutex<HashMap<String, BinaryInfoMemo>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Collect metadata for a supervised binary: name, compile timestamp and
+/// the family build identity (`<branch>:<hash7>`) stated by the binary
+/// itself, falling back to the SHA-256 content fingerprint.
+///
+/// The identity is read out of the binary's own bytes: family builds bake
+/// the `plana_build_info` version line (`<base> <branch>:<hash7..40>`,
+/// both `:` and the legacy `::` separator parse) into `.rodata` via
+/// `env!("VERSION")`, so the deployed file is the single source of truth —
+/// no deploy-side bookkeeping to drift. Registry-built dependency crates
+/// resolve to non-hex markers (`detached:unknown`) and never match; a
+/// binary carrying two DIFFERENT identities is ambiguous and falls back
+/// rather than guessing.
+pub fn collect_binary_info(program: &str) -> Option<BinaryInfo> {
+    let path = std::path::PathBuf::from(program);
+    let metadata = std::fs::metadata(&path).ok()?;
+    let modified = metadata.modified().ok()?;
+    if let Some(cache) = BINARY_INFO_CACHE.lock().unwrap().get(program) {
+        if cache.0 == modified && cache.1 == metadata.len() {
+            return Some(cache.2.clone());
+        }
+    }
+
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| program.to_string());
+    let path_str = path.display().to_string();
+
+    let compile_time = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| {
+            use chrono::TimeZone;
+            let dt = chrono::Local.timestamp_opt(d.as_secs() as i64, 0).unwrap();
+            dt.format("%Y-%m-%d %H:%M:%S").to_string()
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let bytes = std::fs::read(&path).ok()?;
+    let (hash, hash_short) = match scan_family_identity(&bytes) {
+        Some(stamp) => (stamp.clone(), stamp),
+        None => {
+            let hash = compute_file_hash(&bytes);
+            let trimmed = hash.trim_end_matches('=');
+            let short = if trimmed.len() > 6 {
+                trimmed[trimmed.len() - 6..].to_string()
+            } else {
+                trimmed.to_string()
+            };
+            (hash, short)
+        }
+    };
+
+    let info = BinaryInfo {
+        name,
+        path: path_str,
+        compile_time,
+        hash,
+        hash_short,
+    };
+    BINARY_INFO_CACHE.lock().unwrap().insert(
+        program.to_string(),
+        (modified, metadata.len(), info.clone()),
+    );
+    Some(info)
+}
+
+/// The `<branch>` charset of a family identity line.
+fn is_branch_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'-')
+}
+
+fn is_hex_byte(b: u8) -> bool {
+    b.is_ascii_digit() || (b'a'..=b'f').contains(&b)
+}
+
+/// Extract the single family build identity from the binary's bytes, if
+/// the binary states exactly one: scan printable-ASCII runs for
+/// `<x.y.z> <branch>:<hash7..40>` and require every hit to agree. Zero
+/// hits → `None` (caller falls back); two disagreeing hits → `None`
+/// (ambiguous, never guess).
+fn scan_family_identity(bytes: &[u8]) -> Option<String> {
+    let mut identities: Vec<(String, String)> = Vec::new();
+    let mut run: Vec<u8> = Vec::with_capacity(128);
+    let flush = |run: &mut Vec<u8>, identities: &mut Vec<(String, String)>| {
+        if !run.is_empty() {
+            scan_ascii_run(run, identities);
+            run.clear();
+        }
+    };
+    for &b in bytes {
+        if b.is_ascii_graphic() || b == b' ' {
+            run.push(b);
+        } else {
+            flush(&mut run, &mut identities);
+        }
+    }
+    flush(&mut run, &mut identities);
+    if identities.len() != 1 {
+        return None;
+    }
+    let (branch, hash) = &identities[0];
+    Some(format!("{branch}:{hash}"))
+}
+
+/// One printable-ASCII run: find `<base> <branch>:<hash>` occurrences.
+fn scan_ascii_run(run: &[u8], identities: &mut Vec<(String, String)>) {
+    let n = run.len();
+    let mut i = 0;
+    while i < n {
+        // Candidate base start: a digit not preceded by digit/dot (avoid
+        // re-matching inside a longer version literal).
+        if !run[i].is_ascii_digit()
+            || (i > 0 && (run[i - 1].is_ascii_digit() || run[i - 1] == b'.'))
+        {
+            i += 1;
+            continue;
+        }
+        let Some(after_base) = match_version_base(run, i) else {
+            i += 1;
+            continue;
+        };
+        if after_base >= n || run[after_base] != b' ' {
+            i += 1;
+            continue;
+        }
+        let branch_start = after_base + 1;
+        let mut j = branch_start;
+        while j < n && is_branch_byte(run[j]) {
+            j += 1;
+        }
+        if j == branch_start || j + 1 >= n {
+            i += 1;
+            continue;
+        }
+        // One or two colons (the family narrowed `::` → `:` on 2026-10-11;
+        // transition-window binaries still speak either).
+        let mut k = j;
+        if run[k] == b':' {
+            k += 1;
+        }
+        if k < n && run[k] == b':' {
+            k += 1;
+        }
+        if k == j || k >= n || !is_hex_byte(run[k]) {
+            i += 1;
+            continue;
+        }
+        let hash_start = k;
+        let mut e = k;
+        while e < n && is_hex_byte(run[e]) && e - hash_start < 40 {
+            e += 1;
+        }
+        let hash_len = e - hash_start;
+        if !(7..=40).contains(&hash_len) {
+            i += 1;
+            continue;
+        }
+        let branch = String::from_utf8_lossy(&run[branch_start..j]).into_owned();
+        let hash7 = String::from_utf8_lossy(&run[hash_start..hash_start + 7]).into_owned();
+        let identity = (branch, hash7);
+        if !identities.contains(&identity) {
+            identities.push(identity);
+        }
+        i = e;
+    }
+}
+
+/// `x.y.z` at `start` → index just past it, else `None`.
+fn match_version_base(run: &[u8], start: usize) -> Option<usize> {
+    let mut i = start;
+    let mut dots = 0;
+    while i < run.len() && run[i].is_ascii_digit() {
+        i += 1;
+        if i < run.len() && run[i] == b'.' && dots < 2 {
+            dots += 1;
+            i += 1;
+        }
+    }
+    if dots == 2 && i > start + 1 && (i >= run.len() || run[i] != b'.') {
+        Some(i)
+    } else {
+        None
+    }
+}
+
+fn compute_file_hash(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(bytes);
+    base32_encode(&hasher.finalize())
+}
+
+const BASE32_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+fn base32_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity((bytes.len() * 8).div_ceil(5));
+    let mut buffer: u32 = 0;
+    let mut bits: u32 = 0;
+    for &b in bytes {
+        buffer = (buffer << 8) | b as u32;
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            out.push(BASE32_ALPHABET[((buffer >> bits) & 31) as usize] as char);
+        }
+    }
+    if bits > 0 {
+        out.push(BASE32_ALPHABET[((buffer << (5 - bits)) & 31) as usize] as char);
+    }
+    while out.len() % 8 != 0 {
+        out.push('=');
+    }
+    out
+}
+
+/// Re-resolve the supervised binaries' identities for a render. Cheap
+/// (mtime+size memo per program) and honest across deploys: the watched
+/// binary can be swapped under a running malkuth, so every landing-page
+/// render states the identity of the file that is there NOW.
+async fn collect_binaries(programs: &[String]) -> Vec<BinaryInfo> {
+    if programs.is_empty() {
+        return vec![];
+    }
+    let programs = programs.to_vec();
+    tokio::task::spawn_blocking(move || {
+        programs
+            .iter()
+            .filter_map(|p| collect_binary_info(p))
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 fn detect_install_method() -> &'static str {
@@ -130,7 +385,11 @@ pub fn info_router(
     status: InfoStatus,
     watch_paths: Vec<String>,
     proxy_endpoint: Option<String>,
-    binaries: Vec<BinaryInfo>,
+    // Supervised PROGRAM paths whose identity the landing page shows.
+    // Collected per render (see [`collect_binaries`]) — not a startup
+    // snapshot, so a deploy that swaps a watched binary (malkuth itself
+    // keeps running) is reflected on the next landing-page view.
+    binary_programs: Vec<String>,
     serve_backend: Option<String>,
     serve_hosts: Vec<String>,
     build_progress: std::sync::Arc<std::sync::Mutex<Option<String>>>,
@@ -186,7 +445,7 @@ pub fn info_router(
         status,
         watch_paths,
         proxy_endpoint,
-        binaries,
+        binary_programs,
         serve_backend,
         serve_hosts,
         build_progress,
@@ -211,7 +470,7 @@ struct InfoState {
     status: InfoStatus,
     watch_paths: Vec<String>,
     proxy_endpoint: Option<String>,
-    binaries: Vec<BinaryInfo>,
+    binary_programs: Vec<String>,
     serve_backend: Option<String>,
     serve_hosts: Vec<String>,
     build_progress: std::sync::Arc<std::sync::Mutex<Option<String>>>,
@@ -401,6 +660,7 @@ fn read_http_status_code(stream: &mut std::net::TcpStream, budget: Duration) -> 
 
 async fn build_spa_init(state: &InfoState, lang: &str, allowed: bool) -> serde_json::Value {
     let i18n = get_i18n(lang);
+    let binaries = collect_binaries(&state.binary_programs).await;
     let (spa_state, message) = if state.serve_backend.is_some() {
         // Serve mode: reflect the real-time backend health so the landing
         // page never promises a redirect while the service is unreachable.
@@ -443,7 +703,7 @@ async fn build_spa_init(state: &InfoState, lang: &str, allowed: bool) -> serde_j
     serde_json::json!({
         "state": spa_state,
         "message": message,
-        "binaries": state.binaries,
+        "binaries": binaries,
         "watch_paths": state.watch_paths,
         "proxy_endpoint": state.proxy_endpoint,
         "version": state.version,
@@ -1142,11 +1402,18 @@ async fn serve_probe(lang: &str, state: &InfoState, allowed: bool) -> Response {
     } else {
         build_log
     };
+    // The VTty badge name derives from the program PATH (the collected
+    // BinaryInfo took its name from the same path anyway) — the probe runs
+    // every few seconds while clients poll, so it must not touch the disk.
     let vtty_name = state
-        .binaries
+        .binary_programs
         .first()
-        .map(|b| b.name.as_str())
-        .unwrap_or("");
+        .and_then(|p| {
+            std::path::Path::new(p)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default();
 
     let json = serde_json::json!({
         "state": probe_state,
@@ -1177,6 +1444,7 @@ async fn serve_probe(lang: &str, state: &InfoState, allowed: bool) -> Response {
 /// Serve the landing page with real-time backend status from the health checker.
 async fn serve_landing(lang: &str, state: &InfoState) -> Response {
     let i18n = get_i18n(lang);
+    let binaries = collect_binaries(&state.binary_programs).await;
     let backend_state = *state.backend_state.read().await;
     let backend_up = state.serve_backend.is_some() && backend_state == BackendState::Up;
 
@@ -1255,7 +1523,7 @@ async fn serve_landing(lang: &str, state: &InfoState) -> Response {
         i18n.get("binaries_title")
             .map_or("Supervised Binaries", |v| v.as_str()),
     );
-    ctx.insert("binaries", &state.binaries);
+    ctx.insert("binaries", &binaries);
     ctx.insert(
         "proxy_endpoint",
         state.proxy_endpoint.as_deref().unwrap_or(""),
@@ -1348,6 +1616,10 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
 
     // Normal (non-serve) rendering below
     let i18n = get_i18n(&lang);
+    // Only the info-template render needs the binaries — collected here,
+    // AFTER the probe and proxy branches returned, so polled probes and
+    // proxied requests never pay even the memo's stat (R1 catch).
+    let binaries = collect_binaries(&state.binary_programs).await;
 
     let ready = state.status == InfoStatus::Ready;
     let landing = state.status == InfoStatus::Landing;
@@ -1410,7 +1682,7 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
             .map_or("Installed via", |v| v.as_str()),
     );
     context.insert("install_method", install_method);
-    context.insert("binaries", &state.binaries);
+    context.insert("binaries", &binaries);
 
     context.insert(
         "binaries_title",
@@ -1564,6 +1836,198 @@ fn get_i18n(lang: &str) -> &HashMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Family build identity (`<branch>:<hash7>`) on the landing page ──
+
+    /// Unique temp path for a fake supervised binary.
+    fn temp_binary(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "malkuth-identity-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn test_scan_extracts_single_family_identity() {
+        // A family binary states its plana_build_info version line among
+        // the surrounding binary junk.
+        let bytes = b"\x7fELF\x00\x02\x00 0.1.0 master:c350cb4 \x00\x01 trailing".to_vec();
+        assert_eq!(
+            scan_family_identity(&bytes).as_deref(),
+            Some("master:c350cb4")
+        );
+    }
+
+    #[test]
+    fn test_scan_normalizes_full_hash_to_seven() {
+        // The full-hash print variant (`0.1.0 master:<40 hex>`) reports the
+        // same 7-char identity as the short variant.
+        let bytes = b"x 0.1.0 master:c350cb4fa9b2d3e4f5a6b7c8d9e0f1a2b3c4d5e y".to_vec();
+        assert_eq!(
+            scan_family_identity(&bytes).as_deref(),
+            Some("master:c350cb4")
+        );
+    }
+
+    #[test]
+    fn test_scan_accepts_both_separator_generations() {
+        // The family narrowed `::` → `:` on 2026-10-11; transition-window
+        // binaries still speak either, and branch names may carry `/`.
+        assert_eq!(
+            scan_family_identity(b"0.1.0 feat/landing::770f625 end").as_deref(),
+            Some("feat/landing:770f625")
+        );
+        assert_eq!(
+            scan_family_identity(b"0.1.0 release:1a2b3c4").as_deref(),
+            Some("release:1a2b3c4")
+        );
+    }
+
+    #[test]
+    fn test_scan_rejects_absent_ambiguous_and_marker_identities() {
+        // No stamp at all.
+        assert_eq!(scan_family_identity(b"1.2.3 no identity here"), None);
+        // Registry-built dependency markers resolve to non-hex and must
+        // never pose as an identity.
+        assert_eq!(scan_family_identity(b"0.1.26 detached:unknown"), None);
+        // Hash shorter than 7 hex chars does not match.
+        assert_eq!(scan_family_identity(b"0.1.0 x:abcdef"), None);
+        // Two DIFFERENT identities is ambiguous — never guess.
+        assert_eq!(
+            scan_family_identity(b"0.1.0 master:aaaaaaa and 0.2.0 release:bbbbbbb"),
+            None
+        );
+        // Repeats of the SAME identity (env! used in several places) stay
+        // unambiguous.
+        assert_eq!(
+            scan_family_identity(b"0.1.0 master:c350cb4 0.1.0 master:c350cb4fa99"),
+            Some("master:c350cb4".to_string())
+        );
+    }
+
+    #[test]
+    fn test_collect_prefers_stated_identity_over_content_hash() {
+        let path = temp_binary("stamped");
+        std::fs::write(&path, b"\x00\x00 0.1.0 master:c350cb4 \x00").unwrap();
+        let info = collect_binary_info(path.to_str().unwrap()).unwrap();
+        assert_eq!(info.hash, "master:c350cb4");
+        assert_eq!(info.hash_short, "master:c350cb4");
+        assert_eq!(info.name, path.file_name().unwrap().to_str().unwrap());
+        assert!(!info.compile_time.is_empty());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_collect_falls_back_to_content_fingerprint() {
+        let path = temp_binary("plain");
+        std::fs::write(&path, b"an ordinary binary with no family line").unwrap();
+        let info = collect_binary_info(path.to_str().unwrap()).unwrap();
+        // Legacy shape: base32 (RFC 4648 padded to a multiple of 8), the
+        // short form = last 6 chars of the unpadded tail.
+        assert!(
+            info.hash
+                .chars()
+                .all(|c| { c.is_ascii_uppercase() || c.is_ascii_digit() || c == '=' })
+        );
+        assert_eq!(info.hash.len() % 8, 0);
+        let trimmed = info.hash.trim_end_matches('=');
+        assert_eq!(info.hash_short, &trimmed[trimmed.len() - 6..]);
+        assert_ne!(info.hash, info.hash_short);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_collect_refreshes_when_the_binary_changes() {
+        // Deploys swap the watched binary under a running malkuth — the
+        // mtime+size memo must invalidate and the next collect must state
+        // the identity of the file that is there NOW.
+        let path = temp_binary("refresh");
+        std::fs::write(&path, format!("{:<64}", "0.1.0 master:aaaaaaa")).unwrap();
+        let first = collect_binary_info(path.to_str().unwrap()).unwrap();
+        assert_eq!(first.hash, "master:aaaaaaa");
+
+        // Same length, later mtime: only the mtime key can catch it.
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(1);
+        std::fs::write(&path, format!("{:<64}", "0.1.0 master:bbbbbbb")).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        let second = collect_binary_info(path.to_str().unwrap()).unwrap();
+        assert_eq!(second.hash, "master:bbbbbbb");
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Serve a landing router over a real listener; returns the door URL.
+    async fn spawn_landing_door(program: String) -> String {
+        let router = info_router(
+            "test".to_string(),
+            InfoStatus::Landing,
+            vec![],
+            None,
+            vec![program],
+            None,
+            vec![],
+            std::sync::Arc::new(std::sync::Mutex::new(None)),
+            std::sync::Arc::new(std::sync::Mutex::new(vec![])),
+            std::sync::Arc::new(std::sync::Mutex::new(vec![])),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let door = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        format!("http://{door}")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_landing_page_states_the_binary_identity_per_render() {
+        let path = temp_binary("e2e");
+        std::fs::write(&path, format!("{:<96}", "0.1.0 master:c350cb4")).unwrap();
+        let door = spawn_landing_door(path.to_string_lossy().into_owned()).await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        let first = client
+            .get(&door)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            first.contains("master:c350cb4"),
+            "landing page must state the binary's family identity"
+        );
+
+        // A deploy swaps the binary (same length, later mtime): the NEXT
+        // render must state the new identity — no malkuth restart.
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(1);
+        std::fs::write(&path, format!("{:<96}", "0.1.0 master:ddddddd")).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        let second = client
+            .get(&door)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(second.contains("master:ddddddd"));
+        assert!(!second.contains("master:c350cb4"));
+        std::fs::remove_file(&path).ok();
+    }
 
     #[test]
     fn test_detect_en() {
