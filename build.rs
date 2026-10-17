@@ -1,6 +1,8 @@
 /// Build the landing page and embed it as a Rust source file.
-/// If pnpm is not available or the build fails, a minimal fallback is used
-/// — unless a STALE dist would be embedded (see the freshness guard).
+/// A pnpm that exists but fails ABORTS the build (a failed vite build
+/// still rewrites dist with a fresh mtime, so a stale embed could never
+/// be caught by timestamps); hosts without pnpm fall back to the
+/// existing dist or a minimal page, guarded by a best-effort mtime check.
 fn main() {
     let landing_dir = std::path::Path::new("packages/landing_page");
     let dist = std::path::Path::new("target/landing_page/index.html");
@@ -38,12 +40,14 @@ fn main() {
             pnpm,
         ];
         let mut built = false;
+        let mut attempted = false;
         for pnpm_path in &pnpm_candidates {
             let status = std::process::Command::new(pnpm_path)
                 .args(["build"])
                 .current_dir(landing_dir)
                 .status();
             if let Ok(s) = status {
+                attempted = true;
                 if s.success() {
                     println!(
                         "cargo:warning=landing_page built successfully with {}",
@@ -55,7 +59,19 @@ fn main() {
             }
         }
         if !built {
-            println!("cargo:warning=landing_page build skipped");
+            if attempted {
+                // A pnpm that EXISTS but FAILED must abort the build: vite's
+                // closeBundle rewrites dist (stale content, FRESH mtime)
+                // even on a failed build, so the mtime guard below cannot
+                // catch this and the embed would silently pin the last
+                // good build (R3' catch).
+                panic!(
+                    "landing_page build was attempted and FAILED — refusing to embed a \
+                     possibly stale dist (vite rewrites dist with a fresh mtime even on \
+                     failure)"
+                );
+            }
+            println!("cargo:warning=landing_page build skipped (no pnpm on this host)");
         }
     }
 
