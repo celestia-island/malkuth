@@ -656,11 +656,7 @@ async fn main() {
             // means those logs are reachable from the network without
             // authentication. Make the exposure explicit at startup so
             // the operator consciously chose it.
-            let loopback = addr
-                .split_once(':')
-                .and_then(|(host, _)| host.parse::<std::net::IpAddr>().ok())
-                .map(|ip| ip.is_loopback())
-                .unwrap_or(false);
+            let loopback = addr.ip().is_loopback();
             if !loopback {
                 warn!(
                     addr = %addr,

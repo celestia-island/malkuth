@@ -23,7 +23,6 @@ impl FileLock {
 
 struct FileGuard {
     file: Option<std::fs::File>,
-    path: PathBuf,
 }
 
 #[async_trait]
@@ -95,10 +94,7 @@ impl CoordinationLock for FileLock {
                 }
                 return Err(LockError::Io(err));
             }
-            Ok(FileGuard {
-                file: Some(file),
-                path,
-            })
+            Ok(FileGuard { file: Some(file) })
         })
         .await
         .map_err(|e| LockError::Io(io::Error::other(format!("blocking task failed: {e}"))))?;

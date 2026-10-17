@@ -511,6 +511,10 @@ mod tests {
         }
         run(&["config", "user.email", "t@t"]);
         run(&["config", "user.name", "t"]);
+        // The throwaway repo must not inherit the host's global
+        // `core.hooksPath` (org commit-msg linters reject "one"/"two" and
+        // leave the repo commitless, which fails the probe below).
+        run(&["config", "core.hooksPath", ""]);
         std::fs::write(dir.join("f"), b"1").unwrap();
         run(&["add", "."]);
         run(&["commit", "-qm", "one"]);

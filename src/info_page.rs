@@ -492,6 +492,11 @@ fn is_upgrade_request(headers: &header::HeaderMap) -> bool {
             })
 }
 
+/// Audit malkuth-R1-6: cap the proxied request body at 1 MiB — a client can
+/// no longer OOM the supervisor with a giant request body. Shared by both
+/// proxy paths ([`proxy_upgrade`] and [`proxy_to_backend_parts`]).
+const MAX_PROXY_BODY_BYTES: usize = 1024 * 1024;
+
 /// Extract the bare `host:port` of the `--serve` backend URL, dropping any
 /// scheme and path — plain HTTP only, mirroring [`probe_backend`].
 fn backend_host_port(backend: &str) -> Option<&str> {
@@ -538,10 +543,6 @@ async fn proxy_upgrade(req: Request, backend: &str, epoch: &str) -> Result<Respo
         return Err(());
     };
     let path_and_query = parts.uri.path_and_query().map_or("/", |pq| pq.as_str());
-
-    // Audit malkuth-R1-6: cap the proxied body at 1 MiB — a client can
-    // no longer OOM the supervisor with a giant request body.
-    const MAX_PROXY_BODY_BYTES: usize = 1024 * 1024;
 
     // WS requests normally carry no body; if one does, read it fully so the
     // forwarded request is complete before the upgrade exchange starts.
