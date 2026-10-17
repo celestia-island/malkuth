@@ -393,19 +393,30 @@ body {
   color: var(--color-label);
   font-family: var(--font-mono);
   font-size: 0.6875rem;
-  text-align: right;
+  text-align: end;
 
   /* 2026-10-17 user direction: the time · identity pair must never wrap
      mid-separator. The detail is a no-wrap flex row; when it cannot fit
      beside the name (phones), the wrap probe in LandingPage flips the
      block to TWO lines — column layout, separator hidden, both lines'
      boxes stretched onto ONE left and ONE right edge (the text keeps its
-     right alignment inside the stretched boxes). */
+     end alignment inside the stretched boxes).
+     min-width: 0 lets the grid's 1fr track shrink to the REAL available
+     width, and the children are flex: none — unsplrinkable atoms whose
+     offsetWidth is their natural one-line width. Without both, the
+     children would compress (wrapping INSIDE a span) and the probe would
+     measure the shrunken state against itself, never flipping (R1
+     browser catch). */
   display: flex;
   flex-wrap: nowrap;
   justify-content: flex-end;
   align-items: baseline;
   column-gap: 0.6ch;
+  min-width: 0;
+
+  & > * {
+    flex: none;
+  }
 
   &.is-wrapped {
     flex-direction: column;

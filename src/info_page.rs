@@ -1994,11 +1994,24 @@ mod tests {
     #[test]
     fn test_binary_detail_two_line_wrap_contract() {
         let t = include_str!("info_page/template.html");
-        // One-line state: a no-wrap flex row — never wraps mid-separator.
+        // One-line state: a no-wrap flex row — never wraps mid-separator,
+        // with unsplrinkable children (flex: none) and a shrinkable track
+        // contribution (min-width: 0) so the probe compares the NATURAL
+        // one-line width against the REAL available width (R1 browser
+        // catch: without both, the children compress inside their spans
+        // and the verdict never flips).
         let detail = t.split(".binary-detail {").nth(1).unwrap_or("");
         assert!(
             detail.contains("display: flex") && detail.contains("flex-wrap: nowrap"),
             "template one-line state is a no-wrap flex row"
+        );
+        assert!(
+            detail.contains("min-width: 0"),
+            "template detail lets the 1fr track shrink to the real width"
+        );
+        assert!(
+            t.contains("flex: none"),
+            "template children are unsplrinkable one-line atoms"
         );
         // Two-line state: column, stretched boxes (both edges aligned),
         // separator hidden.
@@ -2026,19 +2039,28 @@ mod tests {
         );
         assert!(t.contains("probeDetailWrap"), "wrap probe script present");
 
-        // The SPA carries the same contract in its embedded build (skip on
+        // The SPA carries the SAME contract in its embedded build (skip on
         // the pnpm-less fallback build — nothing embedded to pin there).
+        // The inlined CSS is minified, so these match the minified
+        // spellings (R1 catch: bare class-name strings did not pin the
+        // CSS itself).
         if LANDING_PAGE_HTML.starts_with("<html><body><h1>Malkuth</h1>") {
             return;
         }
-        assert!(
-            LANDING_PAGE_HTML.contains("is-wrapped"),
-            "embedded SPA CSS carries the two-line flip class"
-        );
-        assert!(
-            LANDING_PAGE_HTML.contains("__wrapProbe"),
-            "embedded SPA ships the wrap probe (property name survives minification)"
-        );
+        for marker in [
+            "is-wrapped",
+            "__wrapProbe",
+            "flex-wrap:nowrap",
+            "flex-direction:column",
+            "align-items:stretch",
+            "min-width:0",
+            "flex:none",
+        ] {
+            assert!(
+                LANDING_PAGE_HTML.contains(marker),
+                "embedded SPA build must carry `{marker}` (minified CSS or probe)"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

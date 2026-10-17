@@ -8,7 +8,12 @@ fn main() {
 
     println!("cargo:rerun-if-changed=packages/landing_page/src");
 
-    if !dist.exists() && landing_dir.join("package.json").exists() {
+    // Always attempt the build when the package is present: gating on
+    // `!dist.exists()` embedded a STALE target/landing_page/index.html
+    // whenever the sources changed but an old dist lingered (R1 catch —
+    // the embedded SPA silently lagged the sources). A failed build (no
+    // pnpm/node on this host) still falls back to the existing dist.
+    if landing_dir.join("package.json").exists() {
         let pnpm = std::env::var("PNPM_HOME")
             .map(|h| format!("{}/pnpm", h))
             .unwrap_or_else(|_| "pnpm".into());
