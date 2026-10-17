@@ -2022,10 +2022,22 @@ mod tests {
             .map(|i| start + i)
             .expect("detail rule closes");
         let detail = &css[start..block_end];
+        // The wrapped-state rule gets its OWN slice — unscoped `contains`
+        // were satisfied by `.watch-list`'s identical declarations (R2'
+        // mutation catch).
+        let wstart = css
+            .find(".binary-detail.is-wrapped {")
+            .expect("wrapped rule exists");
+        let wrapped = &css[wstart
+            ..css[wstart..]
+                .find("\n  }")
+                .map(|i| wstart + i)
+                .expect("wrapped rule closes")];
         // One-line state: a no-wrap flex row — never wraps mid-separator,
         // with unsplrinkable children (flex: none) and a shrinkable track
         // contribution (min-width: 0) so the probe compares the NATURAL
-        // one-line width against the REAL available width.
+        // one-line width against the REAL available width. The end-edge
+        // alignment and the gap ride along in the same rule.
         assert!(
             detail.contains("display: flex") && detail.contains("flex-wrap: nowrap"),
             "template one-line state is a no-wrap flex row"
@@ -2033,6 +2045,14 @@ mod tests {
         assert!(
             detail.contains("min-width: 0;"),
             "template detail lets the 1fr track shrink to the real width"
+        );
+        assert!(
+            detail.contains("text-align: end;"),
+            "template detail aligns its lines to the end edge"
+        );
+        assert!(
+            detail.contains("column-gap: 0.6ch;"),
+            "template detail gap feeds the probe's one-line width"
         );
         assert!(
             css.contains(".binary-detail > span"),
@@ -2053,7 +2073,7 @@ mod tests {
             "wrapped state class"
         );
         assert!(
-            css.contains("flex-direction: column") && css.contains("align-items: stretch"),
+            wrapped.contains("flex-direction: column") && wrapped.contains("align-items: stretch"),
             "wrapped state is a stretched column"
         );
         assert!(
@@ -2074,21 +2094,38 @@ mod tests {
 
         // The SPA carries the SAME contract in its embedded build (skip on
         // the pnpm-less fallback build — nothing embedded to pin there).
-        // The inlined CSS is minified, so these match the minified
-        // spellings — including the full sep-hide rule, so deleting any
-        // one declaration goes red (R1' catch: bare class-name strings
-        // did not pin the CSS itself).
+        // The inlined CSS is minified and the minifier reorders
+        // declarations, so the pins read the RULE SLICES: the `.binary-detail`
+        // block up to its closing brace for the one-line state, and the
+        // exact full wrapped/sep-hide rules (R2' mutation catches: bare
+        // markers were satisfied by unrelated rules carrying the same
+        // declarations).
         if LANDING_PAGE_HTML.starts_with("<html><body><h1>Malkuth</h1>") {
             return;
         }
+        let spa_start = LANDING_PAGE_HTML
+            .find(".binary-detail{")
+            .expect("SPA detail rule exists");
+        let spa_detail = &LANDING_PAGE_HTML[spa_start
+            ..LANDING_PAGE_HTML[spa_start..]
+                .find('}')
+                .map(|i| spa_start + i)
+                .expect("SPA detail rule closes")];
         for marker in [
-            "is-wrapped",
-            "__wrapProbe",
             "flex-wrap:nowrap",
-            "flex-direction:column",
-            "align-items:stretch",
             "min-width:0",
+            "text-align:end",
+            "column-gap:.6ch",
+        ] {
+            assert!(
+                spa_detail.contains(marker),
+                "embedded SPA `.binary-detail` rule must carry `{marker}`"
+            );
+        }
+        for marker in [
+            "__wrapProbe",
             "flex:none",
+            ".binary-detail.is-wrapped{flex-direction:column;align-items:stretch;row-gap:2px}",
             ".binary-detail.is-wrapped .binary-row__sep{display:none}",
         ] {
             assert!(

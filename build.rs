@@ -1,5 +1,6 @@
 /// Build the landing page and embed it as a Rust source file.
-/// If pnpm is not available or the build fails, a minimal fallback is used.
+/// If pnpm is not available or the build fails, a minimal fallback is used
+/// — unless a STALE dist would be embedded (see the freshness guard).
 fn main() {
     let landing_dir = std::path::Path::new("packages/landing_page");
     let dist = std::path::Path::new("target/landing_page/index.html");
@@ -7,12 +8,23 @@ fn main() {
     let gen_path = format!("{}/landing_page_html.rs", out_dir);
 
     println!("cargo:rerun-if-changed=packages/landing_page/src");
+    // The embed also depends on files OUTSIDE src/: the entry html, the
+    // vite config and the package manifests. Without these, hand edits to
+    // those files never refreshed the embedded build (R2' catch).
+    for extra in [
+        "index.html",
+        "package.json",
+        "vite.config.ts",
+        "tsconfig.json",
+        "pnpm-lock.yaml",
+    ] {
+        println!("cargo:rerun-if-changed=packages/landing_page/{extra}");
+    }
 
     // Always attempt the build when the package is present: gating on
     // `!dist.exists()` embedded a STALE target/landing_page/index.html
     // whenever the sources changed but an old dist lingered (R1 catch —
-    // the embedded SPA silently lagged the sources). A failed build (no
-    // pnpm/node on this host) still falls back to the existing dist.
+    // the embedded SPA silently lagged the sources).
     if landing_dir.join("package.json").exists() {
         let pnpm = std::env::var("PNPM_HOME")
             .map(|h| format!("{}/pnpm", h))
@@ -47,6 +59,24 @@ fn main() {
         }
     }
 
+    // Freshness guard (R2' catch): a failed rebuild must NOT silently
+    // embed a dist older than the landing-page sources — that kept the
+    // contract tests green against the last good build. Hosts without
+    // pnpm that never touched the sources still embed their fresh dist;
+    // a missing dist keeps the historical minimal fallback.
+    if dist.exists() {
+        let dist_mtime = std::fs::metadata(dist).and_then(|m| m.modified()).ok();
+        let youngest_src = youngest_mtime(&landing_dir.join("src"));
+        if let (Some(dist_mtime), Some(youngest_src)) = (dist_mtime, youngest_src) {
+            if dist_mtime < youngest_src {
+                panic!(
+                    "landing_page dist is STALE (older than packages/landing_page/src) and the \
+                     rebuild did not succeed — refusing to embed a build that lags the sources"
+                );
+            }
+        }
+    }
+
     let html = if dist.exists() {
         std::fs::read_to_string(dist).unwrap_or_default()
     } else {
@@ -64,4 +94,26 @@ fn main() {
         format!("pub const LANDING_PAGE_HTML: &str = \"{}\";\n", escaped),
     )
     .expect("Failed to write landing page HTML source");
+}
+
+/// Newest mtime under `dir` (recursive, best effort).
+fn youngest_mtime(dir: &std::path::Path) -> Option<std::time::SystemTime> {
+    let mut newest: Option<std::time::SystemTime> = None;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(md) = entry.metadata() else { continue };
+            if md.is_dir() {
+                stack.push(entry.path());
+            } else if let Ok(m) = md.modified() {
+                if newest.is_none_or(|n| m > n) {
+                    newest = Some(m);
+                }
+            }
+        }
+    }
+    newest
 }
