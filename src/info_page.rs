@@ -1557,7 +1557,6 @@ async fn serve_landing(lang: &str, state: &InfoState) -> Response {
 
 async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Response {
     let lang = detect_language(req.headers());
-    let binaries = collect_binaries(&state.binary_programs).await;
 
     // Whether this request's origin (Host header) may be proxied to the
     // --serve backend. Computed once, up front, so the JSON probe and the
@@ -1619,6 +1618,10 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
 
     // Normal (non-serve) rendering below
     let i18n = get_i18n(&lang);
+    // Only the info-template render needs the binaries — collected here,
+    // AFTER the probe and proxy branches returned, so polled probes and
+    // proxied requests never pay even the memo's stat (R1 catch).
+    let binaries = collect_binaries(&state.binary_programs).await;
 
     let ready = state.status == InfoStatus::Ready;
     let landing = state.status == InfoStatus::Landing;
