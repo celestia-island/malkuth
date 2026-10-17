@@ -1991,40 +1991,73 @@ mod tests {
     /// lines — separator hidden, both lines' boxes stretched onto one left
     /// and one right edge. Pinned at the source level for BOTH rendering
     /// surfaces: the server-side template and the embedded SPA build.
+    /// Strip `/* … */` comments so contract assertions match DECLARATIONS,
+    /// not the comment prose that describes them (R1' mutation catch:
+    /// deleting `min-width: 0;` stayed green because the rule's own
+    /// comment still spelled the words).
+    fn strip_css_comments(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut rest = s;
+        while let Some(i) = rest.find("/*") {
+            out.push_str(&rest[..i]);
+            match rest[i..].find("*/") {
+                Some(j) => rest = &rest[i + j + 2..],
+                None => rest = "",
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
     #[test]
     fn test_binary_detail_two_line_wrap_contract() {
         let t = include_str!("info_page/template.html");
+        let css = strip_css_comments(t);
+        // Extract ONLY the .binary-detail rule (up to its closing brace)
+        // — asserting against the file tail let later rules satisfy the
+        // assertions (same R1' catch).
+        let start = css.find(".binary-detail {").expect("detail rule exists");
+        let block_end = css[start..]
+            .find("\n  }")
+            .map(|i| start + i)
+            .expect("detail rule closes");
+        let detail = &css[start..block_end];
         // One-line state: a no-wrap flex row — never wraps mid-separator,
         // with unsplrinkable children (flex: none) and a shrinkable track
         // contribution (min-width: 0) so the probe compares the NATURAL
-        // one-line width against the REAL available width (R1 browser
-        // catch: without both, the children compress inside their spans
-        // and the verdict never flips).
-        let detail = t.split(".binary-detail {").nth(1).unwrap_or("");
+        // one-line width against the REAL available width.
         assert!(
             detail.contains("display: flex") && detail.contains("flex-wrap: nowrap"),
             "template one-line state is a no-wrap flex row"
         );
         assert!(
-            detail.contains("min-width: 0"),
+            detail.contains("min-width: 0;"),
             "template detail lets the 1fr track shrink to the real width"
         );
         assert!(
-            t.contains("flex: none"),
+            css.contains(".binary-detail > span"),
+            "template children selector present"
+        );
+        assert!(
+            css.split(".binary-detail > span")
+                .nth(1)
+                .unwrap_or("")
+                .starts_with(" {")
+                && css.contains("flex: none;"),
             "template children are unsplrinkable one-line atoms"
         );
         // Two-line state: column, stretched boxes (both edges aligned),
         // separator hidden.
         assert!(
-            t.contains(".binary-detail.is-wrapped"),
+            css.contains(".binary-detail.is-wrapped"),
             "wrapped state class"
         );
         assert!(
-            t.contains("flex-direction: column") && t.contains("align-items: stretch"),
+            css.contains("flex-direction: column") && css.contains("align-items: stretch"),
             "wrapped state is a stretched column"
         );
         assert!(
-            t.contains(".binary-detail.is-wrapped .binary-sep"),
+            css.contains(".binary-detail.is-wrapped .binary-sep"),
             "separator hides in the wrapped state"
         );
         // The separator is its own element (no dangling literal " · " text
@@ -2042,8 +2075,9 @@ mod tests {
         // The SPA carries the SAME contract in its embedded build (skip on
         // the pnpm-less fallback build — nothing embedded to pin there).
         // The inlined CSS is minified, so these match the minified
-        // spellings (R1 catch: bare class-name strings did not pin the
-        // CSS itself).
+        // spellings — including the full sep-hide rule, so deleting any
+        // one declaration goes red (R1' catch: bare class-name strings
+        // did not pin the CSS itself).
         if LANDING_PAGE_HTML.starts_with("<html><body><h1>Malkuth</h1>") {
             return;
         }
@@ -2055,6 +2089,7 @@ mod tests {
             "align-items:stretch",
             "min-width:0",
             "flex:none",
+            ".binary-detail.is-wrapped .binary-row__sep{display:none}",
         ] {
             assert!(
                 LANDING_PAGE_HTML.contains(marker),
