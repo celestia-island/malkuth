@@ -1986,6 +1986,155 @@ mod tests {
         format!("http://{door}")
     }
 
+    /// The two-line wrap contract (2026-10-17 user direction): a binary
+    /// row that cannot fit on one line (phones) flips to TWO right-aligned
+    /// lines — separator hidden, both lines' boxes stretched onto one left
+    /// and one right edge. Pinned at the source level for BOTH rendering
+    /// surfaces: the server-side template and the embedded SPA build.
+    /// Strip `/* … */` comments so contract assertions match DECLARATIONS,
+    /// not the comment prose that describes them (R1' mutation catch:
+    /// deleting `min-width: 0;` stayed green because the rule's own
+    /// comment still spelled the words).
+    fn strip_css_comments(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut rest = s;
+        while let Some(i) = rest.find("/*") {
+            out.push_str(&rest[..i]);
+            match rest[i..].find("*/") {
+                Some(j) => rest = &rest[i + j + 2..],
+                None => rest = "",
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    #[test]
+    fn test_binary_detail_two_line_wrap_contract() {
+        let t = include_str!("info_page/template.html");
+        let css = strip_css_comments(t);
+        // Extract ONLY the .binary-detail rule (up to its closing brace)
+        // — asserting against the file tail let later rules satisfy the
+        // assertions (same R1' catch).
+        let start = css.find(".binary-detail {").expect("detail rule exists");
+        let block_end = css[start..]
+            .find("\n  }")
+            .map(|i| start + i)
+            .expect("detail rule closes");
+        let detail = &css[start..block_end];
+        // The wrapped-state rule gets its OWN slice — unscoped `contains`
+        // were satisfied by `.watch-list`'s identical declarations (R2'
+        // mutation catch).
+        let wstart = css
+            .find(".binary-detail.is-wrapped {")
+            .expect("wrapped rule exists");
+        let wrapped = &css[wstart
+            ..css[wstart..]
+                .find("\n  }")
+                .map(|i| wstart + i)
+                .expect("wrapped rule closes")];
+        // One-line state: a no-wrap flex row — never wraps mid-separator,
+        // with unsplrinkable children (flex: none) and a shrinkable track
+        // contribution (min-width: 0) so the probe compares the NATURAL
+        // one-line width against the REAL available width. The end-edge
+        // alignment and the gap ride along in the same rule.
+        assert!(
+            detail.contains("display: flex") && detail.contains("flex-wrap: nowrap"),
+            "template one-line state is a no-wrap flex row"
+        );
+        assert!(
+            detail.contains("min-width: 0;"),
+            "template detail lets the 1fr track shrink to the real width"
+        );
+        assert!(
+            detail.contains("text-align: end;"),
+            "template detail aligns its lines to the end edge"
+        );
+        assert!(
+            detail.contains("column-gap: 0.6ch;"),
+            "template detail gap feeds the probe's one-line width"
+        );
+        assert!(
+            css.contains(".binary-detail > span"),
+            "template children selector present"
+        );
+        assert!(
+            css.split(".binary-detail > span")
+                .nth(1)
+                .unwrap_or("")
+                .starts_with(" {")
+                && css.contains("flex: none;"),
+            "template children are unsplrinkable one-line atoms"
+        );
+        // Two-line state: column, stretched boxes (both edges aligned),
+        // separator hidden.
+        assert!(
+            css.contains(".binary-detail.is-wrapped"),
+            "wrapped state class"
+        );
+        assert!(
+            wrapped.contains("flex-direction: column") && wrapped.contains("align-items: stretch"),
+            "wrapped state is a stretched column"
+        );
+        assert!(
+            css.contains(".binary-detail.is-wrapped .binary-sep"),
+            "separator hides in the wrapped state"
+        );
+        // The separator is its own element (no dangling literal " · " text
+        // between the spans) and the measured flip probe ships with it.
+        assert!(
+            t.contains("class=\"binary-sep\""),
+            "separator is a dedicated element"
+        );
+        assert!(
+            !t.contains("</span> · <span class=\"binary-hash\""),
+            "no literal separator text can dangle on wrap"
+        );
+        assert!(t.contains("probeDetailWrap"), "wrap probe script present");
+
+        // The SPA carries the SAME contract in its embedded build (skip on
+        // the pnpm-less fallback build — nothing embedded to pin there).
+        // The inlined CSS is minified and the minifier reorders
+        // declarations, so the pins read the RULE SLICES: the `.binary-detail`
+        // block up to its closing brace for the one-line state, and the
+        // exact full wrapped/sep-hide rules (R2' mutation catches: bare
+        // markers were satisfied by unrelated rules carrying the same
+        // declarations).
+        if LANDING_PAGE_HTML.starts_with("<html><body><h1>Malkuth</h1>") {
+            return;
+        }
+        let spa_start = LANDING_PAGE_HTML
+            .find(".binary-detail{")
+            .expect("SPA detail rule exists");
+        let spa_detail = &LANDING_PAGE_HTML[spa_start
+            ..LANDING_PAGE_HTML[spa_start..]
+                .find('}')
+                .map(|i| spa_start + i)
+                .expect("SPA detail rule closes")];
+        for marker in [
+            "flex-wrap:nowrap",
+            "min-width:0",
+            "text-align:end",
+            "column-gap:.6ch",
+        ] {
+            assert!(
+                spa_detail.contains(marker),
+                "embedded SPA `.binary-detail` rule must carry `{marker}`"
+            );
+        }
+        for marker in [
+            "__wrapProbe",
+            "flex:none",
+            ".binary-detail.is-wrapped{flex-direction:column;align-items:stretch;row-gap:2px}",
+            ".binary-detail.is-wrapped .binary-row__sep{display:none}",
+        ] {
+            assert!(
+                LANDING_PAGE_HTML.contains(marker),
+                "embedded SPA build must carry `{marker}` (minified CSS or probe)"
+            );
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_landing_page_states_the_binary_identity_per_render() {
         let path = temp_binary("e2e");
