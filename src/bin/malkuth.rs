@@ -649,7 +649,9 @@ async fn main() {
     // Audit malkuth-R1-4: systemd sends SIGTERM on stop/restart — the
     // old ctrl_c-only await let SIGTERM take the default disposition,
     // killing the supervisor with the pods orphaned (kill_on_drop never
-    // ran). SIGTERM now joins Ctrl-C on the shutdown path.
+    // ran). SIGTERM now joins Ctrl-C on the shutdown path. Windows has no
+    // SIGTERM; Ctrl-C is the console path and the SCM host handles services.
+    #[cfg(unix)]
     let mut term = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
         Ok(s) => s,
         Err(e) => {
@@ -661,10 +663,13 @@ async fn main() {
             return;
         }
     };
+    #[cfg(unix)]
     tokio::select! {
         _ = signal::ctrl_c() => {}
         _ = term.recv() => {}
     }
+    #[cfg(not(unix))]
+    signal::ctrl_c().await.ok();
     info!("shutdown signal received; exiting (child pods killed via kill_on_drop)");
 }
 
