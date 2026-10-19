@@ -33,10 +33,7 @@ use crate::proxy::{Backend, ProxyState};
 /// cap and dropped in-flight requests on every restart.
 async fn stop_draining(child: &mut tokio::process::Child, drain_secs: u64) {
     if let Some(pid) = child.id() {
-        // SAFETY: plain signal send to a live child pid; no memory ops.
-        unsafe {
-            libc::kill(pid as libc::pid_t, libc::SIGTERM);
-        }
+        send_graceful(pid);
     }
     match tokio::time::timeout(
         std::time::Duration::from_secs(drain_secs.max(1)),
@@ -52,6 +49,24 @@ async fn stop_draining(child: &mut tokio::process::Child, drain_secs: u64) {
             let _ = child.start_kill();
             let _ = child.wait().await;
         }
+    }
+}
+
+#[cfg(unix)]
+fn send_graceful(pid: u32) {
+    // SAFETY: plain signal send to a live child pid; no memory ops.
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGTERM);
+    }
+}
+
+#[cfg(windows)]
+fn send_graceful(pid: u32) {
+    use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent};
+    // Best-effort CTRL_BREAK; services have no console, so failure is
+    // expected and the drain timeout still escalates to TerminateProcess.
+    unsafe {
+        GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid);
     }
 }
 
@@ -290,6 +305,12 @@ impl PodManager {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
         cmd.kill_on_drop(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // CREATE_NEW_PROCESS_GROUP: makes CTRL_BREAK target this pod only.
+            cmd.as_std_mut().creation_flags(0x0000_0200);
+        }
         info!(pod = id, port, program, "spawning pod");
         let mut child = cmd.spawn()?;
 

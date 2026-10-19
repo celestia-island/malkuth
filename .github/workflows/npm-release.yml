@@ -20,8 +20,8 @@ name: npm Release
 # The Linux lane is static musl for both CPU classes, published under the
 # generic `-linux-x64` / `-linux-arm64` names: one artifact per CPU class with
 # no glibc floor, running unchanged on Debian/Ubuntu/Alpine/distroless hosts.
-# The macOS binaries are native. Windows is not in this matrix while the
-# service host port is in progress.
+# The macOS and Windows binaries are native; Windows ships as the
+# `-win32-x64` MSVC subpackage and runs the daemon as a service.
 
 on:
   push:
@@ -48,6 +48,7 @@ jobs:
           - { os: ubuntu-latest,  target: aarch64-unknown-linux-musl, platform: aarch64-unknown-linux-gnu, suffix: -linux-arm64 }
           - { os: macos-latest,   target: aarch64-apple-darwin,      platform: aarch64-apple-darwin,    suffix: -darwin-arm64 }
           - { os: macos-latest,       target: x86_64-apple-darwin,       platform: x86_64-apple-darwin,       suffix: -darwin-x64 }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,    platform: x86_64-pc-windows-msvc,    suffix: -win32-x64 }
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -113,6 +114,7 @@ jobs:
         shell: bash
         run: |
           bin="target/${{ matrix.target }}/release/malkuth"
+          if [ "${{ runner.os }}" = "Windows" ]; then bin="${bin}.exe"; fi
           # The Linux binary is built for musl but published under the generic
           # platform name: one static artifact per CPU class, no -musl twin and
           # no glibc variant. `platform` only selects the os/cpu/suffix mapping.
@@ -187,7 +189,7 @@ jobs:
 
       - name: Assemble root package
         run: |
-          for sfx in -linux-x64 -linux-arm64 -darwin-arm64 -darwin-x64; do
+          for sfx in -linux-x64 -linux-arm64 -darwin-arm64 -darwin-x64 -win32-x64; do
             mkdir -p "dist/malkuth${sfx}"
           done
           celestia-devtools npm-dist \

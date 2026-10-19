@@ -241,10 +241,7 @@ async fn supervise_one(
 /// dropping in-flight requests on every drain.
 pub(crate) async fn stop_draining(child: &mut Child, drain_secs: u64) {
     if let Some(pid) = child.id() {
-        // SAFETY: plain signal send to a live child pid; no memory ops.
-        unsafe {
-            libc::kill(pid as libc::pid_t, libc::SIGTERM);
-        }
+        send_graceful(pid);
     }
     match tokio::time::timeout(
         std::time::Duration::from_secs(drain_secs.max(1)),
@@ -262,6 +259,25 @@ pub(crate) async fn stop_draining(child: &mut Child, drain_secs: u64) {
     }
 }
 
+#[cfg(unix)]
+fn send_graceful(pid: u32) {
+    // SAFETY: plain signal send to a live child pid; no memory ops.
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGTERM);
+    }
+}
+
+#[cfg(windows)]
+fn send_graceful(pid: u32) {
+    use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent};
+    // Best-effort: a console child spawned in its own process group sees
+    // CTRL_BREAK as a graceful stop. Services have no console, so a failed
+    // call is expected — the drain timeout still escalates to TerminateProcess.
+    unsafe {
+        GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid);
+    }
+}
+
 fn spawn(spec: &WorkerSpec) -> std::io::Result<Child> {
     let mut cmd = Command::new(&spec.program);
     cmd.args(&spec.args);
@@ -275,6 +291,12 @@ fn spawn(spec: &WorkerSpec) -> std::io::Result<Child> {
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());
     cmd.kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NEW_PROCESS_GROUP: makes CTRL_BREAK target this child only.
+        cmd.as_std_mut().creation_flags(0x0000_0200);
+    }
     cmd.spawn()
 }
 

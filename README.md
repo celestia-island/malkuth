@@ -116,14 +116,31 @@ npx @celestia-island/malkuth mcp        # the MCP server (needs the mcp build)
 ```
 
 The `@celestia-island/malkuth` root package pulls the right platform subpackage
-(`-linux-x64` / `-linux-arm64` / `-darwin-arm64` / `-darwin-x64`)
-automatically. The Linux binaries are statically linked against musl, so they
-run on any distro regardless of its glibc version; the macOS binaries are
-native. To pin a version:
+(`-linux-x64` / `-linux-arm64` / `-darwin-arm64` / `-darwin-x64` /
+`-win32-x64`) automatically. The Linux binaries are statically linked against
+musl, so they run on any distro regardless of its glibc version; the macOS and
+Windows binaries are native. To pin a version:
 
 ```bash
 npx @celestia-island/malkuth@0.1.0 -- cargo run
 ```
+
+### Windows service
+
+On Windows the daemon runs under the Service Control Manager, and the CLI
+mirrors the systemd operations:
+
+```powershell
+malkuth service install --config C:\celestia\malkuth.toml --name malkuth
+malkuth service start|stop|restart|status|uninstall --name malkuth
+```
+
+`service install` registers the current `malkuth.exe` with the launch command
+`daemon --config <path> --service --service-name <name>`, starts it
+automatically at boot, and routes SCM Stop/Shutdown through the same graceful
+drain path as the systemd unit. The service host reports
+StartPending → Running → Stopped; supervised children get the drain budget
+before they are terminated.
 
 ## As a library
 

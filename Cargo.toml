@@ -1,7 +1,7 @@
 [package]
 name = "malkuth"
 description = "A composable service-supervision toolkit for Rust"
-version = "0.4.3"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["langyo <langyo.china@gmail.com>"]
@@ -103,6 +103,10 @@ regex = { version = "^1", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "^0.2"
+
+[target."cfg(windows)".dependencies]
+windows-service = "0.8.1"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_Console", "Win32_System_IO", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 tokio = { version = "^1", features = ["rt", "rt-multi-thread", "macros", "net", "signal", "sync", "time", "process", "io-util", "fs"] }

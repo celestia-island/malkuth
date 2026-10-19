@@ -61,8 +61,11 @@ jobs:
 
   check-official:
     name: fmt + check + clippy + test (${{ matrix.os }})
-    if: github.event_name == 'workflow_dispatch'
+    # Windows service parity is validated on the native GitHub-hosted runner.
+    # Keep the same in-repo fork guard as the heavy Linux job.
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
 
     permissions:
       contents: read
