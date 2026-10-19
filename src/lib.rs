@@ -88,3 +88,26 @@ pub use worker::{Supervisor, WorkerSpec};
 
 #[cfg(feature = "probes")]
 pub use probes::{ProbeState, probe_router};
+
+// ── TLS crypto provider ────────────────────────────────────────
+/// Install the process-wide rustls crypto provider.
+///
+/// `reqwest` is built with `rustls-no-provider` so the binary never pulls
+/// `aws-lc-sys` (banned by `deny.toml`, and a cross-compilation burden for
+/// static musl). Every TLS client therefore shares the pure-Rust `ring`
+/// provider, installed once before the first `reqwest::Client` is built.
+#[cfg(any(feature = "cli", feature = "mcp"))]
+pub fn install_crypto_provider() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
+/// [`reqwest::ClientBuilder`] with the process-wide ring provider installed.
+#[cfg(any(feature = "cli", feature = "mcp"))]
+pub fn http_client_builder() -> reqwest::ClientBuilder {
+    install_crypto_provider();
+    reqwest::Client::builder()
+}
