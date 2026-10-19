@@ -442,6 +442,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn identity_changes_on_in_place_rewrite_and_rename_over() {
         let dir = TempDir::new("identity");
@@ -469,6 +470,7 @@ mod tests {
         assert!(file_identity(&file).is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn poll_detects_rename_over_without_inotify() {
         let dir = TempDir::new("poll");

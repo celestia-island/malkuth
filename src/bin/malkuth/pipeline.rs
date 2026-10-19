@@ -416,6 +416,7 @@ mod tests {
         assert_eq!(b.record_failure(), Duration::from_secs(30));
     }
 
+    #[cfg(unix)]
     #[test]
     fn build_lock_is_exclusive() {
         let dir = std::env::temp_dir().join(format!(

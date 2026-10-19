@@ -379,7 +379,7 @@ pub fn assign_ports(
         .collect()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
