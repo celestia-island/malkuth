@@ -372,11 +372,25 @@ struct FileIdentity {
 /// Stat `path`, following symlinks so a re-pointed deploy symlink is seen as
 /// a change too. `Err` when the path itself is missing (the poll treats an
 /// appearing or disappearing file as a change either way).
+#[cfg(unix)]
 fn file_identity(path: &Path) -> std::io::Result<FileIdentity> {
     use std::os::unix::fs::MetadataExt;
     let md = std::fs::metadata(path)?;
     Ok(FileIdentity {
         inode: md.ino(),
+        size: md.len(),
+        modified: md.modified().ok(),
+    })
+}
+
+/// Windows has no stable inode exposed through `std`; size + mtime is the
+/// same change signal the poll cache needs (the Watcher path uses the native
+/// change notifications and does not depend on this fallback).
+#[cfg(windows)]
+fn file_identity(path: &Path) -> std::io::Result<FileIdentity> {
+    let md = std::fs::metadata(path)?;
+    Ok(FileIdentity {
+        inode: 0,
         size: md.len(),
         modified: md.modified().ok(),
     })

@@ -90,13 +90,16 @@ pub fn run_backup(cfg: &DbBackupConfig, uri: &str) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir)
         .map_err(|e| format!("create backup dir {}: {e}", dir.display()))?;
     // Backups may hold compliance-sensitive rows; keep the directory private.
-    use std::os::unix::fs::PermissionsExt;
-    if let Err(e) = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) {
-        tracing::warn!(
-            dir = %dir.display(),
-            error = %e,
-            "cannot restrict backup directory permissions to 0700"
-        );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) {
+            tracing::warn!(
+                dir = %dir.display(),
+                error = %e,
+                "cannot restrict backup directory permissions to 0700"
+            );
+        }
     }
 
     let host = sanitize_label(&hostname());
