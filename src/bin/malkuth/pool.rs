@@ -122,7 +122,7 @@ impl PodManager {
 
     /// Override the initial readiness window (tests only; production keeps
     /// the 30s default).
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn with_readiness_timeout(mut self, d: Duration) -> Self {
         self.readiness_timeout = d;
         self

@@ -420,7 +420,9 @@ mod tests {
     use super::*;
 
     /// Unique scratch dir for a test, cleaned up on drop.
+    #[cfg(unix)]
     struct TempDir(PathBuf);
+    #[cfg(unix)]
     impl TempDir {
         fn new(tag: &str) -> Self {
             let dir = std::env::temp_dir().join(format!(
@@ -436,6 +438,7 @@ mod tests {
             self.0.join(name)
         }
     }
+    #[cfg(unix)]
     impl Drop for TempDir {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
