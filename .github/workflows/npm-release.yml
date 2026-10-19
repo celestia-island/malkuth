@@ -137,7 +137,15 @@ jobs:
           echo "::group::npm pack $sub"
           (cd "$sub" && npm pack --dry-run)
           echo "::endgroup::"
-          (cd "$sub" && npm publish --access public --provenance 2>&1 | tee /tmp/npm-publish.log; if grep -q "previously published" /tmp/npm-publish.log; then echo "Already published by another job, ok"; exit 0; fi)
+          set +e
+          (cd "$sub" && npm publish --access public --provenance 2>&1 | tee /tmp/npm-publish.log)
+          status=$?
+          set -e
+          if grep -q "previously published" /tmp/npm-publish.log; then
+            echo "Already published by another job, ok"
+            exit 0
+          fi
+          exit "$status"
 
   publish-root:
     name: Publish root @celestia-island/malkuth to npm
@@ -192,4 +200,12 @@ jobs:
           echo "::group::npm pack (root)"
           (cd dist && npm pack --dry-run)
           echo "::endgroup::"
-          (cd dist && npm publish --access public --provenance 2>&1 | tee /tmp/npm-publish-root.log; if grep -q "previously published" /tmp/npm-publish-root.log; then echo "Already published by another job, ok"; exit 0; fi)
+          set +e
+          (cd dist && npm publish --access public --provenance 2>&1 | tee /tmp/npm-publish-root.log)
+          status=$?
+          set -e
+          if grep -q "previously published" /tmp/npm-publish-root.log; then
+            echo "Already published by another job, ok"
+            exit 0
+          fi
+          exit "$status"
