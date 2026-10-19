@@ -1180,7 +1180,7 @@ async fn proxy_to_backend_parts(
     let path = parts.uri.path_and_query().map_or("/", |pq| pq.as_str());
     let url = format!("{}{}", backend.trim_end_matches('/'), path);
 
-    let client = reqwest::Client::builder()
+    let client = crate::http_client_builder()
         .no_proxy()
         // Never follow redirects server-side: a 3xx must reach the browser
         // untouched. Following an absolute redirect could loop back through
@@ -2140,7 +2140,7 @@ mod tests {
         let path = temp_binary("e2e");
         std::fs::write(&path, format!("{:<96}", "0.1.0 master:c350cb4")).unwrap();
         let door = spawn_landing_door(path.to_string_lossy().into_owned()).await;
-        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let client = crate::http_client_builder().no_proxy().build().unwrap();
 
         let first = client
             .get(&door)
@@ -3211,7 +3211,7 @@ mod tests {
 
         // Machine client for the door: no env proxies, no cookie store,
         // no redirect following — the nonce cookie is driven explicitly.
-        let client = reqwest::Client::builder()
+        let client = crate::http_client_builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .build()
@@ -3390,7 +3390,7 @@ mod tests {
             tokio::spawn(async move {
                 let _ = axum::serve(listener, router).await;
             });
-            let client = reqwest::Client::builder()
+            let client = crate::http_client_builder()
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
                 .build()

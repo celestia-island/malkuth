@@ -244,7 +244,7 @@ fn detect_proxy() -> Option<reqwest::Proxy> {
 // ── public entry point ───────────────────────────────
 
 pub async fn run() -> Result<(), Box<dyn Error>> {
-    let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(10));
+    let mut builder = crate::http_client_builder().timeout(Duration::from_secs(10));
     if let Some(proxy) = detect_proxy() {
         builder = builder.proxy(proxy);
     }

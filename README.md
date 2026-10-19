@@ -116,10 +116,10 @@ npx @celestia-island/malkuth mcp        # the MCP server (needs the mcp build)
 ```
 
 The `@celestia-island/malkuth` root package pulls the right platform subpackage
-(`-linux-x64` / `-linux-arm64` / `-linux-x64-musl` / `-darwin-arm64` /
-`-darwin-x64`) automatically. The binary lane is Unix-only — the supervisor
-relies on POSIX `flock` and signals, so Windows is not supported. To pin a
-version:
+(`-linux-x64-musl` / `-linux-arm64-musl` / `-darwin-arm64` / `-darwin-x64`)
+automatically. The Linux binaries are statically linked against musl, so they
+run on any distro regardless of its glibc version; the macOS binaries are
+native. To pin a version:
 
 ```bash
 npx @celestia-island/malkuth@0.1.0 -- cargo run

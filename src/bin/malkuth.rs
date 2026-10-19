@@ -128,6 +128,11 @@ impl tracing_subscriber::fmt::time::FormatTime for MalkuthTimer {
 
 #[tokio::main]
 async fn main() {
+    // One rustls provider for every TLS client in this process (reqwest is
+    // built with `rustls-no-provider` so aws-lc-sys stays out of the graph).
+    #[cfg(any(feature = "cli", feature = "mcp"))]
+    malkuth::install_crypto_provider();
+
     // Intercept `malkuth mcp` before the watchdog arg parser runs: the
     // watchdog uses `-- <cmd>` positional args, which a clap subcommand would
     // conflict with, so we special-case the MCP server here.
