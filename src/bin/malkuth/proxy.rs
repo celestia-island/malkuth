@@ -539,7 +539,15 @@ mod tests {
             .await
             .unwrap();
         let mut seen = Vec::new();
-        c.read_to_end(&mut seen).await.unwrap();
+        if let Err(e) = c.read_to_end(&mut seen).await {
+            // macOS closes the maintenance response with an RST; the bytes
+            // already delivered are the assertion target.
+            assert_eq!(
+                e.kind(),
+                std::io::ErrorKind::ConnectionReset,
+                "unexpected read error: {e}"
+            );
+        }
         let text = String::from_utf8_lossy(&seen);
         assert!(text.starts_with("HTTP/1.1 503"), "got: {text}");
         assert!(text.contains("Service is restarting"), "{text}");
