@@ -17,10 +17,11 @@ name: npm Release
 # The version is derived from the pushed tag (vX.Y.Z → X.Y.Z) and is shared by
 # the root package and every subpackage so they are released in lockstep.
 #
-# The Linux lane is static musl for both CPU classes: the binaries carry no
-# glibc floor and run unchanged on Debian/Ubuntu/Alpine/distroless hosts. The
-# macOS binaries are native. Windows is not in this matrix while the service
-# host port is in progress.
+# The Linux lane is static musl for both CPU classes, published under the
+# generic `-linux-x64` / `-linux-arm64` names: one artifact per CPU class with
+# no glibc floor, running unchanged on Debian/Ubuntu/Alpine/distroless hosts.
+# The macOS binaries are native. Windows is not in this matrix while the
+# service host port is in progress.
 
 on:
   push:
@@ -43,10 +44,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,  target: x86_64-unknown-linux-musl,  suffix: -linux-x64-musl }
-          - { os: ubuntu-latest,  target: aarch64-unknown-linux-musl, suffix: -linux-arm64-musl }
-          - { os: macos-latest,   target: aarch64-apple-darwin,      suffix: -darwin-arm64 }
-          - { os: macos-latest,       target: x86_64-apple-darwin,       suffix: -darwin-x64 }
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-musl,  platform: x86_64-unknown-linux-gnu,  suffix: -linux-x64 }
+          - { os: ubuntu-latest,  target: aarch64-unknown-linux-musl, platform: aarch64-unknown-linux-gnu, suffix: -linux-arm64 }
+          - { os: macos-latest,   target: aarch64-apple-darwin,      platform: aarch64-apple-darwin,    suffix: -darwin-arm64 }
+          - { os: macos-latest,       target: x86_64-apple-darwin,       platform: x86_64-apple-darwin,       suffix: -darwin-x64 }
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -112,11 +113,14 @@ jobs:
         shell: bash
         run: |
           bin="target/${{ matrix.target }}/release/malkuth"
+          # The Linux binary is built for musl but published under the generic
+          # platform name: one static artifact per CPU class, no -musl twin and
+          # no glibc variant. `platform` only selects the os/cpu/suffix mapping.
           celestia-devtools npm-dist \
             --name malkuth \
             --version "${{ steps.ver.outputs.version }}" \
             --binary "$bin" \
-            --rust-target "${{ matrix.target }}" \
+            --rust-target "${{ matrix.platform }}" \
             --out-dir dist \
             --description "Composable service-supervision toolkit — watchdog + MCP server (npx launcher)" \
             --repository "https://github.com/celestia-island/malkuth" \
@@ -183,7 +187,7 @@ jobs:
 
       - name: Assemble root package
         run: |
-          for sfx in -linux-x64-musl -linux-arm64-musl -darwin-arm64 -darwin-x64; do
+          for sfx in -linux-x64 -linux-arm64 -darwin-arm64 -darwin-x64; do
             mkdir -p "dist/malkuth${sfx}"
           done
           celestia-devtools npm-dist \
