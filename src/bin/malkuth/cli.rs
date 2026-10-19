@@ -123,6 +123,7 @@ pub struct Args {
     pub takeover: Option<String>,
 
     /// Path to a new malkuth binary for zero-downtime self-update.
+    #[cfg_attr(windows, allow(dead_code))]
     #[arg(long = "self-update", value_name = "PATH")]
     pub self_update: Option<String>,
 

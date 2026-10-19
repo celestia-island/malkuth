@@ -25,6 +25,9 @@ mod self_update;
 mod singleton;
 #[path = "malkuth/watcher.rs"]
 mod watcher;
+#[path = "malkuth/windows_service.rs"]
+#[cfg(all(windows, feature = "worker"))]
+mod windows_service;
 #[path = "malkuth/ws_proxy.rs"]
 #[cfg(feature = "ws")]
 mod ws_proxy;
@@ -133,6 +136,32 @@ async fn main() {
     #[cfg(any(feature = "cli", feature = "mcp"))]
     malkuth::install_crypto_provider();
 
+    // `malkuth service …` is the Windows counterpart of systemctl. On Unix it
+    // is a deliberate no-op that points at systemd.
+    #[cfg(all(windows, feature = "worker"))]
+    {
+        let mut args = std::env::args_os().skip(1);
+        if args.next().is_some_and(|a| a == "service") {
+            let rest: Vec<String> = std::env::args_os()
+                .skip(2)
+                .map(|s| s.to_string_lossy().into_owned())
+                .collect();
+            if let Err(e) = windows_service::service_command(&rest) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let mut args = std::env::args_os().skip(1);
+        if args.next().is_some_and(|a| a == "service") {
+            eprintln!("service management is Windows-only; use systemd on this platform");
+            std::process::exit(2);
+        }
+    }
+
     // Intercept `malkuth mcp` before the watchdog arg parser runs: the
     // watchdog uses `-- <cmd>` positional args, which a clap subcommand would
     // conflict with, so we special-case the MCP server here.
@@ -178,6 +207,24 @@ async fn main() {
                     std::process::exit(2);
                 }
             };
+
+            // Windows service mode: hand the daemon to the SCM dispatcher.
+            #[cfg(windows)]
+            if std::env::args_os().any(|a| a.to_string_lossy() == "--service") {
+                let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+                let service_name = args
+                    .iter()
+                    .position(|a| a.to_string_lossy() == "--service-name")
+                    .and_then(|i| args.get(i + 1))
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "malkuth".to_owned());
+                if let Err(e) = windows_service::run_service(&service_name, &config_path) {
+                    error!("{e}");
+                    std::process::exit(1);
+                }
+                return;
+            }
+
             if let Err(e) = run_daemon(&config_path).await {
                 error!("{e}");
                 std::process::exit(1);
@@ -602,7 +649,9 @@ async fn main() {
     // Audit malkuth-R1-4: systemd sends SIGTERM on stop/restart — the
     // old ctrl_c-only await let SIGTERM take the default disposition,
     // killing the supervisor with the pods orphaned (kill_on_drop never
-    // ran). SIGTERM now joins Ctrl-C on the shutdown path.
+    // ran). SIGTERM now joins Ctrl-C on the shutdown path. Windows has no
+    // SIGTERM; Ctrl-C is the console path and the SCM host handles services.
+    #[cfg(unix)]
     let mut term = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
         Ok(s) => s,
         Err(e) => {
@@ -614,15 +663,25 @@ async fn main() {
             return;
         }
     };
+    #[cfg(unix)]
     tokio::select! {
         _ = signal::ctrl_c() => {}
         _ = term.recv() => {}
     }
+    #[cfg(not(unix))]
+    signal::ctrl_c().await.ok();
     info!("shutdown signal received; exiting (child pods killed via kill_on_drop)");
 }
 
 #[cfg(all(feature = "cli", feature = "worker"))]
 async fn run_daemon(config_path: &str) -> Result<(), String> {
+    run_daemon_with_shutdown(config_path, None).await
+}
+
+pub(crate) async fn run_daemon_with_shutdown(
+    config_path: &str,
+    external_exit: Option<tokio::sync::watch::Receiver<bool>>,
+) -> Result<(), String> {
     use malkuth::{DrainController, Supervisor, config::DaemonConfig};
     use std::time::Duration;
 
@@ -634,7 +693,7 @@ async fn run_daemon(config_path: &str) -> Result<(), String> {
             // Audit malkuth-R1-7: /run/malkuth is root-owned on systemd
             // systems — a local user can no longer pre-plant a symlink
             // that the File::create would follow.
-            .unwrap_or_else(|| "/run/malkuth/daemon.pid".into())
+            .unwrap_or_else(default_pid_file)
     };
 
     match acquire_daemon_lock(&pid_file) {
@@ -645,6 +704,22 @@ async fn run_daemon(config_path: &str) -> Result<(), String> {
     // ── Signal sources ──────────────────────────────────────────
     let reload_notify = std::sync::Arc::new(tokio::sync::Notify::new());
     let (exit_tx, exit_rx) = tokio::sync::watch::channel(false);
+
+    // SCM Stop/Shutdown (or any external supervisor) → exit.
+    if let Some(mut external) = external_exit {
+        let exit_tx = exit_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                if *external.borrow() {
+                    let _ = exit_tx.send(true);
+                    break;
+                }
+                if external.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
 
     // SIGINT/SIGTERM → exit
     {
@@ -749,6 +824,37 @@ fn acquire_daemon_lock(pid_file: &str) -> Result<(), String> {
     use std::fs;
     use std::io::Write;
 
+    // One daemon per pid-file identity. The SCM already serialises service
+    // starts; this mutex also covers manual `malkuth daemon` runs.
+    #[cfg(windows)]
+    {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        pid_file.hash(&mut hasher);
+        let name = format!("Local\\malkuth-daemon-{:x}", hasher.finish());
+        let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        let handle = unsafe {
+            windows_sys::Win32::System::Threading::CreateMutexW(std::ptr::null(), 0, wide.as_ptr())
+        };
+        if handle.is_null() {
+            return Err(format!(
+                "cannot create daemon mutex: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        if unsafe { windows_sys::Win32::Foundation::GetLastError() }
+            == windows_sys::Win32::Foundation::ERROR_ALREADY_EXISTS
+        {
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+            return Err(format!("daemon already running (mutex {name})"));
+        }
+        // Held for the process lifetime; the kernel releases it on exit.
+        static MUTEX: std::sync::OnceLock<isize> = std::sync::OnceLock::new();
+        let _ = MUTEX.set(handle as isize);
+    }
+
     if let Ok(contents) = fs::read_to_string(pid_file) {
         let old_pid: i32 = contents.trim().parse().unwrap_or(0);
         if old_pid > 0 {
@@ -800,4 +906,20 @@ fn acquire_daemon_lock(pid_file: &str) -> Result<(), String> {
 #[cfg(all(feature = "cli", feature = "worker"))]
 fn release_daemon_lock(pid_file: &str) {
     std::fs::remove_file(pid_file).ok();
+}
+
+#[cfg(unix)]
+fn default_pid_file() -> String {
+    "/run/malkuth/daemon.pid".to_owned()
+}
+
+#[cfg(windows)]
+fn default_pid_file() -> String {
+    std::env::var_os("ProgramData")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+        .join("malkuth")
+        .join("daemon.pid")
+        .to_string_lossy()
+        .into_owned()
 }

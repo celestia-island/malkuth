@@ -149,6 +149,9 @@ impl Default for FailureBackoff {
 
 /// Outcome of acquiring the cross-unit build lock.
 #[derive(Debug)]
+// Windows has no flock backend yet: `acquire_build_lock` only returns
+// `Disabled`, so the other variants are dead there by design.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub enum LockOutcome {
     /// Lock taken; keep the file handle alive for the pipeline's duration
     /// (dropping it releases the flock).
@@ -413,6 +416,7 @@ mod tests {
         assert_eq!(b.record_failure(), Duration::from_secs(30));
     }
 
+    #[cfg(unix)]
     #[test]
     fn build_lock_is_exclusive() {
         let dir = std::env::temp_dir().join(format!(
