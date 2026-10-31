@@ -21,11 +21,18 @@ Two safety nets back that up, registered at import time:
   failure between spawn and `finally` can no longer leak) and then sweeps;
 * `SIGTERM`/`SIGINT` → same teardown before re-raising, so a killed test run
   still cleans up;
-* `sweep_orphan_workers()` kills only leftovers of *this* checkout: processes
-  whose argv[0] is exactly `target/debug/examples/test_app` **and** whose
-  process-group leader is already gone. A live leader means an in-flight run,
-  which is never touched — that is what makes the sweep safe to run while other
-  tests (or other checkouts) are working.
+* `sweep_orphan_workers()` collects leftovers, judged **per worker**: a
+  candidate is swept only when it is this checkout's `test_app worker`
+  (identity from `/proc/<pid>/exe`, so a leader invoked through a relative path
+  or a symlinked `target/` still counts), it has **no live supervising leader**
+  in its ancestor chain or process group (`malkuth`, `test_app supervise` and
+  `test_app rolling` all count as leaders), and its working directory is inside
+  this worktree. A live run is therefore never touched, while a genuine orphan
+  is still collected even when another run is in flight.
+
+  `scripts/tests/test_harness_hygiene.py` pins this: three leader shapes each
+  "sweep during startup must not kill", a relative-path leader, an orphan
+  beside a live run, and an orphan whose leader was SIGKILLed.
 
 Limitation: `SIGKILL` of the test process itself cannot run any handler. The
 sweep covers that case on the next run.
@@ -43,9 +50,10 @@ ps -eo args | grep -c 'examples/test_app worker$'   # → 0
 
 Before this contract existed the same sequence left 3 survivors from
 `test_app_supervise_restart` plus 2 more from `test_app_rolling_update`
-(25 accumulated over one afternoon). While a run is live the sweep must be a
-no-op — it returns `[]` and does not disturb the run — which is what makes it
-safe to call during a concurrent suite.
+(25 accumulated over one afternoon). `test_harness_hygiene` runs first in
+`run_all.py`; it asserts both halves of the rule — a live run keeps its
+workers, and real orphans (including one sitting next to a live run) are
+collected.
 """
 
 from __future__ import annotations
@@ -86,11 +94,24 @@ def bin_path(name: str) -> Path:
 
 
 # ── process hygiene ────────────────────────────────────────────────────────
+#
+# The suite supervises processes, which means killing the direct child is not
+# enough: `malkuth` (or `test_app supervise|rolling`) spawns `test_app worker`
+# children that survive it and reparent to init / `systemd --user`.
+#
+# Two mechanisms, both keyed per worker rather than globally:
+#   * `Proc.stop()` signals the child's whole process group (TERM -> KILL);
+#   * `sweep_orphan_workers()` collects leftovers, but ONLY workers that have
+#     no live supervising leader — judged per candidate, never "is anything
+#     running somewhere". A live run is therefore never touched, whatever its
+#     leader shape or however it was invoked.
 
 _POSIX = os.name == "posix"
 
 _ACTIVE: "set[Proc]" = set()
-_ACTIVE_LOCK = threading.Lock()
+# RLock: the SIGTERM/SIGINT handler may run teardown while the main thread holds
+# this lock, and a non-reentrant lock would deadlock the interpreter.
+_ACTIVE_LOCK = threading.RLock()
 
 
 def _kill_group(pgid: int, sig: int) -> None:
@@ -104,7 +125,11 @@ def _kill_group(pgid: int, sig: int) -> None:
 
 
 def _kill_tree(pid: int, sig: int) -> None:
-    """Windows fallback: `taskkill /T` walks the child tree."""
+    """Windows fallback: `taskkill /T` walks the child tree.
+
+    Known gap (S3): `taskkill` is always `/F` (hard kill); there is no
+    two-phase TERM-then-KILL equivalent here.
+    """
     try:
         subprocess.run(
             ["taskkill", "/F", "/T", "/PID", str(pid)],
@@ -116,6 +141,59 @@ def _kill_tree(pid: int, sig: int) -> None:
         pass
 
 
+# ── /proc helpers (Linux; the suite's CI lane is Linux) ────────────────────
+
+def _proc_argv(pid: int) -> "list[str]":
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return []
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+
+def _proc_exe(pid: int) -> "Optional[str]":
+    """The binary a process actually runs (`/proc/<pid>/exe`).
+
+    Authoritative for identity: argv[0] may be relative (resolved against the
+    process's own cwd) or simply a lie, while `exe` is the real file — which is
+    what makes the S1-2 case (a leader started as `target/debug/malkuth` from
+    its worktree) visible.
+    """
+    try:
+        exe = os.readlink(f"/proc/{pid}/exe")
+    except OSError:
+        return None
+    if exe.endswith(" (deleted)"):
+        exe = exe[: -len(" (deleted)")]
+    return exe
+
+
+def _proc_cwd(pid: int) -> "Optional[str]":
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        return None
+
+
+def _proc_ppid_pgid(pid: int) -> "Optional[tuple[int, int]]":
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    # "pid (comm) state ppid pgrp ..." — comm may contain spaces/parens, so
+    # split after the LAST ')'.
+    rparen = stat.rfind(")")
+    if rparen < 0:
+        return None
+    fields = stat[rparen + 2:].split()
+    if len(fields) < 3:
+        return None
+    try:
+        return int(fields[1]), int(fields[2])
+    except ValueError:
+        return None
+
+
 def _process_table() -> "list[tuple[int, list[str]]]":
     """(pid, argv) for every readable process; Linux `/proc`, else empty."""
     proc_root = Path("/proc")
@@ -125,53 +203,138 @@ def _process_table() -> "list[tuple[int, list[str]]]":
     for entry in proc_root.iterdir():
         if not entry.name.isdigit():
             continue
-        try:
-            raw = (entry / "cmdline").read_bytes()
-        except OSError:
-            continue
-        argv = [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+        argv = _proc_argv(int(entry.name))
         if argv:
             table.append((int(entry.name), argv))
     return table
 
 
+def _checkout_binaries() -> "tuple[str, str]":
+    """(malkuth, test_app) real paths for THIS checkout's target dir."""
+    return (
+        os.path.realpath(str(TARGET / "malkuth")),
+        os.path.realpath(str(EXAMPLES / "test_app")),
+    )
+
+
+def _is_supervising_leader(pid: int) -> bool:
+    """True when `pid` is a live supervision leader of this checkout.
+
+    Three shapes exist in this suite: `malkuth ... -- <cmd>`,
+    `test_app supervise ...` and `test_app rolling ...`. Identity comes from
+    `/proc/<pid>/exe` (not argv[0]), so a leader started through a relative
+    path or a symlinked `target/` is still recognised.
+    """
+    exe = _proc_exe(pid)
+    if exe is None:
+        return False
+    malkuth, test_app = _checkout_binaries()
+    if exe == malkuth:
+        return True
+    if exe == test_app:
+        argv = _proc_argv(pid)
+        return len(argv) > 1 and argv[1] in ("supervise", "rolling")
+    return False
+
+
+def _supervising_leader_of(pid: int) -> "Optional[int]":
+    """The live supervising leader `pid` belongs to, or None.
+
+    Walks the ancestor chain (bounded) AND the process-group id, because a
+    worker can be spawned directly by its leader or through a short-lived
+    intermediary. Returns None when every candidate leader is gone — that is
+    exactly the orphan case the sweep exists for.
+    """
+    seen: "set[int]" = set()
+    chain: "list[int]" = []
+    cur = pid
+    for _ in range(6):
+        info = _proc_ppid_pgid(cur)
+        if info is None:
+            break
+        ppid, pgid = info
+        if pgid > 0 and pgid not in seen and pgid != pid:
+            seen.add(pgid)
+            chain.append(pgid)
+        if ppid <= 0:
+            break
+        if ppid not in seen:
+            seen.add(ppid)
+            chain.append(ppid)
+        cur = ppid
+    for candidate in chain:
+        if _is_supervising_leader(candidate):
+            return candidate
+    return None
+
+
+def _under_checkout_root(path: "Optional[str]") -> bool:
+    """Whether `path` sits inside this worktree.
+
+    This is the worktree dimension: two worktrees may share one `target/`
+    directory (cache symlink), so the binary path alone cannot tell their
+    processes apart — the working directory can.
+    """
+    if not path:
+        return False
+    try:
+        root = os.path.realpath(str(ROOT))
+        return os.path.realpath(path) == root or os.path.realpath(path).startswith(root + os.sep)
+    except OSError:
+        return False
+
+
+def live_worker_pids() -> "list[int]":
+    """pids of this checkout's `test_app worker` processes, live or left over."""
+    if not _POSIX or not Path("/proc").is_dir():
+        return []
+    _malkuth, test_app = _checkout_binaries()
+    return [
+        pid
+        for pid, argv in _process_table()
+        if len(argv) > 1 and argv[1] == "worker" and _proc_exe(pid) == test_app
+    ]
+
+
 def sweep_orphan_workers() -> "list[int]":
     """Kill leftover `test_app worker` processes owned by this checkout.
 
-    Deliberately narrow, so it is safe to run while other tests or other
-    checkouts are working:
+    Judged **per worker**, so a live run is never collateral damage:
 
-    * argv[0] must be exactly THIS checkout's `target/debug/examples/test_app`;
-    * argv[1] must be `worker`;
-    * no live `malkuth` (this checkout's binary) may exist: with one session per
-      `Proc`, an in-flight supervision means live workers, never leftovers.
+    * the candidate must be this checkout's `test_app worker` (identity from
+      `/proc/<pid>/exe`, not argv[0]);
+    * it must have **no live supervising leader** — neither in its ancestor
+      chain nor as its process-group leader — covering `malkuth` and
+      `test_app supervise|rolling` leaders alike;
+    * its working directory must be inside this worktree (the shared `target/`
+      cache means the binary path alone does not identify a worktree).
+
+    Anything that fails one of those checks is left alone; a worker whose leader
+    is gone is by definition a leftover (the L57 leak) and is swept.
 
     Linux-only (`/proc`); returns the pids it signalled.
     """
-    if not _POSIX:
+    if not _POSIX or not Path("/proc").is_dir():
         return []
-    table = _process_table()
-    if not table:
-        return []
-    target = os.path.realpath(str(EXAMPLES / "test_app"))
-    malkuth = os.path.realpath(str(TARGET / "malkuth"))
-    # A live malkuth from THIS checkout means a run is in flight: leave it be.
-    if any(argv and os.path.realpath(argv[0]) == malkuth for _pid, argv in table):
-        return []
+    _malkuth, test_app = _checkout_binaries()
 
     swept: "list[int]" = []
-    for pid, argv in table:
+    for pid, argv in _process_table():
         if len(argv) < 2 or argv[1] != "worker":
             continue
-        if os.path.realpath(argv[0]) != target:
+        if _proc_exe(pid) != test_app:
             continue
+        if _supervising_leader_of(pid) is not None:
+            continue  # in-flight supervision: never touch
+        if not _under_checkout_root(_proc_cwd(pid)):
+            continue  # another worktree sharing the same target dir
         try:
             os.kill(pid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
             continue
         swept.append(pid)
-    for pid in swept:
-        try:  # escalate whatever ignored SIGTERM
+    for pid in swept:  # escalate whatever ignored SIGTERM
+        try:
             os.kill(pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
@@ -193,7 +356,10 @@ def teardown() -> None:
 
 
 def _on_signal(signum, _frame) -> None:
-    teardown()
+    try:
+        teardown()
+    except Exception:  # never mask the signal with teardown noise
+        pass
     # Restore the default disposition and re-raise, so the exit status is the
     # one the caller expects.
     try:
@@ -203,6 +369,9 @@ def _on_signal(signum, _frame) -> None:
         raise SystemExit(128 + signum)
 
 
+# Registered at import: both the normal exit (atexit) and a terminated run
+# (SIGTERM/SIGINT) clean up. SIGKILL of the test process itself cannot run any
+# handler — the sweep covers that case on the next run.
 atexit.register(teardown)
 if _POSIX:
     for _sig in (signal.SIGTERM, signal.SIGINT):
@@ -262,9 +431,12 @@ class Proc:
     `CREATE_NEW_PROCESS_GROUP` on Windows) so [`Proc.stop`] can signal the whole
     tree. That is what keeps a supervised `malkuth` from leaving its
     `test_app worker` children behind.
+
+    `cwd` is forwarded to the child; the hygiene tests use it to pin the
+    working directory the sweep's worktree check keys on.
     """
 
-    def __init__(self, args, env: Optional[dict] = None) -> None:
+    def __init__(self, args, env: Optional[dict] = None, cwd: Optional[str] = None) -> None:
         kwargs: dict = {}
         if _POSIX:
             kwargs["start_new_session"] = True
@@ -277,6 +449,7 @@ class Proc:
             text=True,
             env=env,
             bufsize=1,
+            cwd=cwd,
             **kwargs,
         )
         # With one session per child the process group id equals the child pid;
