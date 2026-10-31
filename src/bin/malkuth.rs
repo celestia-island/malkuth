@@ -170,6 +170,19 @@ async fn main() {
         let mut args = std::env::args_os();
         let _ = args.next(); // program name
         if args.next().is_some_and(|a| a == "mcp") {
+            // Subscriber FIRST: without it `RUST_LOG` never took effect for the
+            // MCP lane and every `tracing` event (including the per-line mirror
+            // of captured worker output) was dropped. The writer is stderr on
+            // purpose — the MCP stdio transport owns stdout, and logging there
+            // would corrupt the protocol stream.
+            tracing_subscriber::fmt()
+                .with_writer(std::io::stderr)
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                )
+                .with_timer(MalkuthTimer)
+                .init();
             if let Err(e) = malkuth::mcp::run().await {
                 error!("{e}");
                 std::process::exit(1);

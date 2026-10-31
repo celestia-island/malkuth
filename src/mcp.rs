@@ -41,20 +41,40 @@ use crate::{
     DrainController, RestartPolicy, ShutdownKind, Supervisor, WorkerInfo, WorkerPhase, WorkerSpec,
 };
 
-/// How many finished runs stay observable (their rings and final snapshots
-/// remain readable after the blocking `supervise` call returns).
+/// How many runs stay in the registry. When it is full, only a *finished*
+/// run may be evicted (its handle, log rings and final snapshot go with it);
+/// with every slot live, a new run is refused rather than silently dropping
+/// observability of a run still in flight.
 const MAX_RUNS: usize = 8;
+
+/// Retired run ids remembered so a caller cannot recycle a name that already
+/// addressed a (now evicted) run. Bounded: ids older than this many insertions
+/// become reusable, which is documented on the tool.
+const MAX_REMEMBERED_RUN_IDS: usize = 256;
 
 /// Default budget for `drain` to wait for workers to report stopped.
 const DEFAULT_DRAIN_TIMEOUT_SECS: u64 = 30;
 
+/// Operator-requested restarts admitted per worker per window. This is a
+/// *gate on the control arm* (checked synchronously, refusing the call), not
+/// the supervisor's crash budget: a manual restart must never consume the
+/// allowance that exists to damp crash loops.
+const EXPLICIT_RESTART_MAX: usize = 5;
+const EXPLICIT_RESTART_WINDOW: Duration = Duration::from_secs(60);
+
 /// `logs` defaults and hard caps — the tail is a *window*, and the caps are
-/// what keeps a chatty worker from flooding a model's context.
+/// what keeps a chatty worker from flooding a model's context. The pins in
+/// `log_caps_are_contract_pinned` make widening them a deliberate, visible
+/// change rather than a silent widening of the context budget.
 const LOGS_DEFAULT_LINES: usize = 100;
 const LOGS_MAX_LINES: usize = 500;
 const LOGS_DEFAULT_BYTES: usize = 8 * 1024;
 const LOGS_MAX_BYTES: usize = 64 * 1024;
 const LOGS_MIN_BYTES: usize = 256;
+
+/// Bytes kept free for the omission marker so `bytes <= max_bytes` holds
+/// exactly, marker included.
+const LOG_MARKER_RESERVE: usize = 64;
 
 static RUN_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -70,14 +90,28 @@ struct RunHandle {
     drain: DrainController,
     restart_signals: HashMap<String, Arc<tokio::sync::Notify>>,
     log_rings: HashMap<String, WorkerLogRing>,
-    /// Workers whose restart was accepted, with the restart count observed
-    /// at accept time: the entry is settled once the supervisor's count moves
-    /// past it (the restart actually happened) or the worker ends.
-    pending_restarts: Mutex<Vec<(String, u32)>>,
+    restart_book: Mutex<RestartBook>,
     finished: Mutex<Option<FinishedRun>>,
 }
 
+/// Restart bookkeeping for one run.
+///
+/// `pending` is (worker id, worker restart count observed at accept time): an
+/// entry is settled once the supervisor's count moves past it (the restart
+/// happened) or the worker ends. `stamps` is the operator's restart budget
+/// window. Both live under ONE mutex, so "settle → check pending → check
+/// budget → record" is a single critical section: two concurrent calls cannot
+/// both be accepted.
+#[derive(Default)]
+struct RestartBook {
+    pending: Vec<(String, u32)>,
+    stamps: Vec<(String, Instant)>,
+}
+
 struct FinishedRun {
+    #[allow(dead_code)]
+    // Kept as the record anchor: the per-worker truth is the fleet snapshot,
+    // the terminal `WorkerInfo` list is what the blocking call returned.
     workers: Vec<WorkerInfo>,
     finished_at: SystemTime,
 }
@@ -85,13 +119,6 @@ struct FinishedRun {
 impl RunHandle {
     fn is_finished(&self) -> bool {
         self.finished.lock().map(|f| f.is_some()).unwrap_or(false)
-    }
-
-    fn finished_workers(&self) -> Option<Vec<WorkerInfo>> {
-        self.finished
-            .lock()
-            .ok()
-            .and_then(|f| f.as_ref().map(|f| f.workers.clone()))
     }
 
     fn finished_unix_secs(&self) -> Option<u64> {
@@ -110,55 +137,75 @@ impl RunHandle {
         }
     }
 
-    /// Drop restart bookkeeping for requests the supervisor has already
-    /// acted on: either the worker's restart count advanced past the value
-    /// recorded at accept time, or the worker has ended.
-    fn settle_pending_restarts(&self) {
-        let Ok(mut pending) = self.pending_restarts.lock() else {
-            return;
+    /// Decide — and record — one operator restart request atomically.
+    ///
+    /// The fleet is snapshotted BEFORE the book lock is taken, so the two
+    /// mutexes are never nested (no lock-order inversion). Returns the stable
+    /// failure code when the request cannot be accepted.
+    fn accept_restart(&self, worker_id: &str) -> Result<(), &'static str> {
+        let phases: HashMap<String, (WorkerPhase, u32)> = self
+            .fleet
+            .snapshot()
+            .into_iter()
+            .map(|s| (s.id, (s.phase, s.restart_count)))
+            .collect();
+        let (phase, count) = phases
+            .get(worker_id)
+            .copied()
+            .unwrap_or((WorkerPhase::Stopped, 0));
+
+        let Ok(mut book) = self.restart_book.lock() else {
+            return Err("internal_state_poisoned");
         };
-        pending.retain(|(id, count_at_accept)| match self.fleet.get(id) {
-            Some(snapshot) => {
-                snapshot.phase != WorkerPhase::Stopped && snapshot.restart_count == *count_at_accept
+        book.pending.retain(|(id, count_at_accept)| {
+            match phases.get(id) {
+                // Settled: the worker ended, or the supervisor's counter moved
+                // past the value recorded when the request was accepted.
+                Some((WorkerPhase::Stopped, _)) | None => false,
+                Some((_, current)) => current == count_at_accept,
             }
-            None => false,
         });
+        book.stamps
+            .retain(|(_, at)| at.elapsed() < EXPLICIT_RESTART_WINDOW);
+
+        let pending_same = book.pending.iter().any(|(id, _)| id == worker_id);
+        if let Some(code) = restart_blocker(phase, pending_same) {
+            return Err(code);
+        }
+        let in_window = book.stamps.iter().filter(|(id, _)| id == worker_id).count();
+        if in_window >= EXPLICIT_RESTART_MAX {
+            return Err("restart_budget_exhausted");
+        }
+        book.pending.push((worker_id.to_string(), count));
+        book.stamps.push((worker_id.to_string(), Instant::now()));
+        Ok(())
     }
 
+    /// The run snapshot served by `status` and `drain`.
+    ///
+    /// Every worker is serialized from the live fleet sink — including a
+    /// finished run, where the sink holds the terminal `stopped` phase — so
+    /// `pid`, `uptime_secs` and `restart_policy` are always present (`null`
+    /// when they do not apply) instead of vanishing from the payload.
     fn snapshot_value(&self) -> Value {
         let elapsed = SystemTime::now()
             .duration_since(self.started_at)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let finished = self.finished_workers();
-        let workers: Vec<Value> = match &finished {
-            Some(workers) => workers
-                .iter()
-                .map(|w| {
-                    json!({
-                        "id": w.id,
-                        "kind": w.kind,
-                        "phase": "stopped",
-                        "restart_policy": w.restart_policy,
-                        "restart_count": w.restart_count,
-                        "last_error": w.last_error,
-                    })
-                })
-                .collect(),
-            None => self
-                .fleet
-                .snapshot()
-                .iter()
-                .map(|s| serde_json::to_value(s).unwrap_or(Value::Null))
-                .collect(),
-        };
+        let workers: Vec<Value> = self
+            .fleet
+            .snapshot()
+            .iter()
+            .map(|s| serde_json::to_value(s).unwrap_or(Value::Null))
+            .collect();
         json!({
             "run_id": self.run_id,
             "started_unix_secs": unix_secs(self.started_at),
             "elapsed_secs": elapsed,
-            "finished": finished.is_some(),
+            "finished": self.is_finished(),
             "finished_unix_secs": self.finished_unix_secs(),
             "draining": self.drain.is_draining(),
+            "drain_kind": self.drain.kind().map(shutdown_kind_name),
             "worker_count": workers.len(),
             "workers": workers,
         })
@@ -166,6 +213,11 @@ impl RunHandle {
 }
 
 /// Bounded page of log lines (the Spill side of log retrieval).
+///
+/// Counts are *derived from the final text*, not from the request: after the
+/// line window and the byte budget have both been applied,
+/// `lines_returned + omitted_lines == total_lines_in_ring` and
+/// `bytes <= max_bytes` hold exactly (marker included).
 struct LogPage {
     text: String,
     lines: usize,
@@ -175,38 +227,137 @@ struct LogPage {
     omitted_bytes: usize,
 }
 
-/// Take the newest bytes of `lines`, prefixing a visible omission marker when
-/// anything was dropped.
+/// Page `all` (the whole ring, oldest first) down to at most `max_lines` lines
+/// and `max_bytes` bytes, keeping the NEWEST content.
 ///
-/// Two independent bounds apply: the caller's line window (older whole lines
-/// are never read) and a byte cap (the head of the window is cut at a char
-/// boundary). Both are reported, and the text carries a marker so a reader of
-/// the text alone knows it is looking at a window.
-fn page_logs(lines: Vec<String>, total_in_ring: usize, max_bytes: usize) -> LogPage {
-    let mut text = lines.join("\n");
+/// Two bounds compose: whole lines outside the line window are dropped, then
+/// the head of the remaining body is cut until the byte budget fits with the
+/// omission marker included. `lines_returned` counts lines with any content in
+/// the final text (a line cut by the byte budget still counts, and its lost
+/// head is reported in `omitted_bytes`).
+fn page_logs(all: &[String], max_lines: usize, max_bytes: usize) -> LogPage {
+    let total_in_ring = all.len();
+    let start = total_in_ring.saturating_sub(max_lines.max(1));
+    let window = &all[start..];
+    let body_budget = max_bytes.saturating_sub(LOG_MARKER_RESERVE);
+
+    // Take whole lines from the end while they fit the body budget.
+    let mut kept_from = window.len();
+    let mut body_len = 0usize;
+    for i in (0..window.len()).rev() {
+        let add = window[i].len() + usize::from(body_len > 0);
+        if body_len + add > body_budget {
+            break;
+        }
+        body_len += add;
+        kept_from = i;
+    }
+    // Nothing whole fits: keep the tail of the newest line rather than
+    // dropping it, because "the newest bytes" is what a tail reader wants and
+    // a dropped line would report a zero-byte loss.
+    if kept_from == window.len() && !window.is_empty() {
+        kept_from = window.len() - 1;
+    }
+    let mut lines_returned = window.len() - kept_from;
+    let mut body = window[kept_from..].join("\n");
     let mut omitted_bytes = 0usize;
-    if text.len() > max_bytes {
-        let mut cut = text.len() - max_bytes;
+
+    // One line can still exceed the whole body budget; cut its head (char
+    // safe) and report the loss as bytes, not as a missing line.
+    if body.len() > body_budget {
+        let mut cut = body.len() - body_budget;
+        while cut < body.len() && !body.is_char_boundary(cut) {
+            cut += 1;
+        }
+        omitted_bytes += cut;
+        body = body.get(cut..).unwrap_or_default().to_string();
+    }
+
+    // Build marker + body, then re-cut until the marker's own bytes fit too.
+    let mut text = body;
+    for _ in 0..4 {
+        let omitted_lines = total_in_ring.saturating_sub(lines_returned);
+        let truncated = omitted_lines > 0 || omitted_bytes > 0;
+        let marker = if truncated {
+            format!("… [omitted {omitted_lines} line(s), {omitted_bytes} byte(s)]\n")
+        } else {
+            String::new()
+        };
+        let combined = format!("{marker}{text}");
+        if combined.len() <= max_bytes {
+            return LogPage {
+                bytes: combined.len(),
+                text: combined,
+                lines: lines_returned,
+                truncated,
+                omitted_lines,
+                omitted_bytes,
+            };
+        }
+        // Cut the overflow (plus the marker growth budget) from the body head.
+        let overflow = combined.len() - max_bytes;
+        let mut cut = overflow.min(text.len());
         while cut < text.len() && !text.is_char_boundary(cut) {
             cut += 1;
         }
-        omitted_bytes = cut;
+        if cut == 0 {
+            break;
+        }
+        omitted_bytes += cut;
         text = text.get(cut..).unwrap_or_default().to_string();
+        // A cut may have emptied the oldest retained line: report it as a
+        // missing line instead of a zero-length one.
+        if text.ends_with('\n') {
+            text.pop();
+            lines_returned = lines_returned.saturating_sub(1);
+        }
     }
-    let omitted_lines = total_in_ring.saturating_sub(lines.len());
+
+    // Pathological budgets (marker longer than the reserve): keep the tail of
+    // the marker+body splice and stay inside the budget.
+    let omitted_lines = total_in_ring.saturating_sub(lines_returned);
     let truncated = omitted_lines > 0 || omitted_bytes > 0;
-    if truncated {
-        let marker =
-            format!("… [omitted {omitted_lines} earlier line(s), {omitted_bytes} byte(s)]\n");
-        text.insert_str(0, &marker);
+    let marker = if truncated {
+        format!("… [omitted {omitted_lines} line(s), {omitted_bytes} byte(s)]\n")
+    } else {
+        String::new()
+    };
+    let mut combined = format!("{marker}{text}");
+    if combined.len() > max_bytes {
+        let mut cut = combined.len() - max_bytes;
+        while cut < combined.len() && !combined.is_char_boundary(cut) {
+            cut += 1;
+        }
+        combined = combined.get(cut..).unwrap_or_default().to_string();
     }
     LogPage {
-        bytes: text.len(),
-        lines: lines.len(),
-        text,
+        bytes: combined.len(),
+        text: combined,
+        lines: lines_returned,
         truncated,
         omitted_lines,
         omitted_bytes,
+    }
+}
+
+/// Stable wire name for a drain kind.
+fn shutdown_kind_name(kind: ShutdownKind) -> &'static str {
+    match kind {
+        ShutdownKind::Graceful => "graceful",
+        ShutdownKind::Immediate => "immediate",
+        ShutdownKind::Reload => "reload",
+    }
+}
+
+/// What the drain arm accepts. `Reload` is deliberately absent: a reload is a
+/// service-lifecycle signal read by the supervised program
+/// (`DrainController::wait_for_reload`), it does NOT set the drain bit, so
+/// treating it as a run action would report `accepted` while doing nothing.
+fn parse_drain_kind(raw: Option<&str>) -> Result<ShutdownKind, &'static str> {
+    match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        None | Some("") | Some("graceful") => Ok(ShutdownKind::Graceful),
+        Some("immediate") => Ok(ShutdownKind::Immediate),
+        _ => Err("unsupported_kind"),
     }
 }
 
@@ -256,6 +407,9 @@ fn validate_worker_ids(ids: &[String]) -> Result<(), String> {
 struct Server {
     http: reqwest::Client,
     runs: Mutex<Vec<Arc<RunHandle>>>,
+    /// Ids of runs that have left the registry (finished-and-evicted), kept so
+    /// a caller cannot reuse a name that already addressed a different run.
+    used_run_ids: Mutex<Vec<String>>,
 }
 
 impl Server {
@@ -290,12 +444,22 @@ impl Server {
         if runs.iter().any(|r| r.run_id == handle.run_id) {
             return Err("run_id already in use");
         }
+        let Ok(mut used) = self.used_run_ids.lock() else {
+            return Err("internal state poisoned");
+        };
+        if used.iter().any(|id| id == &handle.run_id) {
+            return Err("run_id already used by an evicted run");
+        }
         if runs.len() >= MAX_RUNS {
             if let Some(pos) = runs.iter().position(|r| r.is_finished()) {
                 runs.remove(pos);
             } else {
                 return Err("too many concurrent runs");
             }
+        }
+        used.push(handle.run_id.clone());
+        if used.len() > MAX_REMEMBERED_RUN_IDS {
+            used.remove(0);
         }
         runs.push(handle);
         Ok(())
@@ -328,15 +492,28 @@ impl Server {
     /// `timeout_secs: Some(0)` returns immediately after signalling (the
     /// call is idempotent; a second drain on the same run reports
     /// `already: true`).
+    /// Signal a drain and wait (bounded) for the run to finish.
+    ///
+    /// `kind` is validated BEFORE anything is signalled: an unsupported kind
+    /// must not report `accepted` while doing nothing (a `Reload` does not set
+    /// the drain bit at all — see [`parse_drain_kind`]).
     async fn drain_payload(&self, args: DrainArgs) -> Value {
         let Some(run) = self.find_run(&args.run_id) else {
             return Self::error_payload("unknown_run", format!("no run with id `{}`", args.run_id));
         };
-        let already = run.drain.is_draining();
-        let kind = match args.kind.as_deref().map(str::trim) {
-            Some(k) if k.eq_ignore_ascii_case("reload") => ShutdownKind::Reload,
-            _ => ShutdownKind::Graceful,
+        let kind = match parse_drain_kind(args.kind.as_deref()) {
+            Ok(kind) => kind,
+            Err(code) => {
+                return Self::error_payload(
+                    code,
+                    format!(
+                        "drain kind {:?} is not supported — use `graceful` or `immediate` (a                          `reload` is a service-lifecycle signal for the supervised program, not                          a run action)",
+                        args.kind.as_deref().unwrap_or("")
+                    ),
+                );
+            }
         };
+        let already = run.drain.is_draining();
         run.drain.begin_drain(kind);
         let budget = Duration::from_secs(args.timeout_secs.unwrap_or(DEFAULT_DRAIN_TIMEOUT_SECS));
         let deadline = Instant::now() + budget;
@@ -348,30 +525,19 @@ impl Server {
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        let workers: Vec<Value> = match run.finished_workers() {
-            Some(workers) => workers
-                .iter()
-                .map(|w| {
-                    json!({
-                        "id": w.id,
-                        "kind": w.kind,
-                        "phase": "stopped",
-                        "restart_count": w.restart_count,
-                        "last_error": w.last_error,
-                    })
-                })
-                .collect(),
-            None => run
-                .fleet
-                .snapshot()
-                .iter()
-                .map(|s| serde_json::to_value(s).unwrap_or(Value::Null))
-                .collect(),
-        };
+        // Finished or not, the snapshot comes from the same fleet sink the
+        // `status` arm reads, so the worker objects keep an identical shape.
+        let workers: Vec<Value> = run
+            .fleet
+            .snapshot()
+            .iter()
+            .map(|s| serde_json::to_value(s).unwrap_or(Value::Null))
+            .collect();
         json!({
             "ok": true,
             "run_id": run.run_id,
             "accepted": true,
+            "kind": shutdown_kind_name(kind),
             "already": already,
             "draining": run.drain.is_draining(),
             "finished": run.is_finished(),
@@ -399,22 +565,18 @@ impl Server {
                 ),
             );
         };
-        run.settle_pending_restarts();
-        let phase = run
-            .fleet
-            .get(&args.worker_id)
-            .map(|s| s.phase)
-            .unwrap_or(WorkerPhase::Stopped);
-        let pending = run
-            .pending_restarts
-            .lock()
-            .map(|p| p.iter().any(|(id, _)| id == &args.worker_id))
-            .unwrap_or(false);
-        if let Some(code) = restart_blocker(phase, pending) {
+        // Atomic accept: settle → pending check → budget check → record, all
+        // in one critical section, so two concurrent calls cannot both win.
+        if let Err(code) = run.accept_restart(&args.worker_id) {
+            let phase = run
+                .fleet
+                .get(&args.worker_id)
+                .map(|s| s.phase)
+                .unwrap_or(WorkerPhase::Stopped);
             return Self::error_payload(
                 code,
                 format!(
-                    "worker `{}` cannot restart now (phase {})",
+                    "worker `{}` cannot restart now (phase {}, code {code})",
                     args.worker_id,
                     serde_json::to_value(phase)
                         .ok()
@@ -422,14 +584,6 @@ impl Server {
                         .unwrap_or_else(|| "unknown".to_string())
                 ),
             );
-        }
-        let restart_count_now = run
-            .fleet
-            .get(&args.worker_id)
-            .map(|s| s.restart_count)
-            .unwrap_or(0);
-        if let Ok(mut p) = run.pending_restarts.lock() {
-            p.push((args.worker_id.clone(), restart_count_now));
         }
         signal.notify_one();
         json!({
@@ -478,8 +632,11 @@ impl Server {
             .map(|n| n as usize)
             .unwrap_or(LOGS_DEFAULT_BYTES)
             .clamp(LOGS_MIN_BYTES, LOGS_MAX_BYTES);
-        let total = ring.len();
-        let page = page_logs(ring.tail(max_lines), total, max_bytes);
+        // Page the whole ring: `page_logs` derives the window, the byte cut and
+        // the reported counts from one consistent input.
+        let all = ring.tail(ring.len());
+        let total = all.len();
+        let page = page_logs(&all, max_lines, max_bytes);
         json!({
             "ok": true,
             "run_id": run.run_id,
@@ -600,7 +757,7 @@ struct ProbeArgs {
 #[tool_router]
 impl Server {
     #[tool(
-        description = "Launch a set of child-process workers under malkuth's supervisor and run until they all exit (or the timeout elapses). Each worker is restarted per its policy (permanent/transient/temporary) with a sliding-window rate limit to prevent crash storms. Returns the final status snapshot of every worker. This call blocks for the lifetime of the supervision; while it is outstanding, use malkuth_status / malkuth_logs / malkuth_restart / malkuth_drain on the returned run_id to observe and steer it (those calls are non-blocking and safe to issue concurrently)."
+        description = "Launch a set of child-process workers under malkuth's supervisor and run until they all exit (or the timeout elapses). Each worker is restarted per its policy (permanent/transient/temporary) with a sliding-window rate limit to prevent crash storms. Returns the final status snapshot of every worker plus a run_id. This call blocks for the lifetime of the supervision; while it is outstanding, malkuth_status / malkuth_logs / malkuth_restart / malkuth_drain act on the returned run_id (they are non-blocking and safe to issue concurrently). Registry limits: at most 8 runs are kept (a finished run is evicted first, taking its log rings with it), and a run_id cannot be reused once used."
     )]
     async fn malkuth_supervise(
         &self,
@@ -650,7 +807,7 @@ impl Server {
             drain: drain.clone(),
             restart_signals,
             log_rings,
-            pending_restarts: Mutex::new(Vec::new()),
+            restart_book: Mutex::new(RestartBook::default()),
             finished: Mutex::new(None),
         });
         if let Err(e) = self.insert_run(handle.clone()) {
@@ -676,7 +833,11 @@ impl Server {
                     drain.begin_drain(ShutdownKind::Graceful);
                     // The supervision future is dropped here: kill_on_drop
                     // terminates the children, so the run is over even though
-                    // there is no final snapshot to report.
+                    // there is no final snapshot to report. Publish that end
+                    // into the fleet sink explicitly — the workers never got a
+                    // chance to publish their own `stopped` phase, and a
+                    // finished run must not keep claiming `running`.
+                    handle.fleet.stop_all();
                     Vec::new()
                 }
             }
@@ -694,7 +855,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Non-blocking snapshot of every supervision run this MCP server knows about (or one run when `run_id` is passed). Per worker: id, kind, phase (starting/running/restarting/draining/stopped), pid, uptime_secs, restart_policy, restart_count, last_error. Safe to call while malkuth_supervise is still blocking. Answer shape: {\"ok\":true,\"runs\":[...]}, or {\"ok\":false,\"code\":\"unknown_run\",...}. Read-only: no side effects."
+        description = "Non-blocking snapshot of every supervision run this MCP server knows about (or one run when `run_id` is passed). Per worker: id, kind, phase (starting/running/restarting/draining/stopped), pid, uptime_secs, restart_policy, restart_count, last_error. Every key is always present — pid and last_error are null when they do not apply, including for a finished run (whose workers report phase stopped). Safe to call while malkuth_supervise is still blocking. Answer: {\"ok\":true,\"runs\":[...]}, or {\"ok\":false,\"code\":\"unknown_run\",...}. Read-only: no side effects."
     )]
     async fn malkuth_status(
         &self,
@@ -705,7 +866,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Restart ONE worker of a running supervision, addressed by run_id + worker_id. Side effect: the current child receives a graceful stop (SIGTERM/CTRL_BREAK, escalating to a kill after 30s) and a fresh child is spawned under the same id; the worker's restart budget/window still applies. Idempotency: a second restart for a worker already restarting is refused, never queued. Failure shapes are stable codes: unknown_run, unknown_worker, run_finished, worker_stopped, worker_draining, already_restarting. Success: {\"ok\":true,\"accepted\":true,\"phase\":\"restarting\"}."
+        description = "Restart ONE worker of a running supervision, addressed by run_id + worker_id. Side effect: the current child receives a graceful stop (SIGTERM/CTRL_BREAK, escalating to a kill after 30s) and a fresh child is spawned under the same id; the supervisor's crash budget is NOT spent (it exists to damp crash loops) and the worker is never ended by this call. Operator budget: at most 5 accepted restarts per worker per 60s, checked synchronously (restart_budget_exhausted) — a refusal never queues silently. Coalescing: a request accepted while the worker is mid-restart/cooldown is applied as soon as the worker re-arms; it is never applied twice. Failure codes: unknown_run, unknown_worker, run_finished, worker_stopped, worker_draining, already_restarting, restart_budget_exhausted. Success: {\"ok\":true,\"accepted\":true,\"phase\":\"restarting\"}."
     )]
     async fn malkuth_restart(
         &self,
@@ -716,7 +877,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Gracefully drain a running supervision (optionally a reload drain) and wait up to `timeout_secs` for workers to stop. Side effect: every worker gets SIGTERM/CTRL_BREAK and up to 30s to finish in-flight work before a kill; the run then ends and the blocking malkuth_supervise call returns its final snapshot. Idempotent: calling drain twice is safe — the second answer reports \"already\": true. Answer includes finished/timed_out plus the per-worker snapshot."
+        description = "Drain a running supervision and wait up to `timeout_secs` for workers to stop. `kind` is `graceful` (default: SIGTERM/CTRL_BREAK, up to 30s for in-flight work) or `immediate` (stop at once, kill after <=1s). Any other kind returns unsupported_kind before anything is signalled — notably `reload`, which is a service-lifecycle signal for the supervised program (it does not set the drain bit), not a run action. Idempotent: calling drain twice is safe and the second answer reports \"already\": true. Answer includes kind, draining, finished, timed_out and the per-worker snapshot."
     )]
     async fn malkuth_drain(
         &self,
@@ -727,7 +888,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Read a BOUNDED tail of one worker's captured stdout/stderr (capture is on for MCP-supervised workers only). `lines` defaults to 100 and is capped at 500; `max_bytes` defaults to 8192 and is capped at 65536. Anything dropped is reported two ways: metadata (truncated, omitted_lines, omitted_bytes, total_lines_in_ring) and a leading `… [omitted …]` marker inside text — so a caller can tell a window from the whole history and re-read with a larger budget if it matters. Failure codes: unknown_run, unknown_worker, worker_required (run has several workers and none was named)."
+        description = "Read a BOUNDED tail of one worker's captured stdout/stderr (capture is on for MCP-supervised workers only). `lines` defaults to 100 (cap 500); `max_bytes` defaults to 8192 (cap 65536). The caps are exact: {\"bytes\": N} <= max_bytes including the marker, and lines_returned + omitted_lines == total_lines_in_ring. Anything dropped is reported in metadata (truncated, omitted_lines, omitted_bytes, total_lines_in_ring) and by a leading `… [omitted …]` marker inside text, so a caller can tell a window from the whole history and re-read with a larger budget if it matters. A line that the byte budget cuts is still counted in lines_returned, with its lost head in omitted_bytes. Failure codes: unknown_run, unknown_worker, worker_required (run has several workers and none was named)."
     )]
     async fn malkuth_logs(
         &self,
@@ -822,6 +983,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     let server = Server {
         http: builder.build().unwrap_or_default(),
         runs: Mutex::new(Vec::new()),
+        used_run_ids: Mutex::new(Vec::new()),
     };
     let transport = rmcp::transport::stdio();
     let server_handle = server.serve(transport).await?;
@@ -837,6 +999,7 @@ mod tests {
         Server {
             http: crate::http_client_builder().build().unwrap_or_default(),
             runs: Mutex::new(Vec::new()),
+            used_run_ids: Mutex::new(Vec::new()),
         }
     }
 
@@ -858,16 +1021,49 @@ mod tests {
             drain: DrainController::new(),
             restart_signals,
             log_rings,
-            pending_restarts: Mutex::new(Vec::new()),
+            restart_book: Mutex::new(RestartBook::default()),
             finished: Mutex::new(None),
         })
     }
 
+    fn restart_args(run_id: &str, worker_id: &str) -> RestartArgs {
+        RestartArgs {
+            run_id: run_id.to_string(),
+            worker_id: worker_id.to_string(),
+        }
+    }
+
+    /// Keys every worker object must carry, in `status` *and* `drain` output.
+    const WORKER_KEYS: [&str; 7] = [
+        "id",
+        "kind",
+        "phase",
+        "pid",
+        "uptime_secs",
+        "restart_count",
+        "last_error",
+    ];
+
+    fn assert_worker_keys(worker: &Value) {
+        for key in WORKER_KEYS {
+            assert!(
+                worker.get(key).is_some(),
+                "worker snapshot is missing `{key}`: {worker}"
+            );
+        }
+    }
+
+    // ── status ───────────────────────────────────────────────
+
     #[tokio::test]
     async fn status_reports_every_worker_field() {
         let server = test_server();
-        let handle = run_with_workers("r1", &[("beta", "backend"), ("alpha", "worker")]);
-        server.insert_run(handle).unwrap();
+        server
+            .insert_run(run_with_workers(
+                "r1",
+                &[("beta", "backend"), ("alpha", "worker")],
+            ))
+            .unwrap();
 
         let payload = server.status_payload(StatusArgs { run_id: None }).await;
         assert_eq!(payload["ok"], json!(true));
@@ -883,20 +1079,8 @@ mod tests {
         // Sorted by id, and every documented field is present.
         assert_eq!(workers[0]["id"], json!("alpha"));
         assert_eq!(workers[1]["id"], json!("beta"));
-        for key in [
-            "id",
-            "kind",
-            "phase",
-            "pid",
-            "uptime_secs",
-            "restart_policy",
-            "restart_count",
-            "last_error",
-        ] {
-            assert!(
-                workers[0].get(key).is_some(),
-                "status worker snapshot is missing `{key}`: {workers:?}"
-            );
+        for worker in workers {
+            assert_worker_keys(worker);
         }
         assert_eq!(workers[0]["phase"], json!("running"));
         assert_eq!(workers[0]["pid"], json!(4242));
@@ -913,6 +1097,46 @@ mod tests {
         assert_eq!(payload["ok"], json!(false));
         assert_eq!(payload["code"], json!("unknown_run"));
     }
+
+    /// S1-2 killer: a finished run must keep the full worker shape (`pid` and
+    /// `uptime_secs` were dropped before; `drain` lost `restart_policy` too).
+    #[tokio::test]
+    async fn finished_run_keeps_every_snapshot_key() {
+        let server = test_server();
+        let handle = run_with_workers("rf", &[("api", "backend")]);
+        handle.fleet.finish(
+            "api",
+            WorkerPhase::Stopped,
+            2,
+            Some("exit status: 9".into()),
+        );
+        handle.mark_finished(Vec::new());
+        server.insert_run(handle).unwrap();
+
+        let status = server.status_payload(StatusArgs { run_id: None }).await;
+        let run = &status["runs"][0];
+        assert_eq!(run["finished"], json!(true));
+        assert!(run["finished_unix_secs"].as_u64().is_some());
+        let worker = &run["workers"][0];
+        assert_worker_keys(worker);
+        assert_eq!(worker["phase"], json!("stopped"));
+        assert_eq!(worker["pid"], Value::Null);
+        assert_eq!(worker["uptime_secs"], json!(0));
+        assert_eq!(worker["restart_policy"], json!("permanent"));
+        assert_eq!(worker["restart_count"], json!(2));
+
+        let drain = server
+            .drain_payload(DrainArgs {
+                run_id: "rf".into(),
+                kind: None,
+                timeout_secs: Some(0),
+            })
+            .await;
+        assert_worker_keys(&drain["workers"][0]);
+        assert_eq!(drain["already"], json!(false));
+    }
+
+    // ── drain ────────────────────────────────────────────────
 
     #[tokio::test]
     async fn drain_is_idempotent_and_reports_already() {
@@ -931,16 +1155,65 @@ mod tests {
         assert_eq!(first["accepted"], json!(true));
         assert_eq!(first["already"], json!(false));
         assert_eq!(first["draining"], json!(true));
+        assert_eq!(first["kind"], json!("graceful"));
 
+        // Idempotent: same run, second call, still accepted and truthful.
         let second = server
             .drain_payload(DrainArgs {
                 run_id: "r2".into(),
-                kind: Some("reload".into()),
+                kind: Some("graceful".into()),
                 timeout_secs: Some(0),
             })
             .await;
         assert_eq!(second["ok"], json!(true));
         assert_eq!(second["already"], json!(true));
+        assert_eq!(second["draining"], json!(true));
+    }
+
+    /// S1-3 / S2-7 killer: `reload` used to be accepted while doing nothing
+    /// (`begin_drain(Reload)` never sets the draining bit), and unknown kinds
+    /// silently degraded to graceful. Both are refused before signalling;
+    /// `immediate` is a real kind and must still work.
+    #[tokio::test]
+    async fn drain_kinds_are_whitelisted() {
+        let server = test_server();
+        server
+            .insert_run(run_with_workers("rk", &[("svc", "backend")]))
+            .unwrap();
+
+        for bad in ["reload", "reload ", "graceful-ish", "SIGKILL"] {
+            let payload = server
+                .drain_payload(DrainArgs {
+                    run_id: "rk".into(),
+                    kind: Some(bad.into()),
+                    timeout_secs: Some(0),
+                })
+                .await;
+            assert_eq!(
+                payload["code"],
+                json!("unsupported_kind"),
+                "kind `{bad}` must be refused: {payload}"
+            );
+            // A refused kind must not have signalled anything.
+            let run = server.find_run("rk").unwrap();
+            assert!(!run.drain.is_draining(), "kind `{bad}` signalled a drain");
+            assert_eq!(run.drain.kind(), None);
+        }
+
+        let immediate = server
+            .drain_payload(DrainArgs {
+                run_id: "rk".into(),
+                kind: Some("immediate".into()),
+                timeout_secs: Some(0),
+            })
+            .await;
+        assert_eq!(immediate["ok"], json!(true));
+        assert_eq!(immediate["kind"], json!("immediate"));
+        assert_eq!(immediate["draining"], json!(true));
+        assert_eq!(
+            server.find_run("rk").unwrap().drain.kind(),
+            Some(ShutdownKind::Immediate)
+        );
     }
 
     #[tokio::test]
@@ -956,28 +1229,20 @@ mod tests {
         assert_eq!(payload["code"], json!("unknown_run"));
     }
 
+    // ── restart ──────────────────────────────────────────────
+
     #[tokio::test]
     async fn restart_accepts_running_worker_and_refuses_second_call() {
         let server = test_server();
         server
             .insert_run(run_with_workers("r3", &[("api", "backend")]))
             .unwrap();
-        let first = server
-            .restart_payload(RestartArgs {
-                run_id: "r3".into(),
-                worker_id: "api".into(),
-            })
-            .await;
+        let first = server.restart_payload(restart_args("r3", "api")).await;
         assert_eq!(first["ok"], json!(true));
         assert_eq!(first["accepted"], json!(true));
         assert_eq!(first["phase"], json!("restarting"));
 
-        let second = server
-            .restart_payload(RestartArgs {
-                run_id: "r3".into(),
-                worker_id: "api".into(),
-            })
-            .await;
+        let second = server.restart_payload(restart_args("r3", "api")).await;
         assert_eq!(second["ok"], json!(false));
         assert_eq!(second["code"], json!("already_restarting"));
     }
@@ -989,31 +1254,82 @@ mod tests {
             .insert_run(run_with_workers("r4", &[("api", "backend")]))
             .unwrap();
 
-        let unknown_run = server
-            .restart_payload(RestartArgs {
-                run_id: "missing".into(),
-                worker_id: "api".into(),
-            })
-            .await;
+        let unknown_run = server.restart_payload(restart_args("missing", "api")).await;
         assert_eq!(unknown_run["code"], json!("unknown_run"));
 
-        let unknown_worker = server
-            .restart_payload(RestartArgs {
-                run_id: "r4".into(),
-                worker_id: "ghost".into(),
-            })
-            .await;
+        let unknown_worker = server.restart_payload(restart_args("r4", "ghost")).await;
         assert_eq!(unknown_worker["code"], json!("unknown_worker"));
 
         // A finished run can no longer be steered.
         server.runs.lock().unwrap()[0].mark_finished(Vec::new());
-        let finished = server
-            .restart_payload(RestartArgs {
-                run_id: "r4".into(),
-                worker_id: "api".into(),
-            })
-            .await;
+        let finished = server.restart_payload(restart_args("r4", "api")).await;
         assert_eq!(finished["code"], json!("run_finished"));
+    }
+
+    /// S1-4 killer: the operator budget is checked synchronously and refuses
+    /// with its own code (it is not the crash budget, which used to kill the
+    /// worker after `accepted` had already been answered).
+    #[tokio::test]
+    async fn restart_budget_is_enforced() {
+        let server = test_server();
+        let handle = run_with_workers("rb", &[("w", "svc")]);
+        server.insert_run(handle.clone()).unwrap();
+
+        for i in 1..=EXPLICIT_RESTART_MAX {
+            let payload = server.restart_payload(restart_args("rb", "w")).await;
+            assert_eq!(payload["ok"], json!(true), "accept #{i}: {payload}");
+            // Simulate the supervisor noticing: count advances, phase running.
+            handle.fleet.restarting("w", i as u32);
+            handle.fleet.running("w", Some(1000 + i as u32));
+        }
+
+        let refused = server.restart_payload(restart_args("rb", "w")).await;
+        assert_eq!(refused["ok"], json!(false));
+        assert_eq!(refused["code"], json!("restart_budget_exhausted"));
+    }
+
+    /// S2-9 killer: "never queued" must hold under concurrency — the settle /
+    /// check / record sequence is one critical section, so exactly one of N
+    /// simultaneous requests wins and the rest are refused (not queued).
+    #[tokio::test]
+    async fn concurrent_restarts_accept_exactly_one() {
+        let server = Arc::new(test_server());
+        server
+            .insert_run(run_with_workers("rc", &[("w", "svc")]))
+            .unwrap();
+
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let server = server.clone();
+            tasks.push(tokio::spawn(async move {
+                server.restart_payload(restart_args("rc", "w")).await
+            }));
+        }
+        let mut accepted = 0;
+        let mut refused = 0;
+        for task in tasks {
+            let payload = task.await.expect("join");
+            if payload["ok"] == json!(true) {
+                accepted += 1;
+            } else {
+                assert_eq!(payload["code"], json!("already_restarting"));
+                refused += 1;
+            }
+        }
+        assert_eq!(accepted, 1, "restart must be accepted at most once");
+        assert_eq!(refused, 7);
+    }
+
+    #[tokio::test]
+    async fn restart_refuses_a_worker_that_already_exited() {
+        let server = test_server();
+        let handle = run_with_workers("r5", &[("one", "svc")]);
+        handle
+            .fleet
+            .finish("one", WorkerPhase::Stopped, 0, Some("exit 1".into()));
+        server.insert_run(handle).unwrap();
+        let payload = server.restart_payload(restart_args("r5", "one")).await;
+        assert_eq!(payload["code"], json!("worker_stopped"));
     }
 
     #[test]
@@ -1038,22 +1354,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn restart_refuses_a_worker_that_already_exited() {
-        let server = test_server();
-        let handle = run_with_workers("r5", &[("one", "svc")]);
-        handle
-            .fleet
-            .finish("one", WorkerPhase::Stopped, 0, Some("exit 1".into()));
-        server.insert_run(handle).unwrap();
-        let payload = server
-            .restart_payload(RestartArgs {
-                run_id: "r5".into(),
-                worker_id: "one".into(),
-            })
-            .await;
-        assert_eq!(payload["code"], json!("worker_stopped"));
-    }
+    // ── logs ─────────────────────────────────────────────────
 
     #[tokio::test]
     async fn logs_are_bounded_and_marked() {
@@ -1081,38 +1382,76 @@ mod tests {
         let text = payload["text"].as_str().unwrap();
         assert!(text.ends_with("line 9"), "unexpected tail: {text}");
         assert!(
-            text.starts_with("… [omitted 7 earlier line(s)"),
+            text.contains("… [omitted 7 line(s)"),
             "missing truncation marker: {text}"
         );
     }
 
+    /// S2-6 killer: after the byte budget cuts, the reported line/byte counts
+    /// must be recomputed from the final text — and `bytes` must never exceed
+    /// the requested budget (the marker used to push it over).
     #[tokio::test]
-    async fn logs_byte_cap_cuts_the_head_and_counts_it() {
+    async fn logs_byte_budget_is_exact_and_counted() {
         let server = test_server();
         let handle = run_with_workers("r7", &[("loud", "svc")]);
         let ring = handle.log_rings.get("loud").unwrap().clone();
-        for _ in 0..20 {
-            ring.push(&"x".repeat(200));
+        for i in 0..20 {
+            ring.push(&format!("{i:02}-{}", "x".repeat(200)));
         }
         server.insert_run(handle).unwrap();
+
+        for budget in [LOGS_MIN_BYTES, 512, 1024, LOGS_MAX_BYTES] {
+            let payload = server
+                .logs_payload(LogsArgs {
+                    run_id: "r7".into(),
+                    worker_id: Some("loud".into()),
+                    lines: Some(LOGS_MAX_LINES as u32),
+                    max_bytes: Some(budget as u32),
+                })
+                .await;
+            assert_eq!(payload["ok"], json!(true));
+            let bytes = payload["bytes"].as_u64().unwrap() as usize;
+            let returned = payload["lines_returned"].as_u64().unwrap();
+            let omitted_lines = payload["omitted_lines"].as_u64().unwrap();
+            let total = payload["total_lines_in_ring"].as_u64().unwrap();
+            assert!(
+                bytes <= budget,
+                "bytes {bytes} exceeded the {budget}-byte budget: {payload}"
+            );
+            assert_eq!(
+                returned + omitted_lines,
+                total,
+                "line counts must balance: {payload}"
+            );
+            assert_eq!(
+                payload["text"].as_str().unwrap().len(),
+                bytes,
+                "reported bytes must match the text"
+            );
+        }
+
+        // A single line longer than the whole body budget is cut (not
+        // dropped): it still counts as returned and its lost head is reported
+        // as bytes.
+        let long = run_with_workers("r7b", &[("long", "svc")]);
+        long.log_rings.get("long").unwrap().push(&"z".repeat(5_000));
+        server.insert_run(long).unwrap();
         let payload = server
             .logs_payload(LogsArgs {
-                run_id: "r7".into(),
-                worker_id: Some("loud".into()),
-                lines: Some(20),
-                max_bytes: Some(LOGS_MIN_BYTES as u32),
+                run_id: "r7b".into(),
+                worker_id: Some("long".into()),
+                lines: Some(10),
+                max_bytes: Some(512),
             })
             .await;
         assert_eq!(payload["ok"], json!(true));
+        assert_eq!(payload["lines_returned"], json!(1));
+        assert_eq!(payload["omitted_lines"], json!(0));
         assert_eq!(payload["truncated"], json!(true));
+        assert!(payload["bytes"].as_u64().unwrap() <= 512);
         assert!(
             payload["omitted_bytes"].as_u64().unwrap() > 0,
-            "byte truncation was not reported: {payload}"
-        );
-        let bytes = payload["bytes"].as_u64().unwrap() as usize;
-        assert!(
-            bytes <= LOGS_MIN_BYTES + 64,
-            "page exceeded its byte budget: {bytes}"
+            "byte cut not reported: {payload}"
         );
     }
 
@@ -1165,12 +1504,56 @@ mod tests {
     #[test]
     fn page_logs_never_splits_a_multibyte_character() {
         let lines = vec!["日志行".repeat(50), "last".to_string()];
-        let page = page_logs(lines, 2, LOGS_MIN_BYTES);
+        let page = page_logs(&lines, lines.len(), LOGS_MIN_BYTES);
         assert!(page.truncated);
-        // The cut respects UTF-8 boundaries, so the page is valid UTF-8 text.
         assert!(std::str::from_utf8(page.text.as_bytes()).is_ok());
         assert!(page.text.ends_with("last"));
+        assert!(page.bytes <= LOGS_MIN_BYTES);
     }
+
+    /// Count invariants over a matrix of budgets (the S2-6 shape, unit level).
+    #[test]
+    fn page_logs_counts_always_balance() {
+        let lines: Vec<String> = (0..40)
+            .map(|i| format!("{i}-{}", "y".repeat(i * 7)))
+            .collect();
+        for max_lines in [1usize, 2, 5, 40, 500] {
+            for max_bytes in [LOGS_MIN_BYTES, 400, 1024, 4096, LOGS_MAX_BYTES] {
+                let page = page_logs(&lines, max_lines, max_bytes);
+                assert!(
+                    page.bytes <= max_bytes,
+                    "lines={max_lines} bytes={max_bytes}: got {} bytes",
+                    page.bytes
+                );
+                assert_eq!(page.text.len(), page.bytes);
+                assert_eq!(page.lines + page.omitted_lines, lines.len());
+                assert_eq!(
+                    page.truncated,
+                    page.omitted_lines > 0 || page.omitted_bytes > 0
+                );
+            }
+        }
+    }
+
+    /// M1 killer: the caps are the context budget. Raising one silently
+    /// widens what a model may be fed, so the documented numbers are pinned
+    /// here — changing them is a deliberate edit that reddens this test.
+    #[test]
+    fn log_caps_are_contract_pinned() {
+        assert_eq!(LOGS_DEFAULT_LINES, 100);
+        assert_eq!(LOGS_MAX_LINES, 500);
+        assert_eq!(LOGS_DEFAULT_BYTES, 8_192);
+        assert_eq!(LOGS_MAX_BYTES, 65_536);
+        assert_eq!(LOGS_MIN_BYTES, 256);
+        // And the clamp the tools actually apply.
+        let request = u32::MAX; // far above either cap
+        let clamped_lines = (request as usize).clamp(1, LOGS_MAX_LINES);
+        let clamped_bytes = (request as usize).clamp(LOGS_MIN_BYTES, LOGS_MAX_BYTES);
+        assert_eq!(clamped_lines, 500);
+        assert_eq!(clamped_bytes, 65_536);
+    }
+
+    // ── registry boundaries ──────────────────────────────────
 
     #[test]
     fn worker_ids_must_be_unique_and_non_empty() {
@@ -1208,5 +1591,25 @@ mod tests {
             .unwrap();
         let dup = server.insert_run(run_with_workers("same", &[("w", "svc")]));
         assert_eq!(dup, Err("run_id already in use"));
+    }
+
+    /// S2-10 killer: eviction must not recycle a name — an old id would then
+    /// silently address a different run.
+    #[tokio::test]
+    async fn run_id_cannot_be_reused_after_eviction() {
+        let server = test_server();
+        for i in 0..MAX_RUNS {
+            server
+                .insert_run(run_with_workers(&format!("fill-{i}"), &[("w", "svc")]))
+                .unwrap();
+        }
+        server.runs.lock().unwrap()[0].mark_finished(Vec::new());
+        server
+            .insert_run(run_with_workers("fresh", &[("w", "svc")]))
+            .unwrap();
+        // `fill-0` was evicted, but its id stays retired.
+        let reuse = server.insert_run(run_with_workers("fill-0", &[("w", "svc")]));
+        assert_eq!(reuse, Err("run_id already used by an evicted run"));
+        assert!(server.find_run("fill-0").is_none());
     }
 }

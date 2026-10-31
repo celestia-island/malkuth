@@ -13,14 +13,15 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime},
 };
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use tracing::{info, warn};
 
 use crate::{
-    DrainController, RestartPolicy, WorkerInfo, WorkerPhase, WorkerSnapshot, WorkerStatus,
+    DrainController, RestartPolicy, ShutdownKind, WorkerInfo, WorkerPhase, WorkerSnapshot,
+    WorkerStatus,
 };
 
 /// Default sliding window for restart rate-limiting.
@@ -33,6 +34,11 @@ pub const DEFAULT_COOLDOWN: Duration = Duration::from_secs(30);
 /// Lines kept per worker by [`WorkerLogRing`] (the same 500-line cap the CLI
 /// pool's in-memory VTTY ring uses).
 pub const LOG_RING_CAPACITY: usize = 500;
+
+/// Read granularity for the capture reader. Independent of the line cap on
+/// purpose: the reader must keep making progress on a stream that never emits
+/// a newline.
+const LOG_READ_CHUNK_BYTES: usize = 8 * 1024;
 
 /// Longest single captured log line, in bytes. A runaway child can emit
 /// megabyte-long lines; truncating at the ring boundary keeps the supervisor
@@ -59,26 +65,21 @@ impl WorkerLogRing {
 
     /// Append one line, truncating it at [`LOG_LINE_MAX_BYTES`].
     pub fn push(&self, line: &str) {
-        let trimmed = line.trim_end();
-        if trimmed.is_empty() {
-            return;
+        if let Some(owned) = normalize_line(line) {
+            self.insert(owned);
         }
-        let mut owned = trimmed.to_string();
-        if owned.len() > LOG_LINE_MAX_BYTES {
-            let mut cut = LOG_LINE_MAX_BYTES;
-            while cut > 0 && !owned.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            owned.truncate(cut);
-            owned.push('…');
-        }
+    }
+
+    /// Append an already-bounded line (the capture path caps while reading, so
+    /// re-truncating here would double-mark it).
+    pub(crate) fn insert(&self, line: String) {
         let Ok(mut ring) = self.inner.lock() else {
             return;
         };
         if ring.len() == LOG_RING_CAPACITY {
             ring.pop_front();
         }
-        ring.push_back(owned);
+        ring.push_back(line);
     }
 
     /// The newest `max_lines` lines, oldest first.
@@ -212,6 +213,21 @@ impl FleetState {
                 .unwrap_or(0);
         }
         snapshot
+    }
+
+    /// Force every registered worker to `stopped` (run ended without the
+    /// workers publishing their own final phase, e.g. a supervise timeout
+    /// dropped the futures).
+    pub fn stop_all(&self) {
+        let Ok(mut map) = self.entries.lock() else {
+            return;
+        };
+        for entry in map.values_mut() {
+            entry.snapshot.phase = WorkerPhase::Stopped;
+            entry.snapshot.pid = None;
+            entry.snapshot.uptime_secs = 0;
+            entry.spawned_at = None;
+        }
     }
 
     /// One worker's current snapshot, if it is registered.
@@ -467,15 +483,22 @@ async fn supervise_one(
                     }
                 }
                 restart_count += 1;
+                // Publish the gap before any cooldown sleep: during the
+                // restart (or its cooldown) the live snapshot must not keep
+                // claiming `running` with a pid that already exited.
+                if let Some(fleet) = &fleet {
+                    fleet.restarting(&spec.id, restart_count);
+                }
                 if rate_limited(&mut restart_times, max_restarts, window, cooldown, &drain).await {
                     break;
                 }
             }
             _ = drain.wait_for_drain() => {
+                let kind = drain.kind().unwrap_or(ShutdownKind::Graceful);
                 if let Some(fleet) = &fleet {
                     fleet.draining(&spec.id);
                 }
-                stop_draining(&mut child, 30).await;
+                stop_draining(&mut child, drain_grace_secs(kind)).await;
                 break;
             }
             _ = async {
@@ -504,11 +527,11 @@ async fn supervise_one(
                 if let Some(fleet) = &fleet {
                     fleet.restarting(&spec.id, restart_count);
                 }
+                // An operator-requested restart never ends the worker and never
+                // touches the crash budget: the budget exists to stop crash
+                // storms, and spending it here used to kill the worker *after*
+                // the control arm had already answered `accepted`.
                 stop_draining(&mut child, 30).await;
-                if rate_limited(&mut restart_times, max_restarts, window, cooldown, &drain).await {
-                    last_error = Some("restart rate limit tripped".to_string());
-                    break;
-                }
             }
         }
     }
@@ -622,6 +645,72 @@ fn spawn(spec: &WorkerSpec) -> std::io::Result<Child> {
 /// The reader never stops early: a chatty child must not block on pipe
 /// backpressure, so lines keep being consumed (and the ring keeps evicting)
 /// for as long as the child is alive.
+/// Normalize a complete line for the ring: trim the terminator, drop blanks,
+/// and cap the body so a megabyte of log text cannot enter the ring.
+fn normalize_line(line: &str) -> Option<String> {
+    let trimmed = line.trim_end();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut owned = trimmed.to_string();
+    if owned.len() > LOG_LINE_MAX_BYTES {
+        let mut cut = LOG_LINE_MAX_BYTES;
+        while cut > 0 && !owned.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        owned.truncate(cut);
+        owned.push('…');
+    }
+    Some(owned)
+}
+
+/// Collect one complete line into the bounded buffer, or record that the line
+/// overran the cap and is having its remainder discarded.
+fn deposit(line: &mut Vec<u8>, piece: &[u8], truncated: &mut bool) {
+    if piece.is_empty() {
+        return;
+    }
+    let room = LOG_LINE_MAX_BYTES.saturating_sub(line.len());
+    if room == 0 {
+        *truncated = true;
+        return;
+    }
+    let take = piece.len().min(room);
+    line.extend_from_slice(&piece[..take]);
+    if take < piece.len() {
+        *truncated = true;
+    }
+}
+
+/// Emit the buffered line (with a truncation marker when it overran) and reset
+/// the buffer. Mirrors to tracing so taking the pipe does not cost the operator
+/// the log stream (`RUST_LOG=info,malkuth::worker=off` silences it).
+fn flush_line(ring: &WorkerLogRing, worker: &str, line: &mut Vec<u8>, truncated: &mut bool) {
+    let text = String::from_utf8_lossy(line).trim_end().to_string();
+    line.clear();
+    let overran = std::mem::replace(truncated, false);
+    if text.is_empty() && !overran {
+        return;
+    }
+    let owned = if overran {
+        let mut s = text;
+        s.push('…');
+        s
+    } else {
+        text
+    };
+    info!(target: "malkuth::worker", worker = %worker, "{owned}");
+    ring.insert(owned);
+}
+
+/// Drain one child stream into the worker's ring until the stream closes.
+///
+/// Reads in fixed-size chunks and caps the in-flight line at
+/// [`LOG_LINE_MAX_BYTES`]: `BufReader::lines` would buffer an entire line
+/// first, so a 4 MiB newline-free emission would be allocated in full before
+/// any cap applied (an OOM lever for an untrusted child). Here the line buffer
+/// never exceeds the cap — the excess is discarded, the marker records it, and
+/// reading continues so the remainder of the stream is still captured.
 fn capture_stream(
     stream: impl tokio::io::AsyncRead + Unpin + Send + 'static,
     ring: WorkerLogRing,
@@ -629,18 +718,42 @@ fn capture_stream(
 ) {
     let worker = worker.to_string();
     tokio::spawn(async move {
-        let mut lines = BufReader::new(stream).lines();
-        // Clean EOF (`Ok(None)`, the child exited) and a dead pipe (`Err`)
-        // both end the capture — the loop must never spin on a broken stream.
-        while let Ok(Some(line)) = lines.next_line().await {
-            // Taking the pipe over must not cost the operator the log stream:
-            // mirror each line to tracing (silenceable with
-            // RUST_LOG=info,malkuth::worker=off) while the ring keeps the
-            // bounded tail the `logs` arm serves.
-            info!(target: "malkuth::worker", worker = %worker, "{line}");
-            ring.push(&line);
+        let mut reader = stream;
+        let mut buf = [0u8; LOG_READ_CHUNK_BYTES];
+        let mut line: Vec<u8> = Vec::with_capacity(LOG_READ_CHUNK_BYTES);
+        let mut truncated = false;
+        loop {
+            let n = match reader.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => n,
+                // A dead pipe ends the capture; never spin on it.
+                Err(_) => break,
+            };
+            let mut rest = &buf[..n];
+            while let Some(pos) = rest.iter().position(|&b| b == b'\n') {
+                deposit(&mut line, &rest[..pos], &mut truncated);
+                flush_line(&ring, &worker, &mut line, &mut truncated);
+                rest = &rest[pos + 1..];
+            }
+            deposit(&mut line, rest, &mut truncated);
+        }
+        // A child that exits without a trailing newline still logged a line.
+        if !line.is_empty() || truncated {
+            flush_line(&ring, &worker, &mut line, &mut truncated);
         }
     });
+}
+
+/// Grace budget for stopping one child.
+///
+/// `Immediate` means "do not wait for in-flight work", so the escalation to a
+/// kill happens almost at once; every other kind gets the standard 30s window.
+fn drain_grace_secs(kind: ShutdownKind) -> u64 {
+    if kind == ShutdownKind::Immediate {
+        1
+    } else {
+        30
+    }
 }
 
 fn should_restart(policy: RestartPolicy, clean_exit: bool) -> bool {
@@ -681,7 +794,6 @@ async fn rate_limited(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ShutdownKind;
 
     fn spec(id: &str) -> WorkerSpec {
         WorkerSpec::new(id, "test", "/bin/true")
@@ -840,5 +952,160 @@ mod tests {
             fleet.get("sleeper").map(|s| s.phase),
             Some(WorkerPhase::Stopped)
         );
+    }
+
+    /// S1-1 killer: a newline-free megabyte-sized emission must be truncated
+    /// while reading — `BufReader::lines` buffered the whole line first, so the
+    /// 8 KiB cap never applied and a 4 MiB line was allocated in full. The
+    /// stream must also keep flowing: the excess is discarded, not the rest of
+    /// the child's output.
+    #[tokio::test]
+    async fn capture_bounds_a_newline_free_giant_line() {
+        const GIANT: usize = 4 * 1024 * 1024;
+        let ring = WorkerLogRing::new();
+        let (mut writer, reader) = tokio::io::duplex(64 * 1024);
+        let payload = {
+            let mut v = vec![b'x'; GIANT];
+            v.extend_from_slice(b"tail\nsecond line\n");
+            v
+        };
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            writer.write_all(&payload).await.expect("write payload");
+            let _ = writer.shutdown().await;
+        });
+
+        capture_stream(reader, ring.clone(), "giant");
+
+        let mut lines = Vec::new();
+        for _ in 0..400 {
+            lines = ring.tail(10);
+            if lines.len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        // The two lines AFTER the giant one were still captured: truncation
+        // discards bytes, it does not stall or drop the rest of the stream.
+        assert!(
+            lines.iter().any(|l| l == "second line"),
+            "capture stalled after the giant line: {:?}",
+            lines.iter().map(|l| l.len()).collect::<Vec<_>>()
+        );
+        // The giant line is bounded and marked.
+        let giant = lines
+            .iter()
+            .find(|l| l.starts_with('x'))
+            .expect("giant line captured");
+        assert!(
+            giant.ends_with('…'),
+            "giant line lost its truncation marker"
+        );
+        assert!(
+            giant.len() <= LOG_LINE_MAX_BYTES + '…'.len_utf8(),
+            "giant line kept {} bytes (cap {})",
+            giant.len(),
+            LOG_LINE_MAX_BYTES
+        );
+    }
+
+    #[test]
+    fn drain_grace_depends_on_kind() {
+        assert_eq!(drain_grace_secs(ShutdownKind::Graceful), 30);
+        assert_eq!(drain_grace_secs(ShutdownKind::Reload), 30);
+        assert_eq!(drain_grace_secs(ShutdownKind::Immediate), 1);
+    }
+
+    /// S1-5 killer: a child that exits must publish its restart gap BEFORE the
+    /// cooldown sleep, otherwise `status` reports `running` with a dead pid and
+    /// a restart count that never moves.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn crash_publishes_restarting_before_cooldown() {
+        let drain = DrainController::new();
+        let fleet = FleetState::new();
+        let spec = WorkerSpec::new("crasher", "test", "sh").args(["-c", "exit 9"]);
+        let supervisor = Supervisor::new(vec![spec])
+            .fleet(fleet.clone())
+            .rate_limit(0, Duration::from_secs(60))
+            .cooldown(Duration::from_secs(5));
+        let run_drain = drain.clone();
+        let run = tokio::spawn(async move { supervisor.run(run_drain).await });
+
+        let mut observed = None;
+        for _ in 0..400 {
+            let snap = fleet.get("crasher");
+            if let Some(snap) = snap
+                && snap.phase == WorkerPhase::Restarting
+            {
+                observed = Some(snap);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let snap = observed.expect("crash restart was never published");
+        assert_eq!(snap.restart_count, 1, "restart count must advance on exit");
+        assert_eq!(snap.pid, None, "a dead child must not advertise a pid");
+
+        drain.begin_drain(ShutdownKind::Graceful);
+        let _ = tokio::time::timeout(Duration::from_secs(10), run).await;
+    }
+
+    /// S1-4 killer: an operator restart must never be spent from the crash
+    /// budget. With `max_restarts = 0` a crash would end the worker after one
+    /// restart — the explicit path has to survive that budget untouched.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn explicit_restart_survives_zero_crash_budget() {
+        let drain = DrainController::new();
+        let fleet = FleetState::new();
+        let signal = Arc::new(tokio::sync::Notify::new());
+        let spec = WorkerSpec::new("survivor", "test", "sh")
+            .args(["-c", "sleep 30"])
+            .restart_signal(signal.clone());
+        let supervisor = Supervisor::new(vec![spec])
+            .fleet(fleet.clone())
+            .rate_limit(0, Duration::from_secs(60))
+            .cooldown(Duration::from_secs(2));
+        let run_drain = drain.clone();
+        let run = tokio::spawn(async move { supervisor.run(run_drain).await });
+
+        let mut up = false;
+        for _ in 0..400 {
+            if let Some(snap) = fleet.get("survivor")
+                && snap.phase == WorkerPhase::Running
+            {
+                up = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(up, "worker never reached running: {:?}", fleet.snapshot());
+
+        signal.notify_one();
+        let mut restarted = false;
+        for _ in 0..400 {
+            if let Some(snap) = fleet.get("survivor")
+                && snap.phase == WorkerPhase::Running
+                && snap.restart_count == 1
+            {
+                restarted = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            restarted,
+            "explicit restart did not respawn under a zero crash budget: {:?}",
+            fleet.snapshot()
+        );
+
+        drain.begin_drain(ShutdownKind::Graceful);
+        let results = tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .expect("supervision did not end after drain")
+            .expect("supervisor task panicked");
+        assert_eq!(results[0].restart_count, 1);
+        assert_eq!(results[0].status, WorkerStatus::Stopped);
     }
 }
