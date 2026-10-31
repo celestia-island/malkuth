@@ -221,7 +221,7 @@ The server advertises six tools:
 | `malkuth_status` | Non-blocking per-worker snapshot (id / kind / phase / pid / uptime / restart count / last error) of every known run, or one `run_id`. |
 | `malkuth_restart` | Restart one worker by `run_id` + `worker_id` (graceful stop, then a fresh child). Operator budget: 5 accepted restarts per worker per 60 s. Refuses an unknown/ended/draining/already-restarting/over-budget worker with a stable error code. |
 | `malkuth_drain` | Graceful (default) or immediate drain of a run, with a bounded wait; idempotent. Any other `kind` — `reload` included — is refused with `unsupported_kind`. |
-| `malkuth_logs` | Bounded tail of one worker's captured stdout/stderr (`lines` ≤ 500, `max_bytes` ≤ 64 KiB) with omission markers. |
+| `malkuth_logs` | Bounded tail of one worker's captured stdout/stderr (`lines` ≤ 500, `max_bytes` ≤ 64 KiB, minimum 256 — smaller requests are raised to 256) with omission markers. |
 | `malkuth_probe` | HTTP healthz / readyz check against a service URL. |
 
 The supervising call keeps its blocking semantics; the other four arms are

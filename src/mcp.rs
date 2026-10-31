@@ -737,8 +737,10 @@ struct LogsArgs {
     /// Number of trailing lines to read (default 100, capped at 500).
     #[serde(default)]
     lines: Option<u32>,
-    /// Byte budget for the returned text (default 8192, capped at 65536).
-    /// Older bytes are cut at a char boundary and counted in `omitted_bytes`.
+    /// Byte budget for the returned text: default 8192, capped at 65536, with a
+    /// floor of 256 — a request below 256 is raised to 256, so the returned page
+    /// can be larger than the number asked for. Older bytes are cut at a char
+    /// boundary and counted in `omitted_bytes`.
     #[serde(default)]
     max_bytes: Option<u32>,
 }
@@ -891,7 +893,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Read a BOUNDED tail of one worker's captured stdout/stderr (capture is on for MCP-supervised workers only). `lines` defaults to 100 (cap 500); `max_bytes` defaults to 8192 (cap 65536). The caps are exact: {\"bytes\": N} <= max_bytes including the marker, and lines_returned + omitted_lines == total_lines_in_ring. Anything dropped is reported in metadata (truncated, omitted_lines, omitted_bytes, total_lines_in_ring) and by a leading `… [omitted …]` marker inside text, so a caller can tell a window from the whole history and re-read with a larger budget if it matters. A line that the byte budget cuts is still counted in lines_returned, with its lost head in omitted_bytes. Failure codes: unknown_run, unknown_worker, worker_required (run has several workers and none was named)."
+        description = "Read a BOUNDED tail of one worker's captured stdout/stderr (capture is on for MCP-supervised workers only). `lines` defaults to 100 (cap 500); `max_bytes` defaults to 8192 (cap 65536) with a floor of 256 — a request below 256 is raised to 256, so `bytes` is bounded by max(max_bytes, 256). The caps are exact: {\"bytes\": N} <= max(max_bytes, 256) including the marker, and lines_returned + omitted_lines == total_lines_in_ring. Anything dropped is reported in metadata (truncated, omitted_lines, omitted_bytes, total_lines_in_ring) and by a leading `… [omitted …]` marker inside text, so a caller can tell a window from the whole history and re-read with a larger budget if it matters. A line that the byte budget cuts is still counted in lines_returned, with its lost head in omitted_bytes. Failure codes: unknown_run, unknown_worker, worker_required (run has several workers and none was named)."
     )]
     async fn malkuth_logs(
         &self,
@@ -1567,6 +1569,9 @@ mod tests {
         let clamped_bytes = (request as usize).clamp(LOGS_MIN_BYTES, LOGS_MAX_BYTES);
         assert_eq!(clamped_lines, 500);
         assert_eq!(clamped_bytes, 65_536);
+        // The floor is part of the contract too: a request below it is raised
+        // to it, so a page may be larger than the number asked for.
+        assert_eq!(16usize.clamp(LOGS_MIN_BYTES, LOGS_MAX_BYTES), 256);
     }
 
     // ── registry boundaries ──────────────────────────────────
