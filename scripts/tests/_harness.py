@@ -34,8 +34,13 @@ Two safety nets back that up, registered at import time:
   "sweep during startup must not kill", a relative-path leader, an orphan
   beside a live run, and an orphan whose leader was SIGKILLed.
 
-Limitation: `SIGKILL` of the test process itself cannot run any handler. The
-sweep covers that case on the next run.
+Limitation: `SIGKILL` of the test process itself cannot run any handler. What
+survives depends on the shape: a leak that leaves a live supervising leader
+(e.g. `malkuth`, which `start_new_session` keeps running) is NOT self-healing —
+its workers still have a live leader so the sweep must leave them alone, and the
+leader is not a sweep candidate at all. That class needs manual cleanup
+(`pkill -f <leader> && pkill -f 'examples/test_app worker'`). Leaks whose
+leaders are gone are collected on the next run.
 
 # Verifying the contract (acceptance note)
 
@@ -107,6 +112,13 @@ def bin_path(name: str) -> Path:
 #     leader shape or however it was invoked.
 
 _POSIX = os.name == "posix"
+
+# Every child spawned through `Proc` carries this marker (see `Proc.__init__`),
+# so a process can be attributed to a run root even when its working directory
+# tells us nothing (a child may chdir, and the suite may be launched from
+# anywhere). It is the primary worktree dimension; `/proc/<pid>/cwd` is only a
+# fallback for processes started before the marker existed.
+_RUN_ROOT_ENV = "MALKUTH_HARNESS_ROOT"
 
 _ACTIVE: "set[Proc]" = set()
 # RLock: the SIGTERM/SIGINT handler may run teardown while the main thread holds
@@ -268,31 +280,91 @@ def _supervising_leader_of(pid: int) -> "Optional[int]":
     return None
 
 
-def _under_checkout_root(path: "Optional[str]") -> bool:
-    """Whether `path` sits inside this worktree.
+def _same_path(a: str, b: str) -> bool:
+    """Identity of two paths by inode, not by string.
 
-    This is the worktree dimension: two worktrees may share one `target/`
-    directory (cache symlink), so the binary path alone cannot tell their
-    processes apart — the working directory can.
+    `samefile` compares st_dev/st_ino, which is what makes the bind-mounted
+    spellings of one directory (`/mnt/codespace/...` and `/mnt/work/codespace/...`
+    on this host) compare equal — a string-prefix test would call them
+    different. Falls back to `realpath` equality when a path no longer exists.
     """
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return os.path.realpath(a) == os.path.realpath(b)
+
+
+def _within_root(path: "Optional[str]") -> bool:
+    """Whether `path` is this worktree or sits inside it (by inode, not prefix)."""
     if not path:
         return False
+    current = path
+    for _ in range(64):
+        if _same_path(current, str(ROOT)):
+            return True
+        parent = os.path.dirname(current)
+        if parent == current:
+            return False
+        current = parent
+    return False
+
+
+def _proc_environ(pid: int) -> "dict[str, str]":
     try:
-        root = os.path.realpath(str(ROOT))
-        return os.path.realpath(path) == root or os.path.realpath(path).startswith(root + os.sep)
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
     except OSError:
+        return {}
+    env: "dict[str, str]" = {}
+    for entry in raw.split(b"\0"):
+        if not entry:
+            continue
+        key, sep, value = entry.partition(b"=")
+        if sep:
+            env[key.decode("utf-8", "replace")] = value.decode("utf-8", "replace")
+    return env
+
+
+def _has_run_root_marker(pid: int) -> bool:
+    """Whether `pid` was spawned by a `Proc` of THIS worktree's run."""
+    marker = _proc_environ(pid).get(_RUN_ROOT_ENV)
+    if not marker:
         return False
+    return _same_path(marker, str(ROOT)) or _within_root(marker)
+
+
+def _belongs_to_checkout(pid: int) -> bool:
+    """Worktree dimension for one process.
+
+    Primary: the run-root marker injected by `Proc` (survives a child that
+    chdir's, and works when the suite was launched from any directory).
+    Fallback: the working directory is inside this worktree — compared by inode
+    so the bind-mounted path spellings of one directory both count as "inside".
+    """
+    if _has_run_root_marker(pid):
+        return True
+    return _within_root(_proc_cwd(pid))
+
+
+def _is_our_worker(pid: int, argv: "list[str]") -> bool:
+    """Identity of a worker: this checkout's `test_app` binary running `worker`."""
+    if len(argv) < 2 or argv[1] != "worker":
+        return False
+    _malkuth, test_app = _checkout_binaries()
+    return _proc_exe(pid) == test_app
 
 
 def live_worker_pids() -> "list[int]":
-    """pids of this checkout's `test_app worker` processes, live or left over."""
+    """pids of this checkout's `test_app worker` processes, live or left over.
+
+    Uses the same identity + worktree predicates as `sweep_orphan_workers`, so
+    "what the sweep would consider" and "what the tests consider" cannot drift.
+    """
     if not _POSIX or not Path("/proc").is_dir():
         return []
-    _malkuth, test_app = _checkout_binaries()
     return [
         pid
         for pid, argv in _process_table()
-        if len(argv) > 1 and argv[1] == "worker" and _proc_exe(pid) == test_app
+        if _is_our_worker(pid, argv) and _belongs_to_checkout(pid)
     ]
 
 
@@ -306,8 +378,11 @@ def sweep_orphan_workers() -> "list[int]":
     * it must have **no live supervising leader** — neither in its ancestor
       chain nor as its process-group leader — covering `malkuth` and
       `test_app supervise|rolling` leaders alike;
-    * its working directory must be inside this worktree (the shared `target/`
-      cache means the binary path alone does not identify a worktree).
+    * it must belong to this worktree — either by the run-root marker every
+      `Proc` child carries, or (fallback) by a working directory inside it,
+      compared by inode so bind-mounted path spellings still count. The shared
+      `target/` cache and inherited working directories mean the binary path
+      alone cannot identify a worktree.
 
     Anything that fails one of those checks is left alone; a worker whose leader
     is gone is by definition a leftover (the L57 leak) and is swept.
@@ -316,24 +391,22 @@ def sweep_orphan_workers() -> "list[int]":
     """
     if not _POSIX or not Path("/proc").is_dir():
         return []
-    _malkuth, test_app = _checkout_binaries()
-
     swept: "list[int]" = []
     for pid, argv in _process_table():
-        if len(argv) < 2 or argv[1] != "worker":
-            continue
-        if _proc_exe(pid) != test_app:
+        if not _is_our_worker(pid, argv):
             continue
         if _supervising_leader_of(pid) is not None:
             continue  # in-flight supervision: never touch
-        if not _under_checkout_root(_proc_cwd(pid)):
+        if not _belongs_to_checkout(pid):
             continue  # another worktree sharing the same target dir
         try:
             os.kill(pid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
             continue
         swept.append(pid)
-    for pid in swept:  # escalate whatever ignored SIGTERM
+    # No grace window: these workers are already-orphaned leftovers, so a
+    # TERM-then-KILL double tap just guarantees they cannot linger.
+    for pid in swept:
         try:
             os.kill(pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
@@ -442,12 +515,20 @@ class Proc:
             kwargs["start_new_session"] = True
         else:  # pragma: no cover - Windows CI is not used for this suite
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        # Default the child's working directory to the worktree: the suite may
+        # be launched from anywhere, and a worker's cwd is the fallback the
+        # sweep uses to attribute it. The marker below is the primary
+        # attribution and survives a child that chdir's.
+        if cwd is None:
+            cwd = str(ROOT)
+        run_env = dict(env) if env is not None else dict(os.environ)
+        run_env.setdefault(_RUN_ROOT_ENV, str(ROOT))
         self.p = subprocess.Popen(
             [str(a) for a in args],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            env=env,
+            env=run_env,
             bufsize=1,
             cwd=cwd,
             **kwargs,

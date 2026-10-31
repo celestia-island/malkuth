@@ -33,6 +33,27 @@ from _harness import (  # noqa: E402
 )
 
 
+# A leftover from an earlier run (or a concurrent run in another shell) must not
+# be read as "the sweep just killed a live worker": clean once at import, then
+# judge only NEW kills. Without this the suite is not re-runnable after a red
+# run — the pre-existing orphan arrives in the very first sweep window and the
+# failure is attributed to the wrong test.
+_PREEXISTING: "set[int]" = set()
+
+
+def _preclean() -> None:
+    sweep_orphan_workers()  # collect leftovers from earlier runs
+    _PREEXISTING.update(live_worker_pids())  # anything left is not ours to judge
+
+
+def _new_claims(claimed: "list[int]") -> "list[int]":
+    """Only the kills this test can be held responsible for."""
+    return [pid for pid in claimed if pid not in _PREEXISTING]
+
+
+_preclean()
+
+
 def _wait_worker_pids(at_least: int, timeout: float = 25.0) -> list[int]:
     """Wait until at least `at_least` worker processes exist; return their pids."""
     end = time.time() + timeout
@@ -90,7 +111,9 @@ def test_sweep_skips_live_malkuth_run() -> None:
         claimed = _sweep_until(lambda: wait_port(pub, timeout=0.2))
         before = _wait_worker_pids(2)
         claimed += _sweep_settled()
-        assert claimed == [], f"sweep killed a live malkuth run's workers: {claimed}"
+        assert _new_claims(claimed) == [], (
+            f"sweep killed a live malkuth run's workers: {_new_claims(claimed)}"
+        )
         assert line_request_retry(pub, "ping") == "pong", "live run was disturbed"
         assert claimed == [] and sweep_orphan_workers() == [], "sweep must stay empty"
         assert sorted(live_worker_pids()) == sorted(before), "live workers disappeared"
@@ -110,7 +133,9 @@ def test_sweep_skips_live_test_app_supervise() -> None:
         claimed = _sweep_until(lambda: wait_port(base + 1, timeout=0.2))
         before = _wait_worker_pids(2)
         claimed += _sweep_settled()
-        assert claimed == [], f"sweep killed a live supervise leader's workers: {claimed}"
+        assert _new_claims(claimed) == [], (
+            f"sweep killed a live supervise leader's workers: {_new_claims(claimed)}"
+        )
         pid = int(parse_kv(line_request_retry(base + 1, "health"))["pid"])
         assert pid in before, f"health reports {pid}, live workers are {before}"
         assert sorted(live_worker_pids()) == sorted(before), "live workers disappeared"
@@ -131,7 +156,9 @@ def test_sweep_skips_live_test_app_rolling() -> None:
             lambda: wait_port(base + 1, timeout=0.2) and wait_port(base + 2, timeout=0.2)
         )
         claimed += _sweep_settled()
-        assert claimed == [], f"sweep killed a live rolling leader's workers: {claimed}"
+        assert _new_claims(claimed) == [], (
+            f"sweep killed a live rolling leader's workers: {_new_claims(claimed)}"
+        )
 
         done = False
         for _ in range(120):
@@ -169,7 +196,9 @@ def test_sweep_skips_relative_path_leader() -> None:
             claimed = _sweep_settled()
         finally:
             os.chdir(cwd_before)
-        assert claimed == [], f"sweep must recognise a relative-path leader, killed {claimed}"
+        assert _new_claims(claimed) == [], (
+            f"sweep must recognise a relative-path leader, killed {_new_claims(claimed)}"
+        )
         assert sorted(live_worker_pids()) == sorted(before), "live workers disappeared"
         assert line_request_retry(pub, "ping") == "pong", "live run was disturbed"
     finally:
@@ -243,7 +272,7 @@ def test_sweep_collects_orphans_after_leader_sigkill() -> None:
         time.sleep(0.5)
         survivors = [pid for pid in workers if pathlib.Path(f"/proc/{pid}").exists()]
         assert survivors == workers, f"workers died with the leader: {workers} -> {survivors}"
-        swept = sweep_orphan_workers()
+        swept = _new_claims(sweep_orphan_workers())
         assert sorted(swept) == sorted(workers), f"sweep collected {swept}, wanted {workers}"
         time.sleep(0.3)
         still = [pid for pid in workers if pathlib.Path(f"/proc/{pid}").exists()]
