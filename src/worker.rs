@@ -890,6 +890,11 @@ mod tests {
     }
 
     /// Wait (bounded) for a fleet predicate; returns false on timeout.
+    ///
+    /// Unix-only on purpose: its callers are the process-level tests that need
+    /// a real `sh`, so on Windows the helper would be dead code — and this
+    /// crate compiles tests with `-D warnings`.
+    #[cfg(unix)]
     async fn wait_until(fleet: &FleetState, check: impl Fn(&WorkerSnapshot) -> bool) -> bool {
         for _ in 0..400 {
             if let Some(snap) = fleet.get("sleeper")
