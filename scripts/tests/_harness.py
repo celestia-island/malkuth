@@ -522,7 +522,10 @@ class Proc:
         if cwd is None:
             cwd = str(ROOT)
         run_env = dict(env) if env is not None else dict(os.environ)
-        run_env.setdefault(_RUN_ROOT_ENV, str(ROOT))
+        # Explicit override, not setdefault: an exported or imported
+        # MALKUTH_HARNESS_ROOT from the surrounding shell must never make a
+        # child look like it belongs to a different worktree.
+        run_env[_RUN_ROOT_ENV] = str(ROOT)
         self.p = subprocess.Popen(
             [str(a) for a in args],
             stdout=subprocess.PIPE,

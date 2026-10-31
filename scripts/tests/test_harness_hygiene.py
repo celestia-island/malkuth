@@ -21,6 +21,7 @@ import tempfile
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _harness import (  # noqa: E402
     ROOT,
+    _supervising_leader_of,
     Proc,
     bin_path,
     free_port,
@@ -33,22 +34,18 @@ from _harness import (  # noqa: E402
 )
 
 
-# A leftover from an earlier run (or a concurrent run in another shell) must not
-# be read as "the sweep just killed a live worker": clean once at import, then
-# judge only NEW kills. Without this the suite is not re-runnable after a red
-# run — the pre-existing orphan arrives in the very first sweep window and the
-# failure is attributed to the wrong test.
+# The starting state is not assumed clean: other sessions on this host may own
+# workers, and a leftover can appear at any moment (concurrent suite runs are
+# normal here). So no assertion may say "the sweep returned nothing" — it says
+# "the sweep did not kill anything that was ALREADY alive before that call".
+# A foreign orphan that shows up mid-window is a legitimate collect, not a red.
 _PREEXISTING: "set[int]" = set()
 
 
 def _preclean() -> None:
-    sweep_orphan_workers()  # collect leftovers from earlier runs
-    _PREEXISTING.update(live_worker_pids())  # anything left is not ours to judge
-
-
-def _new_claims(claimed: "list[int]") -> "list[int]":
-    """Only the kills this test can be held responsible for."""
-    return [pid for pid in claimed if pid not in _PREEXISTING]
+    """Start from a clean slate when we can: collect leftovers from earlier runs."""
+    sweep_orphan_workers()
+    _PREEXISTING.update(live_worker_pids())  # a concurrent run's live workers
 
 
 _preclean()
@@ -65,37 +62,66 @@ def _wait_worker_pids(at_least: int, timeout: float = 25.0) -> list[int]:
     raise AssertionError(f"expected >= {at_least} test_app worker(s), got {live_worker_pids()}")
 
 
-def _sweep_until(condition, timeout: float = 25.0, interval: float = 0.15) -> list[int]:
-    """Call the sweep repeatedly until `condition()` holds; return every pid it
-    claimed (empty is the only acceptable answer for a live run).
+def _workers_under(leader_pids: "set[int]") -> "set[int]":
+    """Live workers whose supervising leader is one of `leader_pids`.
 
-    Sweeping *during* startup is deliberate: that is the window in which the
-    pre-fix sweep killed live workers (R2: `gen0 not up`, `SWEPT [...]` while the
-    leader was alive the whole time).
+    This is what "already alive" must mean for the assertions: workers of the
+    run under test. A foreign orphan (a concurrent session's leftover) is not
+    ours to judge — if a sweep collects it, that is correct behaviour, not a
+    false red.
     """
-    claimed: list[int] = []
+    owned: "set[int]" = set()
+    for pid in live_worker_pids():
+        if _supervising_leader_of(pid) in leader_pids:
+            owned.add(pid)
+    return owned
+
+
+def _sweep_rounds(condition=None, owned=None, timeout: float = 25.0, interval: float = 0.15,
+                  settled: int = 3, pause: float = 0.25):
+    """Sweep repeatedly, recording `(alive_before_this_call, claimed)` per call.
+
+    `condition` (if given) gates the startup window: sweep while the run is
+    coming up, then take `settled` extra rounds so the call set definitely
+    includes sweeps taken while the live workers exist.
+    """
+    def before_now() -> "set[int]":
+        return set(owned()) if owned is not None else set()
+
+    calls: "list[tuple[set[int], list[int]]]" = []
     end = time.time() + timeout
-    while time.time() < end:
-        claimed.extend(sweep_orphan_workers())
+    while True:
+        before = before_now()
+        claimed = sweep_orphan_workers()
+        calls.append((before, claimed))
+        if condition is None:
+            if len(calls) >= settled:
+                return calls
+            time.sleep(pause)
+            continue
         if condition():
-            return claimed
+            for _ in range(settled):
+                b = before_now()
+                c = sweep_orphan_workers()
+                calls.append((b, c))
+                time.sleep(pause)
+            return calls
+        if time.time() >= end:
+            raise AssertionError(f"condition never held within {timeout}s (sweeps: {calls})")
         time.sleep(interval)
-    raise AssertionError(f"condition never held within {timeout}s; swept={claimed}")
 
 
-def _sweep_settled(rounds: int = 3, pause: float = 0.25) -> list[int]:
-    """Sweep a few more times once the run is definitively live.
+def _killed_that_were_alive(calls) -> "list[int]":
+    """Pids the sweep claimed although they were already alive when the call started."""
+    bad: "list[int]" = []
+    for before, claimed in calls:
+        bad.extend(sorted(set(claimed) & before))
+    return sorted(set(bad))
 
-    `_sweep_until` may return in the same iteration in which the readiness
-    condition first holds, i.e. before any worker existed. The mutation guard
-    needs sweeps that definitely see live workers, or it can pass by timing
-    instead of by correctness.
-    """
-    claimed: list[int] = []
-    for _ in range(rounds):
-        claimed.extend(sweep_orphan_workers())
-        time.sleep(pause)
-    return claimed
+
+def _assert_no_live_kills(calls, context: str) -> None:
+    killed = _killed_that_were_alive(calls)
+    assert killed == [], f"{context}: sweep killed worker(s) that were already alive: {killed}"
 
 
 def test_sweep_skips_live_malkuth_run() -> None:
@@ -108,14 +134,11 @@ def test_sweep_skips_live_malkuth_run() -> None:
         "--", bin_path("test_app"), "worker",
     ], cwd=str(ROOT))
     try:
-        claimed = _sweep_until(lambda: wait_port(pub, timeout=0.2))
+        calls = _sweep_rounds(lambda: wait_port(pub, timeout=0.2),
+                              owned=lambda: _workers_under({cli.p.pid}))
         before = _wait_worker_pids(2)
-        claimed += _sweep_settled()
-        assert _new_claims(claimed) == [], (
-            f"sweep killed a live malkuth run's workers: {_new_claims(claimed)}"
-        )
+        _assert_no_live_kills(calls, "live malkuth run")
         assert line_request_retry(pub, "ping") == "pong", "live run was disturbed"
-        assert claimed == [] and sweep_orphan_workers() == [], "sweep must stay empty"
         assert sorted(live_worker_pids()) == sorted(before), "live workers disappeared"
     finally:
         cli.stop()
@@ -130,12 +153,10 @@ def test_sweep_skips_live_test_app_supervise() -> None:
         "--pods", "2", "--port-base", str(base),
     ], cwd=str(ROOT))
     try:
-        claimed = _sweep_until(lambda: wait_port(base + 1, timeout=0.2))
+        calls = _sweep_rounds(lambda: wait_port(base + 1, timeout=0.2),
+                              owned=lambda: _workers_under({app.p.pid}))
         before = _wait_worker_pids(2)
-        claimed += _sweep_settled()
-        assert _new_claims(claimed) == [], (
-            f"sweep killed a live supervise leader's workers: {_new_claims(claimed)}"
-        )
+        _assert_no_live_kills(calls, "live supervise leader")
         pid = int(parse_kv(line_request_retry(base + 1, "health"))["pid"])
         assert pid in before, f"health reports {pid}, live workers are {before}"
         assert sorted(live_worker_pids()) == sorted(before), "live workers disappeared"
@@ -152,13 +173,11 @@ def test_sweep_skips_live_test_app_rolling() -> None:
         "--pods", "2", "--port-base", str(base),
     ], cwd=str(ROOT))
     try:
-        claimed = _sweep_until(
-            lambda: wait_port(base + 1, timeout=0.2) and wait_port(base + 2, timeout=0.2)
+        calls = _sweep_rounds(
+            lambda: wait_port(base + 1, timeout=0.2) and wait_port(base + 2, timeout=0.2),
+            owned=lambda: _workers_under({app.p.pid}),
         )
-        claimed += _sweep_settled()
-        assert _new_claims(claimed) == [], (
-            f"sweep killed a live rolling leader's workers: {_new_claims(claimed)}"
-        )
+        _assert_no_live_kills(calls, "live rolling leader")
 
         done = False
         for _ in range(120):
@@ -193,12 +212,10 @@ def test_sweep_skips_relative_path_leader() -> None:
         # so it would kill live workers. Identity must come from /proc/<pid>/exe.
         os.chdir(elsewhere)
         try:
-            claimed = _sweep_settled()
+            calls = _sweep_rounds(None, owned=lambda: _workers_under({cli.p.pid}))
         finally:
             os.chdir(cwd_before)
-        assert _new_claims(claimed) == [], (
-            f"sweep must recognise a relative-path leader, killed {_new_claims(claimed)}"
-        )
+        _assert_no_live_kills(calls, "relative-path leader")
         assert sorted(live_worker_pids()) == sorted(before), "live workers disappeared"
         assert line_request_retry(pub, "ping") == "pong", "live run was disturbed"
     finally:
@@ -255,6 +272,55 @@ def test_sweep_collects_orphans_beside_a_live_run() -> None:
         live.stop()
 
 
+def test_external_orphan_midrun_is_collected_without_false_red() -> None:
+    """An orphan that appears AFTER import must be collected without being
+    reported as "sweep killed a live worker".
+
+    This is the R3 false red: the module-level baseline can only know about
+    leftovers that existed at import time, so the assertions must judge
+    "workers of THIS run", not "all workers that exist". A foreign orphan is a
+    legitimate collect.
+    """
+    pub = free_port()
+    live = Proc([
+        bin_path("malkuth"), "--pod-count", "1",
+        "--proxy", f"{pub}:{pub}-{pub + 10}",
+        "--", bin_path("test_app"), "worker",
+    ], cwd=str(ROOT))
+    doomed = None
+    try:
+        assert wait_port(pub, timeout=25), "live run did not come up" + ("\n" + live.output())
+        own = _workers_under({live.p.pid})
+        assert own, "the live run has no worker"
+
+        # A second supervision appears now (i.e. after import) and is orphaned.
+        doomed = Proc([
+            bin_path("test_app"), "supervise",
+            "--pods", "1", "--port-base", str(free_port()),
+        ], cwd=str(ROOT))
+        end = time.time() + 25
+        while time.time() < end:
+            if _workers_under({doomed.p.pid}):
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("the doomed run never spawned a worker")
+        os.kill(doomed.p.pid, signal.SIGKILL)
+        doomed.p.wait(timeout=10)
+        time.sleep(0.5)
+        orphan = set(live_worker_pids()) - own
+        assert orphan, "no external orphan appeared"
+
+        calls = _sweep_rounds(None, owned=lambda: _workers_under({live.p.pid}), settled=4)
+        _assert_no_live_kills(calls, "live run while an external orphan is collected")
+        assert not (orphan & set(live_worker_pids())), "the external orphan was not collected"
+        assert line_request_retry(pub, "ping") == "pong", "live run disturbed"
+    finally:
+        if doomed is not None:
+            doomed.stop()
+        live.stop()
+
+
 def test_sweep_collects_orphans_after_leader_sigkill() -> None:
     """The actual L57 shape: SIGKILL the leader, and the orphaned workers are
     swept (a dead leader is not proof the workers died)."""
@@ -272,8 +338,8 @@ def test_sweep_collects_orphans_after_leader_sigkill() -> None:
         time.sleep(0.5)
         survivors = [pid for pid in workers if pathlib.Path(f"/proc/{pid}").exists()]
         assert survivors == workers, f"workers died with the leader: {workers} -> {survivors}"
-        swept = _new_claims(sweep_orphan_workers())
-        assert sorted(swept) == sorted(workers), f"sweep collected {swept}, wanted {workers}"
+        swept = sweep_orphan_workers()
+        assert set(workers) <= set(swept), f"sweep collected {swept}, wanted {workers} included"
         time.sleep(0.3)
         still = [pid for pid in workers if pathlib.Path(f"/proc/{pid}").exists()]
         assert still == [], f"orphans survived the sweep: {still}"
