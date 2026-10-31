@@ -1,10 +1,11 @@
 //! Stdio smoke test for the `malkuth mcp` MCP server.
 //!
 //! Boots the server as a subprocess, performs the `initialize` handshake, then
-//! issues `tools/list` and asserts the supervision + probe tools are
-//! advertised. It does *not* launch a real supervisor (that would spawn child
-//! processes); the point is to prove the server starts, speaks the protocol,
-//! and exposes the surface.
+//! issues `tools/list` and asserts the supervision, control and probe tools are
+//! advertised, and that the non-blocking control arms (`status`, `logs`) answer
+//! with their documented JSON shape. It does *not* launch a real supervisor
+//! (that would spawn child processes); the point is to prove the server starts,
+//! speaks the protocol, and exposes the surface.
 //!
 //! Requires the `cli` feature (to build the binary) and the `mcp` feature.
 
@@ -111,12 +112,52 @@ fn mcp_server_lists_supervision_tools() {
         .map(|t| t["name"].as_str().unwrap().to_string())
         .collect();
 
-    for expected in ["malkuth_supervise", "malkuth_probe"] {
+    for expected in [
+        "malkuth_supervise",
+        "malkuth_status",
+        "malkuth_restart",
+        "malkuth_drain",
+        "malkuth_logs",
+        "malkuth_probe",
+    ] {
         assert!(
             tools.iter().any(|t| t == expected),
             "missing tool `{expected}`; got: {tools:?}"
         );
     }
+
+    // Every control arm answers over the wire, and the failure shape is a
+    // machine-readable payload rather than a protocol error.
+    write_msg(
+        &mut stdin,
+        Some(3),
+        "tools/call",
+        serde_json::json!({"name": "malkuth_status", "arguments": {}}),
+    );
+    let status = read_response(&mut stdout, 3, Duration::from_secs(20));
+    let status_text = status["result"]["content"][0]["text"]
+        .as_str()
+        .expect("status text content");
+    let status_body: serde_json::Value = serde_json::from_str(status_text).expect("status JSON");
+    assert_eq!(status_body["ok"], serde_json::json!(true));
+    assert_eq!(status_body["runs"], serde_json::json!([]));
+
+    write_msg(
+        &mut stdin,
+        Some(4),
+        "tools/call",
+        serde_json::json!({
+            "name": "malkuth_logs",
+            "arguments": {"run_id": "does-not-exist"},
+        }),
+    );
+    let logs = read_response(&mut stdout, 4, Duration::from_secs(20));
+    let logs_text = logs["result"]["content"][0]["text"]
+        .as_str()
+        .expect("logs text content");
+    let logs_body: serde_json::Value = serde_json::from_str(logs_text).expect("logs JSON");
+    assert_eq!(logs_body["ok"], serde_json::json!(false));
+    assert_eq!(logs_body["code"], serde_json::json!("unknown_run"));
 
     drop(stdin);
     let deadline = Instant::now() + Duration::from_secs(5);

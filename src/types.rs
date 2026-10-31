@@ -175,6 +175,50 @@ pub struct WorkerInfo {
     pub last_error: Option<String>,
 }
 
+/// Live phase of one worker **during** a supervision run.
+///
+/// This is the observable counterpart of [`WorkerStatus`] (the terminal
+/// status inside [`WorkerInfo`]): it adds the two transitional phases an
+/// operator must be able to tell apart — `Restarting` (a per-worker
+/// restart is in flight) and `Draining` (stop requested, process still
+/// finishing in-flight work) — plus the pid and uptime that only exist
+/// while a child is alive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerPhase {
+    Starting,
+    Running,
+    Restarting,
+    Draining,
+    Stopped,
+}
+
+/// Point-in-time view of one supervised worker while the run is in flight.
+///
+/// Served by the MCP `status` tool; a worker that never comes up carries
+/// `phase: "stopped"` plus `last_error` (spawn failures are reported, never
+/// swallowed). `uptime_secs` is measured from the current child's spawn and
+/// resets on every restart.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct WorkerSnapshot {
+    pub id: String,
+    pub kind: String,
+    pub phase: WorkerPhase,
+    /// `null` while the worker is between children (restarting/stopped).
+    /// The key is always present so a reader never has to distinguish
+    /// "absent" from "none".
+    pub pid: Option<u32>,
+    #[serde(default)]
+    pub uptime_secs: u64,
+    pub restart_policy: RestartPolicy,
+    #[serde(default)]
+    pub restart_count: u32,
+    /// `null` when the last spawn/exit produced no error; always present.
+    pub last_error: Option<String>,
+}
+
 // ═══════════════════════════════════════════════════════════════
 // RPC request/response bodies
 // ═══════════════════════════════════════════════════════════════
