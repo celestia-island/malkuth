@@ -213,11 +213,25 @@ supervision toolkit to AI coding assistants over the Model Context Protocol:
 malkuth mcp
 ```
 
-The server advertises two tools: `malkuth_supervise` (launch a set of workers
-under the supervisor with restart policies + a sliding-window rate limit;
-blocks until they exit or the timeout fires, then returns the final status
-snapshot) and `malkuth_probe` (HTTP healthz / readyz check against a service
-URL). Wire it into an MCP client:
+The server advertises six tools:
+
+| Tool | What it does |
+| --- | --- |
+| `malkuth_supervise` | Launch a set of workers under the supervisor with restart policies + a sliding-window rate limit. **Blocks** until they exit or the timeout fires, then returns the final snapshot and a `run_id`. |
+| `malkuth_status` | Non-blocking per-worker snapshot (id / kind / phase / pid / uptime / restart count / last error) of every known run, or one `run_id`. |
+| `malkuth_restart` | Restart one worker by `run_id` + `worker_id` (graceful stop, then a fresh child). Refuses an unknown/ended/already-restarting worker with a stable error code. |
+| `malkuth_drain` | Graceful (or reload) drain of a run, with a bounded wait; idempotent. |
+| `malkuth_logs` | Bounded tail of one worker's captured stdout/stderr (`lines` ≤ 500, `max_bytes` ≤ 64 KiB) with omission markers. |
+| `malkuth_probe` | HTTP healthz / readyz check against a service URL. |
+
+The supervising call keeps its blocking semantics; the other four arms are
+non-blocking and safe to issue *while* it is still outstanding — MCP requests
+are handled concurrently, so an assistant can observe and steer a run instead
+of waiting for it to end. Every arm answers a JSON object with an `ok` field
+and, on failure, a stable `code` (`unknown_run`, `unknown_worker`,
+`run_finished`, `worker_stopped`, `already_restarting`, `worker_required`).
+
+Wire it into an MCP client:
 
 ```json
 {

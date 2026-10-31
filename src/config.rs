@@ -123,6 +123,8 @@ impl DaemonConfig {
                     restart_policy: policy,
                     working_dir: svc.working_dir.map(PathBuf::from),
                     drain_signal: None,
+                    restart_signal: None,
+                    log_ring: None,
                 }
             })
             .collect()
