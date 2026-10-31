@@ -507,7 +507,7 @@ impl Server {
                 return Self::error_payload(
                     code,
                     format!(
-                        "drain kind {:?} is not supported — use `graceful` or `immediate` (a                          `reload` is a service-lifecycle signal for the supervised program, not                          a run action)",
+                        "drain kind {:?} is not supported — use `graceful` or `immediate`; a `reload` is a service-lifecycle signal for the supervised program, not a run action",
                         args.kind.as_deref().unwrap_or("")
                     ),
                 );
@@ -714,7 +714,10 @@ struct RestartArgs {
 struct DrainArgs {
     /// Run id returned by malkuth_supervise.
     run_id: String,
-    /// Drain kind: graceful (default) or reload.
+    /// Drain kind: `graceful` (default) or `immediate`. Any other value —
+    /// `reload` included — is refused with `unsupported_kind` before anything
+    /// is signalled; `reload` is a service-lifecycle signal for the supervised
+    /// program, not an action on a supervision run.
     #[serde(default)]
     kind: Option<String>,
     /// How long to wait for workers to report stopped (seconds, default 30;
@@ -1288,20 +1291,33 @@ mod tests {
         assert_eq!(refused["code"], json!("restart_budget_exhausted"));
     }
 
-    /// S2-9 killer: "never queued" must hold under concurrency — the settle /
-    /// check / record sequence is one critical section, so exactly one of N
-    /// simultaneous requests wins and the rest are refused (not queued).
-    #[tokio::test]
+    /// S2-9 / S2-2 killer: "never queued" must hold under REAL concurrency.
+    ///
+    /// The runtime must be multi-threaded and the tasks must be released
+    /// together: on the default single-thread runtime the restart path has no
+    /// `.await` before its critical section, so eight tasks run one after
+    /// another and the test cannot see a lock-gap race (R2' control
+    /// experiment: the old single-thread version stayed green against a
+    /// check→unlock→sleep→relock→record mutation). With 8 worker threads plus
+    /// a barrier, all eight enter the accept path simultaneously — exactly one
+    /// may win.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn concurrent_restarts_accept_exactly_one() {
+        const CALLERS: usize = 8;
         let server = Arc::new(test_server());
         server
             .insert_run(run_with_workers("rc", &[("w", "svc")]))
             .unwrap();
+        let barrier = Arc::new(tokio::sync::Barrier::new(CALLERS));
 
         let mut tasks = Vec::new();
-        for _ in 0..8 {
+        for _ in 0..CALLERS {
             let server = server.clone();
+            let barrier = barrier.clone();
             tasks.push(tokio::spawn(async move {
+                // Release every caller at the same instant: the race window is
+                // the critical section itself, not the task spawn order.
+                barrier.wait().await;
                 server.restart_payload(restart_args("rc", "w")).await
             }));
         }
@@ -1317,7 +1333,7 @@ mod tests {
             }
         }
         assert_eq!(accepted, 1, "restart must be accepted at most once");
-        assert_eq!(refused, 7);
+        assert_eq!(refused, CALLERS - 1);
     }
 
     #[tokio::test]

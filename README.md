@@ -219,8 +219,8 @@ The server advertises six tools:
 | --- | --- |
 | `malkuth_supervise` | Launch a set of workers under the supervisor with restart policies + a sliding-window rate limit. **Blocks** until they exit or the timeout fires, then returns the final snapshot and a `run_id`. |
 | `malkuth_status` | Non-blocking per-worker snapshot (id / kind / phase / pid / uptime / restart count / last error) of every known run, or one `run_id`. |
-| `malkuth_restart` | Restart one worker by `run_id` + `worker_id` (graceful stop, then a fresh child). Refuses an unknown/ended/already-restarting worker with a stable error code. |
-| `malkuth_drain` | Graceful (or reload) drain of a run, with a bounded wait; idempotent. |
+| `malkuth_restart` | Restart one worker by `run_id` + `worker_id` (graceful stop, then a fresh child). Operator budget: 5 accepted restarts per worker per 60 s. Refuses an unknown/ended/draining/already-restarting/over-budget worker with a stable error code. |
+| `malkuth_drain` | Graceful (default) or immediate drain of a run, with a bounded wait; idempotent. Any other `kind` — `reload` included — is refused with `unsupported_kind`. |
 | `malkuth_logs` | Bounded tail of one worker's captured stdout/stderr (`lines` ≤ 500, `max_bytes` ≤ 64 KiB) with omission markers. |
 | `malkuth_probe` | HTTP healthz / readyz check against a service URL. |
 
@@ -228,8 +228,9 @@ The supervising call keeps its blocking semantics; the other four arms are
 non-blocking and safe to issue *while* it is still outstanding — MCP requests
 are handled concurrently, so an assistant can observe and steer a run instead
 of waiting for it to end. Every arm answers a JSON object with an `ok` field
-and, on failure, a stable `code` (`unknown_run`, `unknown_worker`,
-`run_finished`, `worker_stopped`, `already_restarting`, `worker_required`).
+and, on failure, a stable `code`: `unknown_run`, `unknown_worker`,
+`run_finished`, `worker_stopped`, `worker_draining`, `already_restarting`,
+`restart_budget_exhausted`, `unsupported_kind`, `worker_required`.
 
 Wire it into an MCP client:
 
