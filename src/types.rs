@@ -217,6 +217,13 @@ pub struct WorkerSnapshot {
     pub restart_count: u32,
     /// `null` when the last spawn/exit produced no error; always present.
     pub last_error: Option<String>,
+    /// The current child's `/proc/<pid>/stat` field 22 (start time, clock ticks
+    /// since boot) — the only reliable pid-reuse check. Captured from the real
+    /// child at spawn, `null` while the worker is between children (or on a
+    /// platform without `/proc`). Always present so a reader never has to
+    /// distinguish "absent" from "none".
+    #[serde(default)]
+    pub starttime: Option<u64>,
 }
 
 // ═══════════════════════════════════════════════════════════════

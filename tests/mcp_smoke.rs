@@ -117,6 +117,7 @@ fn mcp_server_lists_supervision_tools() {
         "malkuth_status",
         "malkuth_restart",
         "malkuth_drain",
+        "malkuth_approve",
         "malkuth_logs",
         "malkuth_probe",
     ] {
@@ -141,6 +142,45 @@ fn mcp_server_lists_supervision_tools() {
     let status_body: serde_json::Value = serde_json::from_str(status_text).expect("status JSON");
     assert_eq!(status_body["ok"], serde_json::json!(true));
     assert_eq!(status_body["runs"], serde_json::json!([]));
+
+    // The gate is reachable over the wire: an approval round-trips, and an
+    // action without one is refused with the stable code (nothing to act on in
+    // this smoke run, so the refusal path is the observable one).
+    let proposal = format!("smoke-approval-{}", std::process::id());
+    write_msg(
+        &mut stdin,
+        Some(5),
+        "tools/call",
+        serde_json::json!({
+            "name": "malkuth_approve",
+            "arguments": {"proposal_id": proposal, "worker_id": "smoke-worker"},
+        }),
+    );
+    let approve = read_response(&mut stdout, 5, Duration::from_secs(20));
+    let approve_text = approve["result"]["content"][0]["text"]
+        .as_str()
+        .expect("approve text content");
+    let approve_body: serde_json::Value = serde_json::from_str(approve_text).expect("approve JSON");
+    assert_eq!(approve_body["ok"], serde_json::json!(true));
+    assert_eq!(approve_body["registered"], serde_json::json!(true));
+
+    write_msg(
+        &mut stdin,
+        Some(6),
+        "tools/call",
+        serde_json::json!({
+            "name": "malkuth_restart",
+            "arguments": {"run_id": "no-such-run", "worker_id": "smoke-worker"},
+        }),
+    );
+    let unapproved = read_response(&mut stdout, 6, Duration::from_secs(20));
+    let unapproved_text = unapproved["result"]["content"][0]["text"]
+        .as_str()
+        .expect("restart text content");
+    let unapproved_body: serde_json::Value =
+        serde_json::from_str(unapproved_text).expect("restart JSON");
+    assert_eq!(unapproved_body["ok"], serde_json::json!(false));
+    assert_eq!(unapproved_body["code"], serde_json::json!("unknown_run"));
 
     write_msg(
         &mut stdin,

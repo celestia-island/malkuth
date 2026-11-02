@@ -103,6 +103,19 @@ impl WorkerLogRing {
     }
 }
 
+/// `/proc/<pid>/stat` field 22: the process start time in clock ticks since boot.
+///
+/// This is the pid-reuse discriminator: two processes can share a pid, never a
+/// start time. Returns `None` when the process is gone, the file cannot be read,
+/// or the platform has no `/proc` — never a guess.
+fn proc_starttime(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // `comm` may contain spaces and parentheses; the fields after the last `)`
+    // start at field 3 (state), so field 22 is the 19th token there.
+    let rest = stat.rsplit_once(')')?.1;
+    rest.split_whitespace().nth(19)?.parse().ok()
+}
+
 /// Live fleet snapshot sink published by a running [`Supervisor`].
 ///
 /// Cheap to clone (one `Arc`); every supervised worker publishes its phase
@@ -140,6 +153,7 @@ impl FleetState {
                 restart_policy: spec.restart_policy,
                 restart_count: 0,
                 last_error: None,
+                starttime: None,
             },
             spawned_at: None,
         };
@@ -153,6 +167,7 @@ impl FleetState {
         self.update(id, |entry| {
             entry.snapshot.phase = WorkerPhase::Running;
             entry.snapshot.pid = pid;
+            entry.snapshot.starttime = pid.and_then(proc_starttime);
             entry.snapshot.uptime_secs = 0;
             entry.spawned_at = Some(SystemTime::now());
         });
@@ -164,6 +179,7 @@ impl FleetState {
             entry.snapshot.phase = WorkerPhase::Restarting;
             entry.snapshot.restart_count = restart_count;
             entry.snapshot.pid = None;
+            entry.snapshot.starttime = None;
             entry.snapshot.uptime_secs = 0;
             entry.spawned_at = None;
         });
@@ -174,6 +190,7 @@ impl FleetState {
         self.update(id, |entry| {
             entry.snapshot.phase = WorkerPhase::Draining;
             entry.snapshot.pid = None;
+            entry.snapshot.starttime = None;
         });
     }
 
@@ -190,6 +207,7 @@ impl FleetState {
             entry.snapshot.restart_count = restart_count;
             entry.snapshot.last_error = last_error;
             entry.snapshot.pid = None;
+            entry.snapshot.starttime = None;
             entry.snapshot.uptime_secs = 0;
             entry.spawned_at = None;
         });
@@ -225,6 +243,7 @@ impl FleetState {
         for entry in map.values_mut() {
             entry.snapshot.phase = WorkerPhase::Stopped;
             entry.snapshot.pid = None;
+            entry.snapshot.starttime = None;
             entry.snapshot.uptime_secs = 0;
             entry.spawned_at = None;
         }
@@ -794,6 +813,58 @@ async fn rate_limited(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A real live process has a start time; a dead pid has none.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proc_starttime_identifies_a_live_process() {
+        let me =
+            proc_starttime(std::process::id()).expect("the test process is alive and readable");
+        assert!(me > 0, "field 22 is clock ticks since boot: {me}");
+        // A pid that cannot exist keeps answering `None` instead of a guess.
+        assert_eq!(proc_starttime(0), None);
+    }
+
+    /// The identity travels with the child: running => Some, stopped => None,
+    /// and the key is always serialized.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_snapshot_carries_starttime_only_while_a_child_is_running() {
+        let fleet = FleetState::new();
+        fleet.register(&spec("svc"));
+        fleet.running("svc", Some(std::process::id()));
+        let running = fleet.get("svc").expect("registered");
+        assert!(
+            running.starttime.is_some(),
+            "a running worker must carry its start time"
+        );
+
+        let json = serde_json::to_value(&running).expect("serializes");
+        assert!(json.get("starttime").is_some(), "the key is always present");
+
+        fleet.restarting("svc", 1);
+        let restarting = fleet.get("svc").expect("registered");
+        assert_eq!(
+            restarting.starttime, None,
+            "between children there is no identity"
+        );
+        let json = serde_json::to_value(&restarting).expect("serializes");
+        assert_eq!(
+            json.get("starttime"),
+            Some(&serde_json::Value::Null),
+            "and the key still exists, as null"
+        );
+    }
+
+    /// A pid that does not exist yields `null`, never a fabricated number.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_unreadable_pid_has_no_starttime() {
+        let fleet = FleetState::new();
+        fleet.register(&spec("ghost"));
+        fleet.running("ghost", Some(0));
+        assert_eq!(fleet.get("ghost").expect("registered").starttime, None);
+    }
 
     fn spec(id: &str) -> WorkerSpec {
         WorkerSpec::new(id, "test", "/bin/true")
