@@ -36,6 +36,7 @@ use rmcp::{
 };
 use schemars::JsonSchema;
 
+use crate::drain_auth::{ApprovalStatus, DrainAuthError, GateDecision};
 use crate::worker::{FleetState, WorkerLogRing};
 use crate::{
     DrainController, RestartPolicy, ShutdownKind, Supervisor, WorkerInfo, WorkerPhase, WorkerSpec,
@@ -340,6 +341,16 @@ fn page_logs(all: &[String], max_lines: usize, max_bytes: usize) -> LogPage {
     }
 }
 
+/// What `malkuth_approve` accepts for the decision field.
+fn parse_gate_decision(raw: Option<&str>) -> Result<GateDecision, &'static str> {
+    match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        None | Some("") | Some("allow") | Some("approved") => Ok(GateDecision::Allow),
+        Some("review") => Ok(GateDecision::Review),
+        Some("block") | Some("blocked") => Ok(GateDecision::Block),
+        _ => Err("unsupported_decision"),
+    }
+}
+
 /// Stable wire name for a drain kind.
 fn shutdown_kind_name(kind: ShutdownKind) -> &'static str {
     match kind {
@@ -514,6 +525,33 @@ impl Server {
             }
         };
         let already = run.drain.is_draining();
+        // An already-draining run is a no-op retry: answer idempotently and do
+        // not spend the approval (nothing was done).
+        if !already {
+            let proposal_id = match Self::require_proposal(args.proposal_id.as_deref()) {
+                Ok(id) => id,
+                Err(payload) => return payload,
+            };
+            let worker_id = match args.worker_id.as_deref().map(str::trim) {
+                Some(id) if !id.is_empty() => id.to_string(),
+                _ => {
+                    return Self::error_payload(
+                        DrainAuthError::InvalidRequest.code(),
+                        "a drain must name the worker whose approved proposal justifies it",
+                    );
+                }
+            };
+            // Validate AND spend in one step: a refusal never consumes, and a
+            // second, real drain with the same approval answers `approval_consumed`.
+            if let Err(error) = crate::drain_auth::validate_drain_request(
+                &worker_id,
+                &proposal_id,
+                None,
+                crate::drain_auth::global(),
+            ) {
+                return Self::error_payload(error.code(), error.to_string());
+            }
+        }
         run.drain.begin_drain(kind);
         let budget = Duration::from_secs(args.timeout_secs.unwrap_or(DEFAULT_DRAIN_TIMEOUT_SECS));
         let deadline = Instant::now() + budget;
@@ -546,6 +584,52 @@ impl Server {
         })
     }
 
+    /// Register one approval; nothing is executed here.
+    fn approve_payload(args: &ApproveArgs) -> Value {
+        let proposal_id = args.proposal_id.trim();
+        let worker_id = args.worker_id.trim();
+        if proposal_id.is_empty() || worker_id.is_empty() {
+            return Self::error_payload(
+                DrainAuthError::InvalidRequest.code(),
+                "proposal_id and worker_id must both be non-empty",
+            );
+        }
+        let decision = match parse_gate_decision(args.decision.as_deref()) {
+            Ok(decision) => decision,
+            Err(code) => {
+                return Self::error_payload(
+                    code,
+                    "decision must be allow (default), review, or block",
+                );
+            }
+        };
+        let registry = crate::drain_auth::global();
+        registry.approve(proposal_id, worker_id, decision);
+        json!({
+            "ok": true,
+            "registered": true,
+            "proposal_id": proposal_id,
+            "worker_id": worker_id,
+            "decision": match decision {
+                GateDecision::Allow => "allow",
+                GateDecision::Review => "review",
+                GateDecision::Block => "block",
+            },
+            "expires_in_secs": registry.ttl_secs(),
+        })
+    }
+
+    /// Refuse an action that does not name a proposal, with the stable gate code.
+    fn require_proposal(proposal_id: Option<&str>) -> Result<String, Value> {
+        match proposal_id.map(str::trim) {
+            Some(id) if !id.is_empty() => Ok(id.to_string()),
+            _ => Err(Self::error_payload(
+                DrainAuthError::Required.code(),
+                "this action requires an approved proposal_id: register the approval with malkuth_approve first",
+            )),
+        }
+    }
+
     async fn restart_payload(&self, args: RestartArgs) -> Value {
         let Some(run) = self.find_run(&args.run_id) else {
             return Self::error_payload("unknown_run", format!("no run with id `{}`", args.run_id));
@@ -565,6 +649,25 @@ impl Server {
                 ),
             );
         };
+        let proposal_id = match Self::require_proposal(args.proposal_id.as_deref()) {
+            Ok(id) => id,
+            Err(payload) => return payload,
+        };
+        // The gate is checked (not spent) before the atomic accept: a refusal
+        // below must not burn an approval, and a spent approval must not
+        // authorize an action twice.
+        match crate::drain_auth::global().status(&proposal_id, &args.worker_id) {
+            ApprovalStatus::Approved => {}
+            other => {
+                let code = match other {
+                    ApprovalStatus::Expired => "approval_expired",
+                    ApprovalStatus::Consumed => "approval_consumed",
+                    _ => "approval_required",
+                };
+
+                return Self::error_payload(code, format!("the approval is not live ({code})"));
+            }
+        }
         // Atomic accept: settle → pending check → budget check → record, all
         // in one critical section, so two concurrent calls cannot both win.
         if let Err(code) = run.accept_restart(&args.worker_id) {
@@ -584,6 +687,11 @@ impl Server {
                         .unwrap_or_else(|| "unknown".to_string())
                 ),
             );
+        }
+        // The action is accepted: now spend the approval. Anything that failed
+        // above left it whole.
+        if let Err(error) = crate::drain_auth::global().consume(&proposal_id, &args.worker_id) {
+            return Self::error_payload(error.code(), error.to_string());
         }
         signal.notify_one();
         json!({
@@ -703,11 +811,26 @@ struct StatusArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct ApproveArgs {
+    /// The approval token (scepter's `gate_proposal_id`): a bare 32-hex string.
+    proposal_id: String,
+    /// The one worker this approval authorizes.
+    worker_id: String,
+    /// `allow` (default), `review`, or `block`.
+    #[serde(default)]
+    decision: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct RestartArgs {
     /// Run id returned by malkuth_supervise.
     run_id: String,
     /// Worker id to restart (must exist in that run).
     worker_id: String,
+    /// The approval this action spends (registered with `malkuth_approve`).
+    /// Required: an action without a live, target-bound approval is refused.
+    #[serde(default)]
+    proposal_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -724,6 +847,15 @@ struct DrainArgs {
     /// 0 returns immediately after signalling).
     #[serde(default)]
     timeout_secs: Option<u64>,
+    /// The approval this drain spends (registered with `malkuth_approve`).
+    /// Required: an action without a live, target-bound approval is refused.
+    #[serde(default)]
+    proposal_id: Option<String>,
+    /// Which worker's approval justifies draining the run. Required: an
+    /// approval is bound to one target, so a run-wide drain must name the
+    /// judged worker it is acting on.
+    #[serde(default)]
+    worker_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -868,6 +1000,17 @@ impl Server {
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         Ok(Self::json_result(&self.status_payload(args).await))
+    }
+
+    #[tool(
+        description = "Register ONE target-bound approval for a future restart/drain. `proposal_id` is the approval token (scepter's `gate_proposal_id`: a bare 32-hex string), `worker_id` the single worker it authorizes, `decision` one of allow (default) / review / block. An approval is live for 300 s, is bound to exactly that proposal + worker pair, and authorizes AT MOST ONE action: the gate spends it on success, and a replay answers approval_consumed. This tool only records the approval — it performs nothing."
+    )]
+    async fn malkuth_approve(
+        &self,
+        Parameters(args): Parameters<ApproveArgs>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        Ok(Self::json_result(&Self::approve_payload(&args)))
     }
 
     #[tool(
@@ -1031,15 +1174,54 @@ mod tests {
         })
     }
 
+    /// A token no test ever registers, so refusal paths cannot be polluted by a
+    /// concurrent test that did register it.
+    fn unique_token() -> String {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+        format!("unregistered-{}-{seq}", std::process::id())
+    }
+
+    /// Approve a throwaway proposal for this worker and hand back its id: the
+    /// gate now requires one, and a fresh id per call keeps tests independent
+    /// (a spent approval may never authorize a second action).
+    fn approval_for(worker_id: &str) -> String {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+        let proposal = format!("gate-test-{}-{seq}", std::process::id());
+        crate::drain_auth::global().approve(&proposal, worker_id, GateDecision::Allow);
+        proposal
+    }
+
     fn restart_args(run_id: &str, worker_id: &str) -> RestartArgs {
         RestartArgs {
             run_id: run_id.to_string(),
             worker_id: worker_id.to_string(),
+            proposal_id: Some(approval_for(worker_id)),
+        }
+    }
+
+    /// A restart request with no approval at all (the refusal path).
+    fn unapproved_restart_args(run_id: &str, worker_id: &str) -> RestartArgs {
+        RestartArgs {
+            run_id: run_id.to_string(),
+            worker_id: worker_id.to_string(),
+            proposal_id: None,
+        }
+    }
+
+    fn drain_args(run_id: &str, worker_id: &str, kind: Option<&str>) -> DrainArgs {
+        DrainArgs {
+            run_id: run_id.to_string(),
+            kind: kind.map(str::to_string),
+            timeout_secs: Some(0),
+            proposal_id: Some(approval_for(worker_id)),
+            worker_id: Some(worker_id.to_string()),
         }
     }
 
     /// Keys every worker object must carry, in `status` *and* `drain` output.
-    const WORKER_KEYS: [&str; 7] = [
+    const WORKER_KEYS: [&str; 8] = [
         "id",
         "kind",
         "phase",
@@ -1047,6 +1229,7 @@ mod tests {
         "uptime_secs",
         "restart_count",
         "last_error",
+        "starttime",
     ];
 
     fn assert_worker_keys(worker: &Value) {
@@ -1130,13 +1313,7 @@ mod tests {
         assert_eq!(worker["restart_policy"], json!("permanent"));
         assert_eq!(worker["restart_count"], json!(2));
 
-        let drain = server
-            .drain_payload(DrainArgs {
-                run_id: "rf".into(),
-                kind: None,
-                timeout_secs: Some(0),
-            })
-            .await;
+        let drain = server.drain_payload(drain_args("rf", "svc", None)).await;
         assert_worker_keys(&drain["workers"][0]);
         assert_eq!(drain["already"], json!(false));
     }
@@ -1149,13 +1326,7 @@ mod tests {
         server
             .insert_run(run_with_workers("r2", &[("only", "svc")]))
             .unwrap();
-        let first = server
-            .drain_payload(DrainArgs {
-                run_id: "r2".into(),
-                kind: None,
-                timeout_secs: Some(0),
-            })
-            .await;
+        let first = server.drain_payload(drain_args("r2", "only", None)).await;
         assert_eq!(first["ok"], json!(true));
         assert_eq!(first["accepted"], json!(true));
         assert_eq!(first["already"], json!(false));
@@ -1164,11 +1335,7 @@ mod tests {
 
         // Idempotent: same run, second call, still accepted and truthful.
         let second = server
-            .drain_payload(DrainArgs {
-                run_id: "r2".into(),
-                kind: Some("graceful".into()),
-                timeout_secs: Some(0),
-            })
+            .drain_payload(drain_args("r2", "only", Some("graceful")))
             .await;
         assert_eq!(second["ok"], json!(true));
         assert_eq!(second["already"], json!(true));
@@ -1188,11 +1355,7 @@ mod tests {
 
         for bad in ["reload", "reload ", "graceful-ish", "SIGKILL"] {
             let payload = server
-                .drain_payload(DrainArgs {
-                    run_id: "rk".into(),
-                    kind: Some(bad.into()),
-                    timeout_secs: Some(0),
-                })
+                .drain_payload(drain_args("rk", "svc", Some(bad)))
                 .await;
             assert_eq!(
                 payload["code"],
@@ -1206,11 +1369,7 @@ mod tests {
         }
 
         let immediate = server
-            .drain_payload(DrainArgs {
-                run_id: "rk".into(),
-                kind: Some("immediate".into()),
-                timeout_secs: Some(0),
-            })
+            .drain_payload(drain_args("rk", "svc", Some("immediate")))
             .await;
         assert_eq!(immediate["ok"], json!(true));
         assert_eq!(immediate["kind"], json!("immediate"));
@@ -1225,16 +1384,191 @@ mod tests {
     async fn drain_unknown_run_is_a_typed_failure() {
         let server = test_server();
         let payload = server
-            .drain_payload(DrainArgs {
-                run_id: "nope".into(),
-                kind: None,
-                timeout_secs: Some(0),
-            })
+            .drain_payload(drain_args("nope", "missing", None))
             .await;
         assert_eq!(payload["code"], json!("unknown_run"));
     }
 
     // ── restart ──────────────────────────────────────────────
+
+    // ── approval gate ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn an_action_without_an_approval_is_refused() {
+        let server = test_server();
+        server
+            .insert_run(run_with_workers("g1", &[("api", "backend")]))
+            .unwrap();
+
+        let restart = server
+            .restart_payload(unapproved_restart_args("g1", "api"))
+            .await;
+        assert_eq!(restart["ok"], json!(false));
+        assert_eq!(restart["code"], json!("approval_required"));
+
+        let drain = server
+            .drain_payload(DrainArgs {
+                run_id: "g1".into(),
+                kind: None,
+                timeout_secs: Some(0),
+                proposal_id: None,
+                worker_id: None,
+            })
+            .await;
+        assert_eq!(drain["ok"], json!(false));
+        assert_eq!(drain["code"], json!("approval_required"));
+        // Nothing was signalled by either refusal.
+        assert!(!server.find_run("g1").unwrap().drain.is_draining());
+    }
+
+    #[tokio::test]
+    async fn a_restart_spends_its_approval_exactly_once() {
+        let server = test_server();
+        server
+            .insert_run(run_with_workers("g2", &[("api", "backend")]))
+            .unwrap();
+        let proposal = approval_for("api");
+        let args = || RestartArgs {
+            run_id: "g2".into(),
+            worker_id: "api".into(),
+            proposal_id: Some(proposal.clone()),
+        };
+
+        let first = server.restart_payload(args()).await;
+        assert_eq!(first["ok"], json!(true));
+        assert_eq!(first["accepted"], json!(true));
+
+        // The same approval may not authorize a second action, even once the
+        // worker is ready again (that is what one-approval-one-action means).
+        let replay = server.restart_payload(args()).await;
+        assert_eq!(replay["ok"], json!(false));
+        assert_eq!(replay["code"], json!("approval_consumed"));
+    }
+
+    #[tokio::test]
+    async fn a_refused_restart_leaves_the_approval_unspent() {
+        let server = test_server();
+        let run = run_with_workers("g3", &[("api", "backend")]);
+        // A draining worker cannot be restarted; the refusal must not burn the
+        // approval, so the same proposal still works once the worker is running.
+        run.fleet.draining("api");
+        server.insert_run(run.clone()).unwrap();
+
+        let proposal = approval_for("api");
+        let args = || RestartArgs {
+            run_id: "g3".into(),
+            worker_id: "api".into(),
+            proposal_id: Some(proposal.clone()),
+        };
+        let refused = server.restart_payload(args()).await;
+        assert_eq!(refused["code"], json!("worker_draining"));
+        assert_eq!(
+            crate::drain_auth::global().status(&proposal, "api"),
+            ApprovalStatus::Approved,
+            "a refused action must not spend the approval"
+        );
+
+        run.fleet.running("api", None);
+        let accepted = server.restart_payload(args()).await;
+        assert_eq!(accepted["ok"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn a_drain_spends_its_approval_and_repeats_idempotently() {
+        let server = test_server();
+        server
+            .insert_run(run_with_workers("g4", &[("svc", "backend")]))
+            .unwrap();
+        let proposal = approval_for("svc");
+        let args = || DrainArgs {
+            run_id: "g4".into(),
+            kind: None,
+            timeout_secs: Some(0),
+            proposal_id: Some(proposal.clone()),
+            worker_id: Some("svc".into()),
+        };
+
+        let first = server.drain_payload(args()).await;
+        assert_eq!(first["ok"], json!(true));
+        assert_eq!(first["already"], json!(false));
+
+        // A retry is a no-op: still accepted, still truthful, and it does not
+        // try to spend the (already spent) approval again.
+        let retry = server.drain_payload(args()).await;
+        assert_eq!(retry["ok"], json!(true));
+        assert_eq!(retry["already"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn the_gate_rejects_a_forged_or_expired_approval() {
+        let server = test_server();
+        server
+            .insert_run(run_with_workers("g5", &[("api", "backend")]))
+            .unwrap();
+
+        let forged = server
+            .restart_payload(RestartArgs {
+                run_id: "g5".into(),
+                worker_id: "api".into(),
+                proposal_id: Some(unique_token()),
+            })
+            .await;
+        assert_eq!(forged["code"], json!("approval_required"));
+
+        let bound_elsewhere = approval_for("other-worker");
+        let wrong_worker = server
+            .restart_payload(RestartArgs {
+                run_id: "g5".into(),
+                worker_id: "api".into(),
+                proposal_id: Some(bound_elsewhere.clone()),
+            })
+            .await;
+        assert_eq!(wrong_worker["code"], json!("approval_required"));
+        assert_eq!(
+            crate::drain_auth::global().status(&bound_elsewhere, "other-worker"),
+            ApprovalStatus::Approved,
+            "a mismatched worker must not spend the real target's approval"
+        );
+    }
+
+    #[test]
+    fn approving_takes_both_ids_and_a_known_decision() {
+        let ok = Server::approve_payload(&ApproveArgs {
+            proposal_id: unique_token(),
+            worker_id: "api".into(),
+            decision: None,
+        });
+        assert_eq!(ok["ok"], json!(true));
+        assert_eq!(ok["registered"], json!(true));
+        assert_eq!(ok["expires_in_secs"], json!(300));
+
+        let empty = Server::approve_payload(&ApproveArgs {
+            proposal_id: "  ".into(),
+            worker_id: "api".into(),
+            decision: None,
+        });
+        assert_eq!(empty["code"], json!("invalid_request"));
+
+        let bad = Server::approve_payload(&ApproveArgs {
+            proposal_id: unique_token(),
+            worker_id: "api".into(),
+            decision: Some("maybe".into()),
+        });
+        assert_eq!(bad["code"], json!("unsupported_decision"));
+
+        let blocked_token = unique_token();
+        let blocked = Server::approve_payload(&ApproveArgs {
+            proposal_id: blocked_token.clone(),
+            worker_id: "api".into(),
+            decision: Some("block".into()),
+        });
+        assert_eq!(blocked["decision"], json!("block"));
+        assert_eq!(
+            crate::drain_auth::global().status(&blocked_token, "api"),
+            ApprovalStatus::Unknown,
+            "a blocked proposal is not an approval"
+        );
+    }
 
     #[tokio::test]
     async fn restart_accepts_running_worker_and_refuses_second_call() {
