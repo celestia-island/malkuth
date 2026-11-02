@@ -662,6 +662,7 @@ impl Server {
                 let code = match other {
                     ApprovalStatus::Expired => "approval_expired",
                     ApprovalStatus::Consumed => "approval_consumed",
+                    ApprovalStatus::Blocked => "approval_blocked",
                     _ => "approval_required",
                 };
 
@@ -1565,8 +1566,8 @@ mod tests {
         assert_eq!(blocked["decision"], json!("block"));
         assert_eq!(
             crate::drain_auth::global().status(&blocked_token, "api"),
-            ApprovalStatus::Unknown,
-            "a blocked proposal is not an approval"
+            ApprovalStatus::Blocked,
+            "a block is a real, stored decision — not a missing entry"
         );
     }
 

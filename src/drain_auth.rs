@@ -53,6 +53,9 @@ pub enum ApprovalStatus {
     Expired,
     /// Already spent on an action (one approval authorizes at most one).
     Consumed,
+    /// Deliberately blocked: the operator changed their mind. A block overrides
+    /// an earlier allow for the same pair.
+    Blocked,
     /// Nothing was ever registered for this pair (or it was blocked).
     Unknown,
 }
@@ -72,6 +75,8 @@ pub enum DrainAuthError {
     Expired,
     /// The approval was already spent on an action.
     Consumed,
+    /// An operator blocked this proposal + worker pair.
+    Blocked,
 }
 
 impl DrainAuthError {
@@ -84,6 +89,7 @@ impl DrainAuthError {
             Self::Required => "approval_required",
             Self::Expired => "approval_expired",
             Self::Consumed => "approval_consumed",
+            Self::Blocked => "approval_blocked",
         }
     }
 }
@@ -99,6 +105,7 @@ impl std::fmt::Display for DrainAuthError {
             Self::Required => f.write_str("no live approval for this proposal and worker"),
             Self::Expired => f.write_str("the approval has expired"),
             Self::Consumed => f.write_str("the approval was already spent on an action"),
+            Self::Blocked => f.write_str("an operator blocked this proposal"),
         }
     }
 }
@@ -125,9 +132,6 @@ impl ApprovalRegistry {
     /// Register an approved proposal. Called after an external auditor or
     /// human confirms a restart is authorized.
     pub fn approve(&self, proposal_id: &str, worker_id: &str, decision: GateDecision) {
-        if decision == GateDecision::Block {
-            return;
-        }
         let mut entries = self.entries.write().unwrap();
         // Evict expired entries.
         entries.retain(|e| e.is_valid(self.ttl));
@@ -171,7 +175,7 @@ impl ApprovalRegistry {
             }
 
             if entry.decision == GateDecision::Block {
-                return ApprovalStatus::Unknown;
+                return ApprovalStatus::Blocked;
             }
 
             if entry.consumed_at.is_some() {
@@ -200,6 +204,7 @@ impl ApprovalRegistry {
             }
 
             if entry.decision == GateDecision::Block {
+                answer = Err(DrainAuthError::Blocked);
                 break;
             }
 
@@ -366,6 +371,25 @@ mod tests {
         assert_eq!(mismatch.code(), "approval_required");
         // …and the mismatch did not spend the real worker's approval.
         assert_eq!(reg.status("prop-bound", "chest"), ApprovalStatus::Approved);
+    }
+
+    #[test]
+    fn a_block_overrides_an_earlier_allow() {
+        let reg = registry();
+        reg.approve("prop-flip", "chest", GateDecision::Allow);
+        assert_eq!(reg.status("prop-flip", "chest"), ApprovalStatus::Approved);
+
+        // The operator changes their mind: blocking must revoke the allow…
+        reg.approve("prop-flip", "chest", GateDecision::Block);
+        assert_eq!(reg.status("prop-flip", "chest"), ApprovalStatus::Blocked);
+        // …and the action must be refused with the block's own code.
+        let blocked = validate_drain_request("chest", "prop-flip", None, &reg)
+            .expect_err("a blocked proposal must not authorize anything");
+        assert_eq!(blocked.code(), "approval_blocked");
+
+        // Un-blocking is just another approval: the pair becomes usable again.
+        reg.approve("prop-flip", "chest", GateDecision::Allow);
+        assert!(validate_drain_request("chest", "prop-flip", None, &reg).is_ok());
     }
 
     #[test]
