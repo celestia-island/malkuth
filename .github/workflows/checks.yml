@@ -9,10 +9,6 @@ concurrency:
 
 on:
   workflow_dispatch:
-  push:
-    branches: [master]
-  pull_request:
-    types: [opened, reopened, ready_for_review, synchronize]
   workflow_call: {}
 
 env:
