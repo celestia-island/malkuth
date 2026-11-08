@@ -23,6 +23,7 @@
 
 // ── Layer 1: lifecycle & wire types ────────────────────────────
 pub mod drain_auth;
+pub mod gate_grant;
 pub mod hooks;
 pub mod lifecycle;
 pub mod traits;

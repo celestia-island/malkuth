@@ -143,9 +143,10 @@ fn mcp_server_lists_supervision_tools() {
     assert_eq!(status_body["ok"], serde_json::json!(true));
     assert_eq!(status_body["runs"], serde_json::json!([]));
 
-    // The gate is reachable over the wire: an approval round-trips, and an
-    // action without one is refused with the stable code (nothing to act on in
-    // this smoke run, so the refusal path is the observable one).
+    // The gate is reachable over the wire. Since P0b a spendable decision
+    // (`allow`) needs an issuer grant — over this bare smoke wire there is no
+    // supervised worker to bind and no signature, so the observable positive
+    // round trip is a `block` (records a refusal, needs no grant)…
     let proposal = format!("smoke-approval-{}", std::process::id());
     write_msg(
         &mut stdin,
@@ -153,7 +154,7 @@ fn mcp_server_lists_supervision_tools() {
         "tools/call",
         serde_json::json!({
             "name": "malkuth_approve",
-            "arguments": {"proposal_id": proposal, "worker_id": "smoke-worker", "action": "restart", "decision": "allow"},
+            "arguments": {"proposal_id": proposal, "worker_id": "smoke-worker", "action": "restart", "decision": "block"},
         }),
     );
     let approve = read_response(&mut stdout, 5, Duration::from_secs(20));
@@ -163,6 +164,28 @@ fn mcp_server_lists_supervision_tools() {
     let approve_body: serde_json::Value = serde_json::from_str(approve_text).expect("approve JSON");
     assert_eq!(approve_body["ok"], serde_json::json!(true));
     assert_eq!(approve_body["registered"], serde_json::json!(true));
+
+    // …while an unsigned `allow` is refused with the attestation code.
+    write_msg(
+        &mut stdin,
+        Some(8),
+        "tools/call",
+        serde_json::json!({
+            "name": "malkuth_approve",
+            "arguments": {"proposal_id": format!("smoke-unsigned-{}", std::process::id()), "worker_id": "smoke-worker", "action": "restart", "decision": "allow"},
+        }),
+    );
+    let unsigned = read_response(&mut stdout, 8, Duration::from_secs(20));
+    let unsigned_text = unsigned["result"]["content"][0]["text"]
+        .as_str()
+        .expect("unsigned approve text content");
+    let unsigned_body: serde_json::Value =
+        serde_json::from_str(unsigned_text).expect("unsigned approve JSON");
+    assert_eq!(unsigned_body["ok"], serde_json::json!(false));
+    assert_eq!(
+        unsigned_body["code"],
+        serde_json::json!("approval_unattested")
+    );
 
     // Wire-level negative control: an approval with no decision must be
     // refused, not defaulted to allow.

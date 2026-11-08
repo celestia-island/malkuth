@@ -37,6 +37,7 @@ use rmcp::{
 use schemars::JsonSchema;
 
 use crate::drain_auth::{ApprovalStatus, DrainAuthError, GateAction, GateDecision};
+use crate::gate_grant::GrantRecord;
 use crate::worker::{FleetState, WorkerLogRing};
 use crate::{
     DrainController, RestartPolicy, ShutdownKind, Supervisor, WorkerInfo, WorkerPhase, WorkerSpec,
@@ -434,6 +435,12 @@ struct Server {
     /// Ids of runs that have left the registry (finished-and-evicted), kept so
     /// a caller cannot reuse a name that already addressed a different run.
     used_run_ids: Mutex<Vec<String>>,
+    /// The ed25519 public key (lowercase 64-hex) grant signatures are checked
+    /// against — resolved once at construction from
+    /// `MALKUTH_GATE_VERIFY_KEY` (falling back to the built-in production
+    /// key), so a malformed override fails the server, never silently
+    /// weakens verification.
+    gate_verify_key: String,
 }
 
 impl Server {
@@ -556,10 +563,18 @@ impl Server {
             };
             // Validate AND spend in one step: a refusal never consumes, and a
             // second, real drain with the same approval answers `approval_consumed`.
+            // The live identity of the judged worker (from THIS run's fleet —
+            // the drain acts on this run) rides along: an attested approval
+            // only spends on the exact (pid, starttime) its grant names.
+            let live_identity = run
+                .fleet
+                .get(&worker_id)
+                .and_then(|s| s.pid.map(u64::from).zip(s.starttime));
             if let Err(error) = crate::drain_auth::validate_drain_request(
                 &worker_id,
                 &proposal_id,
                 None,
+                live_identity,
                 crate::drain_auth::global(),
             ) {
                 return Self::error_payload(error.code(), error.to_string());
@@ -598,7 +613,15 @@ impl Server {
     }
 
     /// Register one approval; nothing is executed here.
-    fn approve_payload(args: &ApproveArgs) -> Value {
+    ///
+    /// P0b: a spendable decision (`allow`/`review`) must carry a valid grant —
+    /// an ed25519 signature from the gate issuer over the canonical grant
+    /// message binding proposal + worker + action + the live worker identity
+    /// `(pid, starttime)`. The live identity is resolved from the supervised
+    /// runs at approve time: exactly one live worker with that id must exist,
+    /// which also pins the approve-after-supervise ordering. `block` records a
+    /// refusal and needs no grant.
+    fn approve_payload(&self, args: &ApproveArgs) -> Value {
         let proposal_id = args.proposal_id.trim();
         let worker_id = args.worker_id.trim();
         if proposal_id.is_empty() || worker_id.is_empty() {
@@ -627,17 +650,94 @@ impl Server {
                 return Self::error_payload(code, message);
             }
         };
+        let unattested =
+            |message: String| Self::error_payload(DrainAuthError::Unattested.code(), message);
+
+        // `block` refuses everything; it authorizes nothing, so it needs no
+        // attestation. Everything spendable goes through the grant path.
+        let grant = if decision == GateDecision::Block {
+            None
+        } else {
+            let Some(sig) = args.sig.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+                return unattested(
+                    "an allow/review approval must carry the issuer's grant signature (`sig` + `issued_at`)".into(),
+                );
+            };
+            let Some(issued_at) = args.issued_at else {
+                return unattested(
+                    "an allow/review approval must carry the grant's `issued_at` (unix seconds)"
+                        .into(),
+                );
+            };
+            // The canonical grant message embeds the proposal id as bare
+            // 32-hex (scepter's `gate_proposal_id` shape); anything else can
+            // never have been signed.
+            if proposal_id.len() != 32 || proposal_id.bytes().any(|b| !b.is_ascii_hexdigit()) {
+                return unattested(
+                    "proposal_id must be the bare 32-hex gate_proposal_id for a signed grant"
+                        .into(),
+                );
+            }
+            // Resolve the live worker identity across every known run. Every
+            // live incarnation carrying this worker id must agree on exactly
+            // one (pid, starttime): none means the worker is not supervised
+            // (or between children), disagreeing duplicates mean the id is
+            // ambiguous — both refuse.
+            let mut identities: Vec<(u64, u64)> = self
+                .runs
+                .lock()
+                .map(|runs| {
+                    runs.iter()
+                        .filter_map(|r| r.fleet.get(worker_id))
+                        .filter_map(|s| s.pid.map(u64::from).zip(s.starttime))
+                        .collect()
+                })
+                .unwrap_or_default();
+            identities.sort_unstable();
+            identities.dedup();
+            let [identity] = identities[..] else {
+                return unattested(format!(
+                    "no single live supervised worker with id `{worker_id}` to bind the grant to ({})",
+                    if identities.is_empty() {
+                        "none found"
+                    } else {
+                        "conflicting incarnations"
+                    }
+                ));
+            };
+            let message = crate::gate_grant::grant_message(
+                proposal_id,
+                worker_id,
+                action.as_str(),
+                identity.0,
+                identity.1,
+                issued_at,
+            );
+            if let Err(error) =
+                crate::gate_grant::verify_with_key(&message, sig, &self.gate_verify_key)
+            {
+                return unattested(format!(
+                    "the grant signature does not verify against this gate's key ({error})"
+                ));
+            }
+            Some(GrantRecord {
+                pid: identity.0,
+                starttime: identity.1,
+                issued_at,
+                digest: crate::gate_grant::grant_digest(&message),
+                sig: sig.to_string(),
+            })
+        };
         let registry = crate::drain_auth::global();
-        registry.approve(proposal_id, worker_id, action, decision);
+        if let Err(error) = registry.approve(proposal_id, worker_id, action, decision, grant) {
+            return Self::error_payload(error.code(), error.to_string());
+        }
         json!({
             "ok": true,
             "registered": true,
             "proposal_id": proposal_id,
             "worker_id": worker_id,
-            "action": match action {
-                GateAction::Restart => "restart",
-                GateAction::Drain => "drain",
-            },
+            "action": action.as_str(),
             "decision": match decision {
                 GateDecision::Allow => "allow",
                 GateDecision::Review => "review",
@@ -688,8 +788,8 @@ impl Server {
         // below must not burn an approval, and a spent approval must not
         // authorize an action twice. The status carries the action: an
         // approval issued for a drain never vouches for a restart.
-        match crate::drain_auth::global().status(&proposal_id, &args.worker_id, GateAction::Restart)
-        {
+        let registry = crate::drain_auth::global();
+        match registry.status(&proposal_id, &args.worker_id, GateAction::Restart) {
             ApprovalStatus::Approved => {}
             other => {
                 let code = match other {
@@ -701,6 +801,26 @@ impl Server {
                 };
 
                 return Self::error_payload(code, format!("the approval is not live ({code})"));
+            }
+        }
+        // P0b identity pre-check, BEFORE the accept: `accept_restart` commits
+        // restart budget and arms the signal, so an attested approval must
+        // already match the live incarnation here. A mismatch refuses without
+        // touching the worker or the approval (the tiny accept→consume race
+        // below re-checks atomically and, if it loses, leaves the restart
+        // accepted-but-unsignalled — fail-closed, budget-only leak).
+        let live_identity = run
+            .fleet
+            .get(&args.worker_id)
+            .and_then(|s| s.pid.map(u64::from).zip(s.starttime));
+        if let Some(expected) =
+            registry.attested_identity(&proposal_id, &args.worker_id, GateAction::Restart)
+        {
+            if live_identity != Some(expected) {
+                return Self::error_payload(
+                    DrainAuthError::Unattested.code(),
+                    "the live worker identity does not match the grant's attested (pid, starttime)",
+                );
             }
         }
         // Atomic accept: settle → pending check → budget check → record, all
@@ -725,9 +845,12 @@ impl Server {
         }
         // The action is accepted: now spend the approval. Anything that failed
         // above left it whole.
-        if let Err(error) =
-            crate::drain_auth::global().consume(&proposal_id, &args.worker_id, GateAction::Restart)
-        {
+        if let Err(error) = registry.consume(
+            &proposal_id,
+            &args.worker_id,
+            GateAction::Restart,
+            live_identity,
+        ) {
             return Self::error_payload(error.code(), error.to_string());
         }
         signal.notify_one();
@@ -861,6 +984,17 @@ struct ApproveArgs {
     /// refused (`approval_decision_required`), never defaulted.
     #[serde(default)]
     decision: Option<String>,
+    /// The issuer's grant signature (ed25519, 128 hex chars) over the
+    /// canonical grant message. Required for `allow`/`review` — a spendable
+    /// approval without a verifying grant is refused
+    /// (`approval_unattested`). Not needed for `block`.
+    #[serde(default)]
+    sig: Option<String>,
+    /// The grant's issue time (unix seconds), signed into the grant message.
+    /// Required with `sig`; a grant outside the clock window (60 s future
+    /// skew, TTL past) is refused (`approval_epoch_stale`).
+    #[serde(default)]
+    issued_at: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1045,14 +1179,14 @@ impl Server {
     }
 
     #[tool(
-        description = "Register ONE target-bound approval for a future restart/drain. `proposal_id` is the approval token (scepter's `gate_proposal_id`: a bare 32-hex string), `worker_id` the single worker it authorizes, `action` (required) restart or drain — the approval is spent by that action only, and `decision` (required) allow / review / block; omitting either field is refused. An approval is live for 300 s, is bound to exactly that proposal + worker + action, and authorizes AT MOST ONE action: the gate spends it on success, and a replay answers approval_consumed. This tool only records the approval — it performs nothing."
+        description = "Register ONE target-bound approval for a future restart/drain. `proposal_id` is the approval token (scepter's `gate_proposal_id`: a bare 32-hex string), `worker_id` the single worker it authorizes, `action` (required) restart or drain — the approval is spent by that action only, and `decision` (required) allow / review / block; omitting either field is refused. `allow`/`review` must additionally carry the gate issuer's grant: `sig` (ed25519 over the canonical grant message binding proposal + worker + action + the worker's live pid/starttime) and `issued_at`; a missing/non-verifying signature answers approval_unattested, a grant outside the clock window answers approval_epoch_stale, and exactly one live supervised worker with that id must exist. `block` records a refusal and needs no grant. An approval is live for 300 s, is bound to exactly that proposal + worker + action (+ pid/starttime when granted), and authorizes AT MOST ONE action: the gate spends it on success, and a replay answers approval_consumed. This tool only records the approval — it performs nothing."
     )]
     async fn malkuth_approve(
         &self,
         Parameters(args): Parameters<ApproveArgs>,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        Ok(Self::json_result(&Self::approve_payload(&args)))
+        Ok(Self::json_result(&self.approve_payload(&args)))
     }
 
     #[tool(
@@ -1174,6 +1308,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
         http: builder.build().unwrap_or_default(),
         runs: Mutex::new(Vec::new()),
         used_run_ids: Mutex::new(Vec::new()),
+        gate_verify_key: crate::gate_grant::resolve_verify_key()?,
     };
     let transport = rmcp::transport::stdio();
     let server_handle = server.serve(transport).await?;
@@ -1190,6 +1325,7 @@ mod tests {
             http: crate::http_client_builder().build().unwrap_or_default(),
             runs: Mutex::new(Vec::new()),
             used_run_ids: Mutex::new(Vec::new()),
+            gate_verify_key: crate::gate_grant::tests::TEST_VERIFY_KEY_HEX.to_string(),
         }
     }
 
@@ -1197,10 +1333,15 @@ mod tests {
         let fleet = FleetState::new();
         let mut restart_signals = HashMap::new();
         let mut log_rings = HashMap::new();
+        // The fixture pid is this test process itself: `/proc/<pid>/stat` then
+        // always resolves, so the worker's `starttime` is a REAL value the
+        // grant tests can sign over (host-dependent but deterministic within
+        // a test run — no fixed constant could be).
+        let fixture_pid = std::process::id();
         for (id, kind) in workers {
             let spec = WorkerSpec::new(*id, *kind, "/bin/true");
             fleet.register(&spec);
-            fleet.running(id, Some(4242));
+            fleet.running(id, Some(fixture_pid));
             restart_signals.insert(id.to_string(), Arc::new(tokio::sync::Notify::new()));
             log_rings.insert(id.to_string(), WorkerLogRing::new());
         }
@@ -1231,7 +1372,9 @@ mod tests {
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let seq = SEQ.fetch_add(1, Ordering::Relaxed) + 1;
         let proposal = format!("gate-test-{}-{seq}", std::process::id());
-        crate::drain_auth::global().approve(&proposal, worker_id, action, GateDecision::Allow);
+        crate::drain_auth::global()
+            .approve(&proposal, worker_id, action, GateDecision::Allow, None)
+            .unwrap();
         proposal
     }
 
@@ -1313,7 +1456,7 @@ mod tests {
             assert_worker_keys(worker);
         }
         assert_eq!(workers[0]["phase"], json!("running"));
-        assert_eq!(workers[0]["pid"], json!(4242));
+        assert_eq!(workers[0]["pid"], json!(std::process::id()));
     }
 
     #[tokio::test]
@@ -1612,72 +1755,360 @@ mod tests {
 
     #[test]
     fn approving_takes_both_ids_and_a_known_decision() {
-        let ok = Server::approve_payload(&ApproveArgs {
-            proposal_id: unique_token(),
-            worker_id: "api".into(),
-            action: Some("restart".into()),
-            decision: Some("allow".into()),
-        });
-        assert_eq!(ok["ok"], json!(true));
-        assert_eq!(ok["registered"], json!(true));
-        assert_eq!(ok["action"], json!("restart"));
-        assert_eq!(ok["decision"], json!("allow"));
-        assert_eq!(ok["expires_in_secs"], json!(300));
+        let server = test_server();
 
-        // An omitted decision must never read as consent.
-        let no_decision = Server::approve_payload(&ApproveArgs {
-            proposal_id: unique_token(),
-            worker_id: "api".into(),
-            action: Some("drain".into()),
-            decision: None,
-        });
-        assert_eq!(no_decision["code"], json!("approval_decision_required"));
-
-        // An omitted action is refused too: the approval names its action.
-        let no_action = Server::approve_payload(&ApproveArgs {
-            proposal_id: unique_token(),
-            worker_id: "api".into(),
-            action: None,
-            decision: Some("allow".into()),
-        });
-        assert_eq!(no_action["code"], json!("approval_action_required"));
-
-        let empty = Server::approve_payload(&ApproveArgs {
-            proposal_id: "  ".into(),
-            worker_id: "api".into(),
-            action: Some("restart".into()),
-            decision: Some("allow".into()),
-        });
-        assert_eq!(empty["code"], json!("invalid_request"));
-
-        let bad = Server::approve_payload(&ApproveArgs {
-            proposal_id: unique_token(),
-            worker_id: "api".into(),
-            action: Some("restart".into()),
-            decision: Some("maybe".into()),
-        });
-        assert_eq!(bad["code"], json!("unsupported_decision"));
-
-        let bad_action = Server::approve_payload(&ApproveArgs {
-            proposal_id: unique_token(),
-            worker_id: "api".into(),
-            action: Some("hibernate".into()),
-            decision: Some("allow".into()),
-        });
-        assert_eq!(bad_action["code"], json!("unsupported_action"));
-
+        // A block registers without any grant: it authorizes nothing.
         let blocked_token = unique_token();
-        let blocked = Server::approve_payload(&ApproveArgs {
+        let blocked = server.approve_payload(&ApproveArgs {
             proposal_id: blocked_token.clone(),
             worker_id: "api".into(),
             action: Some("drain".into()),
             decision: Some("block".into()),
+            sig: None,
+            issued_at: None,
         });
+        assert_eq!(blocked["ok"], json!(true));
+        assert_eq!(blocked["registered"], json!(true));
+        assert_eq!(blocked["action"], json!("drain"));
         assert_eq!(blocked["decision"], json!("block"));
+        assert_eq!(blocked["expires_in_secs"], json!(300));
         assert_eq!(
             crate::drain_auth::global().status(&blocked_token, "api", GateAction::Drain),
             ApprovalStatus::Blocked,
             "a block is a real, stored decision — not a missing entry"
+        );
+
+        // An omitted decision must never read as consent.
+        let no_decision = server.approve_payload(&ApproveArgs {
+            proposal_id: unique_token(),
+            worker_id: "api".into(),
+            action: Some("drain".into()),
+            decision: None,
+            sig: None,
+            issued_at: None,
+        });
+        assert_eq!(no_decision["code"], json!("approval_decision_required"));
+
+        // An omitted action is refused too: the approval names its action.
+        let no_action = server.approve_payload(&ApproveArgs {
+            proposal_id: unique_token(),
+            worker_id: "api".into(),
+            action: None,
+            decision: Some("allow".into()),
+            sig: None,
+            issued_at: None,
+        });
+        assert_eq!(no_action["code"], json!("approval_action_required"));
+
+        let empty = server.approve_payload(&ApproveArgs {
+            proposal_id: "  ".into(),
+            worker_id: "api".into(),
+            action: Some("restart".into()),
+            decision: Some("allow".into()),
+            sig: None,
+            issued_at: None,
+        });
+        assert_eq!(empty["code"], json!("invalid_request"));
+
+        let bad = server.approve_payload(&ApproveArgs {
+            proposal_id: unique_token(),
+            worker_id: "api".into(),
+            action: Some("restart".into()),
+            decision: Some("maybe".into()),
+            sig: None,
+            issued_at: None,
+        });
+        assert_eq!(bad["code"], json!("unsupported_decision"));
+
+        let bad_action = server.approve_payload(&ApproveArgs {
+            proposal_id: unique_token(),
+            worker_id: "api".into(),
+            action: Some("hibernate".into()),
+            decision: Some("allow".into()),
+            sig: None,
+            issued_at: None,
+        });
+        assert_eq!(bad_action["code"], json!("unsupported_action"));
+
+        // P0b: a spendable decision without a grant signature is refused —
+        // allow/review may never register unattested again.
+        for decision in ["allow", "review"] {
+            let unattested = server.approve_payload(&ApproveArgs {
+                proposal_id: "0123456789abcdef0123456789abcdef".into(),
+                worker_id: "api".into(),
+                action: Some("restart".into()),
+                decision: Some(decision.into()),
+                sig: None,
+                issued_at: None,
+            });
+            assert_eq!(unattested["ok"], json!(false));
+            assert_eq!(unattested["code"], json!("approval_unattested"));
+        }
+    }
+
+    // ── P0b: the grant boundary ─────────────────────────────
+
+    /// A fresh 32-hex proposal id per test (the grant message only carries
+    /// bare 32-hex ids, and the registry is global across parallel tests).
+    fn hex_proposal() -> String {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+        format!("{seq:032x}")
+    }
+
+    fn unix_now() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    /// The live identity a run's snapshot actually reports for a worker —
+    /// host-dependent (real `/proc` starttime), so grant tests sign over what
+    /// this returns, never a constant.
+    fn live_identity(run: &RunHandle, worker_id: &str) -> (u64, u64) {
+        let snapshot = run.fleet.get(worker_id).expect("worker registered");
+        let pid = u64::from(snapshot.pid.expect("worker carries a pid"));
+        let starttime = snapshot.starttime.expect("worker carries a starttime");
+        (pid, starttime)
+    }
+
+    /// `allow` args carrying a runtime-signed grant over the given identity.
+    fn signed_grant_args(
+        worker_id: &str,
+        action: GateAction,
+        proposal: &str,
+        identity: (u64, u64),
+        issued_at: u64,
+    ) -> ApproveArgs {
+        let message = crate::gate_grant::grant_message(
+            proposal,
+            worker_id,
+            action.as_str(),
+            identity.0,
+            identity.1,
+            issued_at,
+        );
+        ApproveArgs {
+            proposal_id: proposal.into(),
+            worker_id: worker_id.into(),
+            action: Some(action.as_str().into()),
+            decision: Some("allow".into()),
+            sig: Some(crate::gate_grant::tests::sign_test_message(&message)),
+            issued_at: Some(issued_at),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_signed_grant_registers_and_spends_on_restart() {
+        let server = test_server();
+        let run = run_with_workers("p1", &[("api", "backend")]);
+        let identity = live_identity(&run, "api");
+        server.insert_run(run).unwrap();
+
+        let proposal = hex_proposal();
+        let payload = server.approve_payload(&signed_grant_args(
+            "api",
+            GateAction::Restart,
+            &proposal,
+            identity,
+            unix_now(),
+        ));
+        assert_eq!(payload["ok"], json!(true), "{payload}");
+        assert_eq!(payload["decision"], json!("allow"));
+
+        // The granted approval actually authorizes its action.
+        let restart = server
+            .restart_payload(RestartArgs {
+                run_id: "p1".into(),
+                worker_id: "api".into(),
+                proposal_id: Some(proposal.clone()),
+            })
+            .await;
+        assert_eq!(restart["ok"], json!(true), "{restart}");
+
+        // …exactly once.
+        assert_eq!(
+            crate::drain_auth::global().status(&proposal, "api", GateAction::Restart),
+            ApprovalStatus::Consumed
+        );
+    }
+
+    #[tokio::test]
+    async fn a_signed_drain_grant_spends_on_drain() {
+        let server = test_server();
+        let run = run_with_workers("p2", &[("api", "backend")]);
+        let identity = live_identity(&run, "api");
+        server.insert_run(run).unwrap();
+
+        let proposal = hex_proposal();
+        let payload = server.approve_payload(&signed_grant_args(
+            "api",
+            GateAction::Drain,
+            &proposal,
+            identity,
+            unix_now(),
+        ));
+        assert_eq!(payload["ok"], json!(true), "{payload}");
+
+        let mut args = drain_args("p2", "api", None);
+        args.proposal_id = Some(proposal.clone());
+        let drain = server.drain_payload(args).await;
+        assert_eq!(drain["ok"], json!(true), "{drain}");
+        assert_eq!(
+            crate::drain_auth::global().status(&proposal, "api", GateAction::Drain),
+            ApprovalStatus::Consumed
+        );
+    }
+
+    /// A grant minted for ANOTHER identity (another process) verifies against
+    /// nothing this gate serves — negative ⑤ of the plan.
+    #[tokio::test]
+    async fn a_grant_signed_over_another_identity_is_unattested() {
+        let server = test_server();
+        let run = run_with_workers("p3", &[("api", "backend")]);
+        let _real_identity = live_identity(&run, "api");
+        server.insert_run(run).unwrap();
+
+        // Sign over an identity that is NOT the live one (respawned twin).
+        let forged = signed_grant_args(
+            "api",
+            GateAction::Restart,
+            &hex_proposal(),
+            (4_242_424, 1_234_567),
+            unix_now(),
+        );
+        let payload = server.approve_payload(&forged);
+        assert_eq!(payload["ok"], json!(false));
+        assert_eq!(payload["code"], json!("approval_unattested"), "{payload}");
+    }
+
+    /// No run, no identity to bind — the issuer may not pre-sign for a worker
+    /// that is not supervised (approve-after-supervise ordering).
+    #[test]
+    fn an_unknown_worker_cannot_be_granted() {
+        let server = test_server();
+        let args = signed_grant_args(
+            "ghost",
+            GateAction::Restart,
+            &hex_proposal(),
+            (1, 1),
+            unix_now(),
+        );
+        let payload = server.approve_payload(&args);
+        assert_eq!(payload["ok"], json!(false));
+        assert_eq!(payload["code"], json!("approval_unattested"), "{payload}");
+    }
+
+    /// A worker between children (no live pid/starttime) cannot be granted —
+    /// its next incarnation would be a different process.
+    #[tokio::test]
+    async fn a_worker_between_children_cannot_be_granted() {
+        let server = test_server();
+        let run = run_with_workers("p4", &[("api", "backend")]);
+        run.fleet.restarting("api", 1);
+        server.insert_run(run).unwrap();
+
+        let args = signed_grant_args(
+            "api",
+            GateAction::Restart,
+            &hex_proposal(),
+            (1, 1),
+            unix_now(),
+        );
+        let payload = server.approve_payload(&args);
+        assert_eq!(payload["ok"], json!(false));
+        assert_eq!(payload["code"], json!("approval_unattested"), "{payload}");
+    }
+
+    /// A perfectly signed grant outside the clock window is refused — in both
+    /// directions.
+    #[tokio::test]
+    async fn stale_grants_are_refused_by_epoch() {
+        let server = test_server();
+        let run = run_with_workers("p5", &[("api", "backend")]);
+        let identity = live_identity(&run, "api");
+        server.insert_run(run).unwrap();
+
+        for issued_at in [unix_now() + 400, unix_now().saturating_sub(1_000)] {
+            let payload = server.approve_payload(&signed_grant_args(
+                "api",
+                GateAction::Restart,
+                &hex_proposal(),
+                identity,
+                issued_at,
+            ));
+            assert_eq!(payload["ok"], json!(false), "{payload}");
+            assert_eq!(payload["code"], json!("approval_epoch_stale"));
+        }
+    }
+
+    /// The restart pre-check fires BEFORE the accept: an identity change after
+    /// approve refuses without signalling a restart or spending anything.
+    #[tokio::test]
+    async fn a_restart_refuses_when_identity_changed_before_spend() {
+        let server = test_server();
+        let run = run_with_workers("p6", &[("api", "backend")]);
+        let identity = live_identity(&run, "api");
+        server.insert_run(run.clone()).unwrap();
+
+        let proposal = hex_proposal();
+        let payload = server.approve_payload(&signed_grant_args(
+            "api",
+            GateAction::Restart,
+            &proposal,
+            identity,
+            unix_now(),
+        ));
+        assert_eq!(payload["ok"], json!(true), "{payload}");
+
+        // The worker ends (its pid leaves the snapshot) before the restart.
+        run.fleet.finish("api", WorkerPhase::Stopped, 0, None);
+        let refused = server
+            .restart_payload(RestartArgs {
+                run_id: "p6".into(),
+                worker_id: "api".into(),
+                proposal_id: Some(proposal.clone()),
+            })
+            .await;
+        assert_eq!(refused["ok"], json!(false));
+        assert_eq!(refused["code"], json!("approval_unattested"), "{refused}");
+        assert_eq!(
+            crate::drain_auth::global().status(&proposal, "api", GateAction::Restart),
+            ApprovalStatus::Approved,
+            "the refusal must not spend the approval"
+        );
+    }
+
+    /// Same law on the drain side: consume-time mismatch refuses and spends
+    /// nothing.
+    #[tokio::test]
+    async fn a_drain_refuses_when_identity_changed_before_spend() {
+        let server = test_server();
+        let run = run_with_workers("p7", &[("api", "backend")]);
+        let identity = live_identity(&run, "api");
+        server.insert_run(run.clone()).unwrap();
+
+        let proposal = hex_proposal();
+        let payload = server.approve_payload(&signed_grant_args(
+            "api",
+            GateAction::Drain,
+            &proposal,
+            identity,
+            unix_now(),
+        ));
+        assert_eq!(payload["ok"], json!(true), "{payload}");
+
+        run.fleet.finish("api", WorkerPhase::Stopped, 0, None);
+        let mut args = drain_args("p7", "api", None);
+        args.proposal_id = Some(proposal.clone());
+        let refused = server.drain_payload(args).await;
+        assert_eq!(refused["ok"], json!(false));
+        assert_eq!(refused["code"], json!("approval_unattested"), "{refused}");
+        assert_eq!(
+            crate::drain_auth::global().status(&proposal, "api", GateAction::Drain),
+            ApprovalStatus::Approved,
+            "the refusal must not spend the approval"
         );
     }
 
