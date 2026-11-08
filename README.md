@@ -226,7 +226,7 @@ The server advertises seven tools:
 | `malkuth_probe` | HTTP healthz / readyz check against a service URL. |
 
 `malkuth_restart` and `malkuth_drain` sit behind an approval gate: without a
-live approval for the exact `(proposal_id, worker_id)` pair they answer
+live approval for the exact `(proposal_id, worker_id, action)` triple they answer
 `approval_required` and touch nothing, and a spent approval answers
 `approval_consumed` — one approval authorizes one action. `approval_expired`
 means the 300 s window closed, `approval_blocked` means an operator revoked the
@@ -247,8 +247,9 @@ and, on failure, a stable `code`: `unknown_run`, `unknown_worker`,
 `restart_budget_exhausted`, `unsupported_kind`, `worker_required`,
 `approval_required`, `approval_expired`, `approval_consumed`,
 `approval_blocked`, `approval_action_mismatch`, `invalid_request`,
-`invalid_budget`, `unsupported_decision` (and the `malkuth_approve` refusals
-`approval_decision_required` / `approval_action_required`).
+`invalid_budget`, `unsupported_action`, `unsupported_decision` (and the
+`malkuth_approve` refusals `approval_decision_required` /
+`approval_action_required`).
 
 Wire it into an MCP client:
 

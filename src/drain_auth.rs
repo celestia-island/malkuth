@@ -168,9 +168,11 @@ impl ApprovalRegistry {
         if entries.len() >= self.max_entries {
             entries.remove(0);
         }
-        // A fresh approval replaces any earlier entry for the same pair: a
-        // re-approved proposal starts unspent, and the old spent entry must not
-        // shadow it on the next lookup.
+        // A fresh approval replaces any earlier entry for the same pair —
+        // including the other action's: the registry keeps one entry per
+        // pair. A re-approved proposal starts unspent, and a superseded
+        // grant simply disappears rather than lingers (every direction of
+        // the replacement stays fail-closed).
         entries.retain(|e| e.proposal_id != proposal_id || e.worker_id != worker_id);
         entries.push(ApprovalEntry {
             proposal_id: proposal_id.into(),
