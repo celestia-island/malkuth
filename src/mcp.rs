@@ -190,7 +190,10 @@ impl RunHandle {
     /// stamp it committed must not outlive the failure — otherwise a healthy
     /// worker stays wedged on `already_restarting` until it exits on its
     /// own. Removes exactly the recorded `(worker_id, count_at_accept)`
-    /// entry and one stamp for that worker.
+    /// entry and, only if that entry was still live, that worker's newest
+    /// stamp — a settled acceptance (already superseded by a later one)
+    /// owns nothing to undo, and taking its stamp would burn the successor's
+    /// budget.
     fn rollback_restart_accept(&self, worker_id: &str, count_at_accept: u32) {
         let Ok(mut book) = self.restart_book.lock() else {
             // A poisoned book cannot be unwedged from here either; nothing
@@ -203,9 +206,10 @@ impl RunHandle {
             .rposition(|(id, count)| id == worker_id && *count == count_at_accept)
         {
             book.pending.remove(pos);
-        }
-        if let Some(pos) = book.stamps.iter().rposition(|(id, _)| id == worker_id) {
-            book.stamps.remove(pos);
+
+            if let Some(pos) = book.stamps.iter().rposition(|(id, _)| id == worker_id) {
+                book.stamps.remove(pos);
+            }
         }
     }
 
