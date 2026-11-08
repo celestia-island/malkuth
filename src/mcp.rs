@@ -671,8 +671,13 @@ impl Server {
             };
             // The canonical grant message embeds the proposal id as bare
             // 32-hex (scepter's `gate_proposal_id` shape); anything else can
-            // never have been signed.
-            if proposal_id.len() != 32 || proposal_id.bytes().any(|b| !b.is_ascii_hexdigit()) {
+            // never have been signed. Lowercase-strict like every other hex
+            // in the grant chain — the issuer only ever mints lowercase.
+            if proposal_id.len() != 32
+                || proposal_id
+                    .bytes()
+                    .any(|b| !matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+            {
                 return unattested(
                     "proposal_id must be the bare 32-hex gate_proposal_id for a signed grant"
                         .into(),
@@ -1330,18 +1335,25 @@ mod tests {
     }
 
     fn run_with_workers(run_id: &str, workers: &[(&str, &str)]) -> Arc<RunHandle> {
+        run_with_workers_at(run_id, workers, std::process::id())
+    }
+
+    /// Like [`run_with_workers`], but the workers run under a chosen pid —
+    /// grant tests stage a second run of the same worker id under a
+    /// DIFFERENT live process (pid 1 is always present in the container and
+    /// is never this test process).
+    fn run_with_workers_at(run_id: &str, workers: &[(&str, &str)], pid: u32) -> Arc<RunHandle> {
         let fleet = FleetState::new();
         let mut restart_signals = HashMap::new();
         let mut log_rings = HashMap::new();
-        // The fixture pid is this test process itself: `/proc/<pid>/stat` then
-        // always resolves, so the worker's `starttime` is a REAL value the
-        // grant tests can sign over (host-dependent but deterministic within
-        // a test run — no fixed constant could be).
-        let fixture_pid = std::process::id();
+        // The default fixture pid is this test process itself: `/proc/<pid>/stat`
+        // then always resolves, so the worker's `starttime` is a REAL value
+        // the grant tests can sign over (host-dependent but deterministic
+        // within a test run — no fixed constant could be).
         for (id, kind) in workers {
             let spec = WorkerSpec::new(*id, *kind, "/bin/true");
             fleet.register(&spec);
-            fleet.running(id, Some(fixture_pid));
+            fleet.running(id, Some(pid));
             restart_signals.insert(id.to_string(), Arc::new(tokio::sync::Notify::new()));
             log_rings.insert(id.to_string(), WorkerLogRing::new());
         }
@@ -2109,6 +2121,178 @@ mod tests {
             crate::drain_auth::global().status(&proposal, "api", GateAction::Drain),
             ApprovalStatus::Approved,
             "the refusal must not spend the approval"
+        );
+    }
+
+    /// Two runs of the SAME worker id under two different live processes: the
+    /// identity scan must see two distinct (pid, starttime) pairs and refuse
+    /// — a grant for either one would be a coin flip over which incarnation
+    /// gets spent on.
+    #[tokio::test]
+    async fn conflicting_live_incarnations_cannot_be_granted() {
+        let server = test_server();
+        let mine = run_with_workers("p8", &[("api", "backend")]);
+        let twin = run_with_workers_at("p9", &[("api", "backend")], 1);
+        let identity = live_identity(&mine, "api");
+        let twin_identity = live_identity(&twin, "api");
+        assert_ne!(
+            identity, twin_identity,
+            "fixture precondition: pid 1 must resolve to a distinct live identity"
+        );
+        server.insert_run(mine).unwrap();
+        server.insert_run(twin).unwrap();
+
+        // Perfectly signed for OUR incarnation — the conflict alone refuses.
+        let payload = server.approve_payload(&signed_grant_args(
+            "api",
+            GateAction::Restart,
+            &hex_proposal(),
+            identity,
+            unix_now(),
+        ));
+        assert_eq!(payload["ok"], json!(false));
+        assert_eq!(payload["code"], json!("approval_unattested"), "{payload}");
+        assert!(
+            payload["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("conflicting"),
+            "the refusal must name the conflict, not claim the worker is unsupervised: {payload}"
+        );
+    }
+
+    /// The restart pre-check must fire while the worker is STILL Running: a
+    /// respawn under a new pid would leave `accept_restart` succeeding (and
+    /// burning budget on a grant minted for the previous incarnation) if the
+    /// check only caught Stopped workers.
+    #[tokio::test]
+    async fn a_restart_refuses_when_identity_changed_while_still_running() {
+        let server = test_server();
+        let run = run_with_workers("pa", &[("api", "backend")]);
+        let identity = live_identity(&run, "api");
+        server.insert_run(run.clone()).unwrap();
+
+        let proposal = hex_proposal();
+        let payload = server.approve_payload(&signed_grant_args(
+            "api",
+            GateAction::Restart,
+            &proposal,
+            identity,
+            unix_now(),
+        ));
+        assert_eq!(payload["ok"], json!(true), "{payload}");
+
+        // The worker respawns under pid 1 (still Running, new identity).
+        run.fleet.running("api", Some(1));
+        let refused = server
+            .restart_payload(RestartArgs {
+                run_id: "pa".into(),
+                worker_id: "api".into(),
+                proposal_id: Some(proposal.clone()),
+            })
+            .await;
+        assert_eq!(refused["ok"], json!(false));
+        assert_eq!(refused["code"], json!("approval_unattested"), "{refused}");
+        assert_eq!(
+            crate::drain_auth::global().status(&proposal, "api", GateAction::Restart),
+            ApprovalStatus::Approved,
+            "the refusal must not spend the approval"
+        );
+
+        // And nothing was accepted: a fresh grant for the NEW incarnation
+        // restarts immediately — a phantom pending restart would answer
+        // `already_restarting` here instead.
+        let new_identity = live_identity(&run, "api");
+        assert_ne!(
+            identity, new_identity,
+            "fixture precondition: respawn moved the identity"
+        );
+        let second_proposal = hex_proposal();
+        let second = server.approve_payload(&signed_grant_args(
+            "api",
+            GateAction::Restart,
+            &second_proposal,
+            new_identity,
+            unix_now(),
+        ));
+        assert_eq!(second["ok"], json!(true), "{second}");
+        let restarted = server
+            .restart_payload(RestartArgs {
+                run_id: "pa".into(),
+                worker_id: "api".into(),
+                proposal_id: Some(second_proposal),
+            })
+            .await;
+        assert_eq!(restarted["ok"], json!(true), "{restarted}");
+        assert_eq!(restarted["accepted"], json!(true));
+    }
+
+    /// Proposal shapes that can never have been signed: wrong length, non-hex
+    /// characters, and UPPERCASE hex (the whole grant chain is
+    /// lowercase-strict — the issuer only ever mints lowercase).
+    #[tokio::test]
+    async fn malformed_proposal_shapes_cannot_be_granted() {
+        let server = test_server();
+        let run = run_with_workers("pb", &[("api", "backend")]);
+        let identity = live_identity(&run, "api");
+        server.insert_run(run).unwrap();
+
+        let bad_proposals = [
+            "0".repeat(31),                 // one short
+            format!("{}g", "0".repeat(31)), // non-hex char
+            "0F".repeat(16),                // uppercase hex
+            "0".repeat(33),                 // one long
+        ];
+        for bad in bad_proposals {
+            // Signed over the malformed id anyway — the shape check must
+            // refuse before any signature work.
+            let payload = server.approve_payload(&signed_grant_args(
+                "api",
+                GateAction::Restart,
+                &bad,
+                identity,
+                unix_now(),
+            ));
+            assert_eq!(payload["ok"], json!(false), "proposal {bad:?}: {payload}");
+            assert_eq!(payload["code"], json!("approval_unattested"));
+            assert!(
+                payload["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("32-hex"),
+                "the refusal must point at the proposal shape: {payload}"
+            );
+        }
+    }
+
+    /// `review` spends exactly like `allow`: the grant requirement covers
+    /// both spendable decisions, so a valid grant must register a review.
+    #[tokio::test]
+    async fn a_review_decision_spends_like_allow_with_a_grant() {
+        let server = test_server();
+        let run = run_with_workers("pc", &[("api", "backend")]);
+        let identity = live_identity(&run, "api");
+        server.insert_run(run).unwrap();
+
+        let proposal = hex_proposal();
+        let mut args =
+            signed_grant_args("api", GateAction::Restart, &proposal, identity, unix_now());
+        args.decision = Some("review".into());
+        let payload = server.approve_payload(&args);
+        assert_eq!(payload["ok"], json!(true), "{payload}");
+        assert_eq!(payload["decision"], json!("review"));
+
+        let restart = server
+            .restart_payload(RestartArgs {
+                run_id: "pc".into(),
+                worker_id: "api".into(),
+                proposal_id: Some(proposal.clone()),
+            })
+            .await;
+        assert_eq!(restart["ok"], json!(true), "{restart}");
+        assert_eq!(
+            crate::drain_auth::global().status(&proposal, "api", GateAction::Restart),
+            ApprovalStatus::Consumed
         );
     }
 

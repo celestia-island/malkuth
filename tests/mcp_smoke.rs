@@ -187,6 +187,48 @@ fn mcp_server_lists_supervision_tools() {
         serde_json::json!("approval_unattested")
     );
 
+    // Wire-shape pin for the grant fields: send a well-formed but
+    // unbindable `allow` (32-hex proposal, a `sig`, an `issued_at`, worker
+    // with no run). If `sig`/`issued_at` ever serde-rename, this call would
+    // bounce at the "must carry" gates instead of reaching the identity
+    // scan — so asserting the identity-scan message pins BOTH field names
+    // on the wire the real caller (judge-fleet act) uses.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    write_msg(
+        &mut stdin,
+        Some(9),
+        "tools/call",
+        serde_json::json!({
+            "name": "malkuth_approve",
+            "arguments": {
+                "proposal_id": format!("{:032x}", std::process::id()),
+                "worker_id": "smoke-worker",
+                "action": "restart",
+                "decision": "allow",
+                "sig": "ab".repeat(64),
+                "issued_at": now,
+            },
+        }),
+    );
+    let wired = read_response(&mut stdout, 9, Duration::from_secs(20));
+    let wired_text = wired["result"]["content"][0]["text"]
+        .as_str()
+        .expect("wired approve text content");
+    let wired_body: serde_json::Value =
+        serde_json::from_str(wired_text).expect("wired approve JSON");
+    assert_eq!(wired_body["ok"], serde_json::json!(false));
+    assert_eq!(wired_body["code"], serde_json::json!("approval_unattested"));
+    assert!(
+        wired_body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no single live supervised worker"),
+        "`sig`/`issued_at` must deserialize under these exact wire names: {wired_body}"
+    );
+
     // Wire-level negative control: an approval with no decision must be
     // refused, not defaulted to allow.
     write_msg(

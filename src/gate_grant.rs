@@ -139,12 +139,13 @@ pub fn verify_with_key(
 }
 
 /// Resolve the verify key: `MALKUTH_GATE_VERIFY_KEY` when set (and valid
-/// hex), the embedded production key otherwise.
+/// hex), the embedded production key when the variable is absent or blank.
 ///
 /// # Errors
 ///
-/// [`GrantError::MalformedVerifyKey`] when the override exists but does not
-/// decode — a configured key must never silently fall back.
+/// [`GrantError::MalformedVerifyKey`] when the override is set but unusable
+/// (bad hex, wrong length, or non-UTF-8 bytes) — a configured key must never
+/// silently fall back to the embedded one.
 pub fn resolve_verify_key() -> Result<String, GrantError> {
     match std::env::var("MALKUTH_GATE_VERIFY_KEY") {
         Ok(raw) => {
@@ -157,19 +158,12 @@ pub fn resolve_verify_key() -> Result<String, GrantError> {
             }
             Ok(trimmed)
         }
-        Err(_) => Ok(DEFAULT_GATE_VERIFY_KEY_HEX.to_string()),
+        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_GATE_VERIFY_KEY_HEX.to_string()),
+        // The variable IS configured but carries non-UTF-8 bytes: refusing is
+        // the fail-closed direction — accepting it would mean verifying
+        // against a key nobody can name.
+        Err(std::env::VarError::NotUnicode(_)) => Err(GrantError::MalformedVerifyKey),
     }
-}
-
-/// Verify a grant against the resolved verify key (env override or embedded).
-///
-/// # Errors
-///
-/// See [`verify_with_key`]; additionally the key override itself may be
-/// malformed.
-pub fn verify_grant(message: &str, sig_hex: &str) -> Result<(), GrantError> {
-    let key = resolve_verify_key()?;
-    verify_with_key(message, sig_hex, &key)
 }
 
 // ── hex helpers (no hex crate: keep the dependency surface minimal) ──
@@ -185,10 +179,10 @@ pub fn encode_hex(bytes: &[u8]) -> String {
     out
 }
 
-/// Decode lowercase hex; rejects any non-hex char and odd lengths.
+/// Decode canonical lowercase hex; rejects any non-hex char, odd lengths,
+/// and uppercase (grant messages and signatures are minted by our own
+/// encoders, which only emit lowercase).
 #[must_use]
-/// Decode canonical lowercase hex; uppercase is not accepted (grant messages
-/// and signatures are minted by our own encoders, which only emit lowercase).
 pub fn decode_hex(s: &str) -> Option<Vec<u8>> {
     if s.len() % 2 != 0 {
         return None;
@@ -375,5 +369,99 @@ pub(crate) mod tests {
             Some(32),
             "key: {key}"
         );
+    }
+
+    // ── env override semantics (serialized: env is process-global) ──
+
+    /// `resolve_verify_key` mutates one process-global variable, so every
+    /// test touching it must hold this lock and restore the variable before
+    /// releasing it.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_gate_key_env(value: Option<&str>, body: impl FnOnce()) {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: single-threaded under ENV_LOCK; the variable is always
+        // removed before the lock is released, so no other test can observe
+        // the override.
+        unsafe {
+            match value {
+                Some(v) => std::env::set_var("MALKUTH_GATE_VERIFY_KEY", v),
+                None => std::env::remove_var("MALKUTH_GATE_VERIFY_KEY"),
+            }
+        }
+        body();
+        // SAFETY: same exclusive section — restore the pristine state.
+        unsafe {
+            std::env::remove_var("MALKUTH_GATE_VERIFY_KEY");
+        }
+    }
+
+    #[test]
+    fn resolve_verify_key_prefers_the_embedded_key_when_unset_or_blank() {
+        with_gate_key_env(None, || {
+            assert_eq!(
+                resolve_verify_key().as_deref(),
+                Ok(DEFAULT_GATE_VERIFY_KEY_HEX)
+            );
+        });
+        for blank in ["", "   "] {
+            with_gate_key_env(Some(blank), || {
+                assert_eq!(
+                    resolve_verify_key().as_deref(),
+                    Ok(DEFAULT_GATE_VERIFY_KEY_HEX),
+                    "blank override {blank:?} must mean the embedded key"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn resolve_verify_key_accepts_a_valid_override_case_insensitively() {
+        // The TEST key is 64 hex chars; feed its uppercase form.
+        let upper = TEST_VERIFY_KEY_HEX.to_ascii_uppercase();
+        with_gate_key_env(Some(&format!("  {upper}  ")), || {
+            assert_eq!(
+                resolve_verify_key().as_deref(),
+                Ok(TEST_VERIFY_KEY_HEX),
+                "trim + lowercase normalization"
+            );
+        });
+    }
+
+    #[test]
+    fn resolve_verify_key_refuses_a_malformed_override() {
+        for bad in ["zz", "0".repeat(63).as_str(), "0".repeat(65).as_str()] {
+            with_gate_key_env(Some(bad), || {
+                assert_eq!(
+                    resolve_verify_key(),
+                    Err(GrantError::MalformedVerifyKey),
+                    "override {bad:?} must be an error, never a silent fallback"
+                );
+            });
+        }
+    }
+
+    /// A set-but-non-UTF-8 override is still a CONFIGURED key: the only
+    /// fail-closed answer is an error, not the embedded production key.
+    #[test]
+    fn resolve_verify_key_refuses_a_non_utf8_override() {
+        use std::os::unix::ffi::OsStringExt;
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: single-threaded under ENV_LOCK; removed before release.
+        unsafe {
+            std::env::set_var(
+                "MALKUTH_GATE_VERIFY_KEY",
+                std::ffi::OsString::from_vec(vec![0x80, 0xff]),
+            );
+        }
+        assert_eq!(
+            resolve_verify_key(),
+            Err(GrantError::MalformedVerifyKey),
+            "NotUnicode must not fall back to the embedded key"
+        );
+        // SAFETY: same exclusive section — restore the pristine state.
+        unsafe {
+            std::env::remove_var("MALKUTH_GATE_VERIFY_KEY");
+        }
     }
 }

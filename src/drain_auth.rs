@@ -946,34 +946,37 @@ mod tests {
 
     #[test]
     fn a_grant_within_the_clock_window_registers() {
+        // The skew window itself is part of the frozen contract (60 s of
+        // issuer/gate clock drift, 300 s TTL): pin the exact constant so a
+        // change can never ride in silently behind "some window".
+        assert_eq!(GRANT_CLOCK_SKEW_SECS, 60);
+
         let reg = registry();
         let now = unix_now_test();
         // Freshly issued, and issued 100 s ago (within the 300 s TTL, beyond
-        // the 60 s skew): both must register.
-        reg.approve(
-            "prop-now",
-            "chest",
-            GateAction::Drain,
-            GateDecision::Allow,
-            Some(grant_for(1, 2, now)),
-        )
-        .unwrap();
-        reg.approve(
-            "prop-recent",
-            "chest",
-            GateAction::Drain,
-            GateDecision::Allow,
-            Some(grant_for(1, 2, now - 100)),
-        )
-        .unwrap();
-        assert_eq!(
-            reg.status("prop-now", "chest", GateAction::Drain),
-            ApprovalStatus::Approved
-        );
-        assert_eq!(
-            reg.status("prop-recent", "chest", GateAction::Drain),
-            ApprovalStatus::Approved
-        );
+        // the 60 s skew): both must register. Issued AT the future bound
+        // (`now + skew`) and just inside it (`now + 1`) must also register —
+        // refusal is strictly `> now + skew`, and time only moves forward
+        // between this stamp and the check, which can only shrink the gap.
+        for (label, issued_at) in [
+            ("now", now),
+            ("recent", now - 100),
+            ("future-at-bound", now + GRANT_CLOCK_SKEW_SECS),
+            ("future-inside-skew", now + 1),
+        ] {
+            reg.approve(
+                &format!("prop-{label}"),
+                "chest",
+                GateAction::Drain,
+                GateDecision::Allow,
+                Some(grant_for(1, 2, issued_at)),
+            )
+            .unwrap_or_else(|e| panic!("{label} grant must register: {e}"));
+            assert_eq!(
+                reg.status(&format!("prop-{label}"), "chest", GateAction::Drain),
+                ApprovalStatus::Approved
+            );
+        }
     }
 
     #[test]
