@@ -143,8 +143,10 @@ impl RunHandle {
     ///
     /// The fleet is snapshotted BEFORE the book lock is taken, so the two
     /// mutexes are never nested (no lock-order inversion). Returns the stable
-    /// failure code when the request cannot be accepted.
-    fn accept_restart(&self, worker_id: &str) -> Result<(), &'static str> {
+    /// failure code when the request cannot be accepted, or the supervisor
+    /// `restart_count` the acceptance was armed against — the caller needs
+    /// it to give the acceptance back if a later step fails.
+    fn accept_restart(&self, worker_id: &str) -> Result<u32, &'static str> {
         let phases: HashMap<String, (WorkerPhase, u32)> = self
             .fleet
             .snapshot()
@@ -180,7 +182,31 @@ impl RunHandle {
         }
         book.pending.push((worker_id.to_string(), count));
         book.stamps.push((worker_id.to_string(), Instant::now()));
-        Ok(())
+        Ok(count)
+    }
+
+    /// Roll back a restart acceptance whose later step (the approval spend)
+    /// failed: nothing was signalled, so the pending entry and the budget
+    /// stamp it committed must not outlive the failure — otherwise a healthy
+    /// worker stays wedged on `already_restarting` until it exits on its
+    /// own. Removes exactly the recorded `(worker_id, count_at_accept)`
+    /// entry and one stamp for that worker.
+    fn rollback_restart_accept(&self, worker_id: &str, count_at_accept: u32) {
+        let Ok(mut book) = self.restart_book.lock() else {
+            // A poisoned book cannot be unwedged from here either; nothing
+            // further to undo.
+            return;
+        };
+        if let Some(pos) = book
+            .pending
+            .iter()
+            .rposition(|(id, count)| id == worker_id && *count == count_at_accept)
+        {
+            book.pending.remove(pos);
+        }
+        if let Some(pos) = book.stamps.iter().rposition(|(id, _)| id == worker_id) {
+            book.stamps.remove(pos);
+        }
     }
 
     /// The run snapshot served by `status` and `drain`.
@@ -688,16 +714,17 @@ impl Server {
             // one (pid, starttime): none means the worker is not supervised
             // (or between children), disagreeing duplicates mean the id is
             // ambiguous — both refuse.
-            let mut identities: Vec<(u64, u64)> = self
-                .runs
-                .lock()
-                .map(|runs| {
-                    runs.iter()
-                        .filter_map(|r| r.fleet.get(worker_id))
-                        .filter_map(|s| s.pid.map(u64::from).zip(s.starttime))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let Ok(runs_locked) = self.runs.lock() else {
+                return Self::error_payload(
+                    "internal_state_poisoned",
+                    "runs lock poisoned while binding the grant",
+                );
+            };
+            let mut identities: Vec<(u64, u64)> = runs_locked
+                .iter()
+                .filter_map(|r| r.fleet.get(worker_id))
+                .filter_map(|s| s.pid.map(u64::from).zip(s.starttime))
+                .collect();
             identities.sort_unstable();
             identities.dedup();
             let [identity] = identities[..] else {
@@ -812,8 +839,8 @@ impl Server {
         // restart budget and arms the signal, so an attested approval must
         // already match the live incarnation here. A mismatch refuses without
         // touching the worker or the approval (the tiny accept→consume race
-        // below re-checks atomically and, if it loses, leaves the restart
-        // accepted-but-unsignalled — fail-closed, budget-only leak).
+        // below re-checks atomically; if it loses, the acceptance is rolled
+        // back below — no wedge, no budget spent).
         let live_identity = run
             .fleet
             .get(&args.worker_id)
@@ -830,32 +857,40 @@ impl Server {
         }
         // Atomic accept: settle → pending check → budget check → record, all
         // in one critical section, so two concurrent calls cannot both win.
-        if let Err(code) = run.accept_restart(&args.worker_id) {
-            let phase = run
-                .fleet
-                .get(&args.worker_id)
-                .map(|s| s.phase)
-                .unwrap_or(WorkerPhase::Stopped);
-            return Self::error_payload(
-                code,
-                format!(
-                    "worker `{}` cannot restart now (phase {}, code {code})",
-                    args.worker_id,
-                    serde_json::to_value(phase)
-                        .ok()
-                        .and_then(|v| v.as_str().map(str::to_string))
-                        .unwrap_or_else(|| "unknown".to_string())
-                ),
-            );
-        }
+        let count_at_accept = match run.accept_restart(&args.worker_id) {
+            Ok(count_at_accept) => count_at_accept,
+            Err(code) => {
+                let phase = run
+                    .fleet
+                    .get(&args.worker_id)
+                    .map(|s| s.phase)
+                    .unwrap_or(WorkerPhase::Stopped);
+                return Self::error_payload(
+                    code,
+                    format!(
+                        "worker `{}` cannot restart now (phase {}, code {code})",
+                        args.worker_id,
+                        serde_json::to_value(phase)
+                            .ok()
+                            .and_then(|v| v.as_str().map(str::to_string))
+                            .unwrap_or_else(|| "unknown".to_string())
+                    ),
+                );
+            }
+        };
         // The action is accepted: now spend the approval. Anything that failed
-        // above left it whole.
+        // above left it whole. A failure HERE (identity moved between the
+        // fleet read and the atomic re-check, or a concurrent block/drain on
+        // the same pair) must also give the acceptance back: nothing was
+        // signalled yet, so a leftover pending entry would wedge the worker
+        // on `already_restarting` until it exits on its own.
         if let Err(error) = registry.consume(
             &proposal_id,
             &args.worker_id,
             GateAction::Restart,
             live_identity,
         ) {
+            run.rollback_restart_accept(&args.worker_id, count_at_accept);
             return Self::error_payload(error.code(), error.to_string());
         }
         signal.notify_one();
@@ -1184,7 +1219,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Register ONE target-bound approval for a future restart/drain. `proposal_id` is the approval token (scepter's `gate_proposal_id`: a bare 32-hex string), `worker_id` the single worker it authorizes, `action` (required) restart or drain — the approval is spent by that action only, and `decision` (required) allow / review / block; omitting either field is refused. `allow`/`review` must additionally carry the gate issuer's grant: `sig` (ed25519 over the canonical grant message binding proposal + worker + action + the worker's live pid/starttime) and `issued_at`; a missing/non-verifying signature answers approval_unattested, a grant outside the clock window answers approval_epoch_stale, and exactly one live supervised worker with that id must exist. `block` records a refusal and needs no grant. An approval is live for 300 s, is bound to exactly that proposal + worker + action (+ pid/starttime when granted), and authorizes AT MOST ONE action: the gate spends it on success, and a replay answers approval_consumed. This tool only records the approval — it performs nothing."
+        description = "Register ONE target-bound approval for a future restart/drain. `proposal_id` is the approval token (scepter's `gate_proposal_id`: a bare 32-hex string), `worker_id` the single worker it authorizes, `action` (required) restart or drain — the approval is spent by that action only, and `decision` (required) allow / review / block; omitting either field is refused. `allow`/`review` must additionally carry the gate issuer's grant: `sig` (ed25519 over the canonical grant message binding proposal + worker + action + the worker's live pid/starttime) and `issued_at`; a missing/non-verifying signature answers approval_unattested, a grant outside the clock window answers approval_epoch_stale, and exactly one live supervised worker with that id must exist. `block` records a refusal and needs no grant. An approval is live for 300 s, is bound to exactly that proposal + worker + action (+ pid/starttime when granted), and authorizes AT MOST ONE action: the gate spends it on success, and a replay answers approval_consumed. A grant can be registered until its clock window closes, and the registered approval then lives its own 300 s TTL, so worst case a grant stays spendable until ~issuance + 600 s. This tool only records the approval — it performs nothing."
     )]
     async fn malkuth_approve(
         &self,
