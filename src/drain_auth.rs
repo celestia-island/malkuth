@@ -7,18 +7,22 @@
 //! 1. An external auditor or a human operator decides a restart proposal is
 //!    allowed (the upstream audit tooling itself is out of scope here).
 //! 2. The deciding side records the outcome via [`ApprovalRegistry::approve`],
-//!    passing the exact `proposal_id` and `worker_id`.
+//!    passing the exact `proposal_id`, `worker_id`, and the one action the
+//!    approval authorizes.
 //! 3. malkuth receives a DrainRequest → `validate_drain_request()` checks
 //!    that a live approval entry exists whose stored `proposal_id` AND
-//!    `worker_id` both match the request exactly.
-//! 4. Unknown, expired, or blocked proposals are rejected.
+//!    `worker_id` both match the request exactly, and that it was issued for
+//!    the drain action.
+//! 4. Unknown, expired, blocked, or wrong-action proposals are rejected.
 //!
 //! # Security guarantee
 //!
 //! Without an approval entry whose `proposal_id` and `worker_id` match the
-//! request exactly, no drain can proceed. Empty or fabricated `proposal_id`
-//! values are rejected at the gate: an approval recorded for one proposal
-//! never vouches for a different or replayed id.
+//! request exactly and whose action is the one being performed, no drain can
+//! proceed. Empty or fabricated `proposal_id` values are rejected at the gate:
+//! an approval recorded for one proposal never vouches for a different or
+//! replayed id, and an approval issued for a restart never vouches for a
+//! drain.
 
 use std::sync::RwLock;
 use std::time::{Duration, SystemTime};
@@ -31,11 +35,21 @@ pub enum GateDecision {
     Block,
 }
 
+/// The one action an approval authorizes. A grant names its action at
+/// registration and can only be spent on that action: a drain approval must
+/// never vouch for a restart (and vice versa).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateAction {
+    Restart,
+    Drain,
+}
+
 /// An approved restart proposal registered in the authorization gate.
 #[derive(Debug, Clone)]
 struct ApprovalEntry {
     proposal_id: String,
     worker_id: String,
+    action: GateAction,
     decision: GateDecision,
     approved_at: SystemTime,
     /// Set when the approval has been spent on an action. A consumed entry is
@@ -56,6 +70,9 @@ pub enum ApprovalStatus {
     /// Deliberately blocked: the operator changed their mind. A block overrides
     /// an earlier allow for the same pair.
     Blocked,
+    /// Registered for this pair, but for the other action: a drain approval
+    /// presented to the restart gate (or vice versa).
+    WrongAction,
     /// Nothing was ever registered for this pair (or it was blocked).
     Unknown,
 }
@@ -77,6 +94,8 @@ pub enum DrainAuthError {
     Consumed,
     /// An operator blocked this proposal + worker pair.
     Blocked,
+    /// The approval was issued for the other action kind.
+    ActionMismatch,
 }
 
 impl DrainAuthError {
@@ -90,6 +109,7 @@ impl DrainAuthError {
             Self::Expired => "approval_expired",
             Self::Consumed => "approval_consumed",
             Self::Blocked => "approval_blocked",
+            Self::ActionMismatch => "approval_action_mismatch",
         }
     }
 }
@@ -106,6 +126,9 @@ impl std::fmt::Display for DrainAuthError {
             Self::Expired => f.write_str("the approval has expired"),
             Self::Consumed => f.write_str("the approval was already spent on an action"),
             Self::Blocked => f.write_str("an operator blocked this proposal"),
+            Self::ActionMismatch => {
+                f.write_str("the approval was issued for the other action kind")
+            }
         }
     }
 }
@@ -130,48 +153,64 @@ impl ApprovalRegistry {
     }
 
     /// Register an approved proposal. Called after an external auditor or
-    /// human confirms a restart is authorized.
-    pub fn approve(&self, proposal_id: &str, worker_id: &str, decision: GateDecision) {
+    /// human confirms the action is authorized. The approval names exactly one
+    /// action kind and can only be spent on that action.
+    pub fn approve(
+        &self,
+        proposal_id: &str,
+        worker_id: &str,
+        action: GateAction,
+        decision: GateDecision,
+    ) {
         let mut entries = self.entries.write().unwrap();
         // Evict expired entries.
         entries.retain(|e| e.is_valid(self.ttl));
         if entries.len() >= self.max_entries {
             entries.remove(0);
         }
-        // A fresh approval replaces any earlier entry for the same pair: a
-        // re-approved proposal starts unspent, and the old spent entry must not
-        // shadow it on the next lookup.
+        // A fresh approval replaces any earlier entry for the same pair —
+        // including the other action's: the registry keeps one entry per
+        // pair. A re-approved proposal starts unspent, and a superseded
+        // grant simply disappears rather than lingers (every direction of
+        // the replacement stays fail-closed).
         entries.retain(|e| e.proposal_id != proposal_id || e.worker_id != worker_id);
         entries.push(ApprovalEntry {
             proposal_id: proposal_id.into(),
             worker_id: worker_id.into(),
+            action,
             decision,
             approved_at: SystemTime::now(),
             consumed_at: None,
         });
     }
 
-    /// Check whether a proposal is approved for a given worker. The stored
-    /// `proposal_id` must match exactly: an approval recorded for one
+    /// Check whether a proposal is approved for a given worker and action. The
+    /// stored `proposal_id` must match exactly: an approval recorded for one
     /// proposal must never authorize a different or fabricated id, even for
     /// the same worker.
-    pub fn is_approved(&self, proposal_id: &str, worker_id: &str) -> bool {
+    pub fn is_approved(&self, proposal_id: &str, worker_id: &str, action: GateAction) -> bool {
         let entries = self.entries.read().unwrap();
         entries.iter().any(|e| {
             e.proposal_id == proposal_id
                 && e.worker_id == worker_id
+                && e.action == action
                 && e.decision != GateDecision::Block
                 && e.is_valid(self.ttl)
         })
     }
 
-    /// What the registry currently says about one pair (pure: never consumes).
+    /// What the registry currently says about one pair for one action (pure:
+    /// never consumes).
     #[must_use]
-    pub fn status(&self, proposal_id: &str, worker_id: &str) -> ApprovalStatus {
+    pub fn status(&self, proposal_id: &str, worker_id: &str, action: GateAction) -> ApprovalStatus {
         let entries = self.entries.read().unwrap();
         for entry in entries.iter().rev() {
             if entry.proposal_id != proposal_id || entry.worker_id != worker_id {
                 continue;
+            }
+
+            if entry.action != action {
+                return ApprovalStatus::WrongAction;
             }
 
             if entry.decision == GateDecision::Block {
@@ -192,15 +231,25 @@ impl ApprovalRegistry {
     }
 
     /// Spend one approval, atomically. Returns `Ok(())` only when a live,
-    /// unspent approval existed for exactly this pair; every other outcome is
-    /// an error and consumes nothing.
-    pub fn consume(&self, proposal_id: &str, worker_id: &str) -> Result<(), DrainAuthError> {
+    /// unspent approval existed for exactly this pair AND the requested action;
+    /// every other outcome is an error and consumes nothing.
+    pub fn consume(
+        &self,
+        proposal_id: &str,
+        worker_id: &str,
+        action: GateAction,
+    ) -> Result<(), DrainAuthError> {
         let mut entries = self.entries.write().unwrap();
         let mut answer = Err(DrainAuthError::Required);
 
         for entry in entries.iter_mut().rev() {
             if entry.proposal_id != proposal_id || entry.worker_id != worker_id {
                 continue;
+            }
+
+            if entry.action != action {
+                answer = Err(DrainAuthError::ActionMismatch);
+                break;
             }
 
             if entry.decision == GateDecision::Block {
@@ -280,7 +329,7 @@ pub fn validate_drain_request(
         }
     }
 
-    registry.consume(proposal_id, worker_id)
+    registry.consume(proposal_id, worker_id, GateAction::Drain)
 }
 
 /// The process-wide approval registry every MCP tool handler shares.
@@ -305,7 +354,7 @@ mod tests {
     #[test]
     fn test_approved_proposal_is_valid() {
         let reg = registry();
-        reg.approve("prop-abc", "chest", GateDecision::Allow);
+        reg.approve("prop-abc", "chest", GateAction::Drain, GateDecision::Allow);
         assert!(validate_drain_request("chest", "prop-abc", Some(30), &reg).is_ok());
     }
 
@@ -330,23 +379,29 @@ mod tests {
     #[test]
     fn an_approval_authorizes_at_most_one_action() {
         let reg = registry();
-        reg.approve("prop-once", "chest", GateDecision::Allow);
+        reg.approve("prop-once", "chest", GateAction::Drain, GateDecision::Allow);
         assert!(validate_drain_request("chest", "prop-once", Some(30), &reg).is_ok());
         let replay = validate_drain_request("chest", "prop-once", Some(30), &reg)
             .expect_err("a spent approval must not authorize a second action");
         assert_eq!(replay.code(), "approval_consumed");
-        assert_eq!(reg.status("prop-once", "chest"), ApprovalStatus::Consumed);
+        assert_eq!(
+            reg.status("prop-once", "chest", GateAction::Drain),
+            ApprovalStatus::Consumed
+        );
     }
 
     #[test]
     fn a_failed_validation_does_not_spend_the_approval() {
         let reg = registry();
-        reg.approve("prop-keep", "chest", GateDecision::Allow);
+        reg.approve("prop-keep", "chest", GateAction::Drain, GateDecision::Allow);
         // Too-large budget: the request is refused before the spend.
         let refused = validate_drain_request("chest", "prop-keep", Some(999), &reg)
             .expect_err("out-of-range budget");
         assert_eq!(refused.code(), "invalid_budget");
-        assert_eq!(reg.status("prop-keep", "chest"), ApprovalStatus::Approved);
+        assert_eq!(
+            reg.status("prop-keep", "chest", GateAction::Drain),
+            ApprovalStatus::Approved
+        );
         // The approval is still whole, so a well-formed request succeeds.
         assert!(validate_drain_request("chest", "prop-keep", Some(30), &reg).is_ok());
     }
@@ -354,100 +409,135 @@ mod tests {
     #[test]
     fn an_expired_approval_is_refused_with_its_own_code() {
         let reg = ApprovalRegistry::new(10, Duration::from_millis(0));
-        reg.approve("prop-old", "chest", GateDecision::Allow);
+        reg.approve("prop-old", "chest", GateAction::Drain, GateDecision::Allow);
         std::thread::sleep(Duration::from_millis(2));
         let expired = validate_drain_request("chest", "prop-old", None, &reg)
             .expect_err("an expired approval must not authorize anything");
         assert_eq!(expired.code(), "approval_expired");
-        assert_eq!(reg.status("prop-old", "chest"), ApprovalStatus::Expired);
+        assert_eq!(
+            reg.status("prop-old", "chest", GateAction::Drain),
+            ApprovalStatus::Expired
+        );
     }
 
     #[test]
     fn an_approval_is_bound_to_its_worker() {
         let reg = registry();
-        reg.approve("prop-bound", "chest", GateDecision::Allow);
+        reg.approve(
+            "prop-bound",
+            "chest",
+            GateAction::Drain,
+            GateDecision::Allow,
+        );
         let mismatch = validate_drain_request("other-worker", "prop-bound", None, &reg)
             .expect_err("an approval for one worker must not vouch for another");
         assert_eq!(mismatch.code(), "approval_required");
         // …and the mismatch did not spend the real worker's approval.
-        assert_eq!(reg.status("prop-bound", "chest"), ApprovalStatus::Approved);
+        assert_eq!(
+            reg.status("prop-bound", "chest", GateAction::Drain),
+            ApprovalStatus::Approved
+        );
     }
 
     #[test]
     fn a_block_overrides_an_earlier_allow() {
         let reg = registry();
-        reg.approve("prop-flip", "chest", GateDecision::Allow);
-        assert_eq!(reg.status("prop-flip", "chest"), ApprovalStatus::Approved);
+        reg.approve("prop-flip", "chest", GateAction::Drain, GateDecision::Allow);
+        assert_eq!(
+            reg.status("prop-flip", "chest", GateAction::Drain),
+            ApprovalStatus::Approved
+        );
 
         // The operator changes their mind: blocking must revoke the allow…
-        reg.approve("prop-flip", "chest", GateDecision::Block);
-        assert_eq!(reg.status("prop-flip", "chest"), ApprovalStatus::Blocked);
+        reg.approve("prop-flip", "chest", GateAction::Drain, GateDecision::Block);
+        assert_eq!(
+            reg.status("prop-flip", "chest", GateAction::Drain),
+            ApprovalStatus::Blocked
+        );
         // …and the action must be refused with the block's own code.
         let blocked = validate_drain_request("chest", "prop-flip", None, &reg)
             .expect_err("a blocked proposal must not authorize anything");
         assert_eq!(blocked.code(), "approval_blocked");
 
         // Un-blocking is just another approval: the pair becomes usable again.
-        reg.approve("prop-flip", "chest", GateDecision::Allow);
+        reg.approve("prop-flip", "chest", GateAction::Drain, GateDecision::Allow);
         assert!(validate_drain_request("chest", "prop-flip", None, &reg).is_ok());
     }
 
     #[test]
     fn re_approving_a_proposal_starts_unspent() {
         let reg = registry();
-        reg.approve("prop-again", "chest", GateDecision::Allow);
+        reg.approve(
+            "prop-again",
+            "chest",
+            GateAction::Drain,
+            GateDecision::Allow,
+        );
         assert!(validate_drain_request("chest", "prop-again", None, &reg).is_ok());
-        reg.approve("prop-again", "chest", GateDecision::Allow);
-        assert_eq!(reg.status("prop-again", "chest"), ApprovalStatus::Approved);
+        reg.approve(
+            "prop-again",
+            "chest",
+            GateAction::Drain,
+            GateDecision::Allow,
+        );
+        assert_eq!(
+            reg.status("prop-again", "chest", GateAction::Drain),
+            ApprovalStatus::Approved
+        );
         assert!(validate_drain_request("chest", "prop-again", None, &reg).is_ok());
     }
 
     #[test]
     fn test_blocked_proposal_not_allowed() {
         let reg = registry();
-        reg.approve("prop-blocked", "chest", GateDecision::Block);
+        reg.approve(
+            "prop-blocked",
+            "chest",
+            GateAction::Drain,
+            GateDecision::Block,
+        );
         assert!(validate_drain_request("chest", "prop-blocked", None, &reg).is_err());
     }
 
     #[test]
     fn test_zero_budget_rejected() {
         let reg = registry();
-        reg.approve("p1", "test", GateDecision::Allow);
+        reg.approve("p1", "test", GateAction::Drain, GateDecision::Allow);
         assert!(validate_drain_request("test", "p1", Some(0), &reg).is_err());
     }
 
     #[test]
     fn test_excessive_budget_rejected() {
         let reg = registry();
-        reg.approve("p2", "test", GateDecision::Allow);
+        reg.approve("p2", "test", GateAction::Drain, GateDecision::Allow);
         assert!(validate_drain_request("test", "p2", Some(301), &reg).is_err());
     }
 
     #[test]
     fn test_max_budget_accepted() {
         let reg = registry();
-        reg.approve("p3", "test", GateDecision::Allow);
+        reg.approve("p3", "test", GateAction::Drain, GateDecision::Allow);
         assert!(validate_drain_request("test", "p3", Some(300), &reg).is_ok());
     }
 
     #[test]
     fn test_wrong_worker_rejected() {
         let reg = registry();
-        reg.approve("p4", "chest", GateDecision::Allow);
+        reg.approve("p4", "chest", GateAction::Drain, GateDecision::Allow);
         assert!(validate_drain_request("evernight", "p4", None, &reg).is_err());
     }
 
     #[test]
     fn test_review_decision_is_valid() {
         let reg = registry();
-        reg.approve("p5", "chest", GateDecision::Review);
+        reg.approve("p5", "chest", GateAction::Drain, GateDecision::Review);
         assert!(validate_drain_request("chest", "p5", None, &reg).is_ok());
     }
 
     #[test]
     fn test_purge_removes_expired() {
         let reg = ApprovalRegistry::new(10, Duration::ZERO);
-        reg.approve("p6", "chest", GateDecision::Allow);
+        reg.approve("p6", "chest", GateAction::Drain, GateDecision::Allow);
         std::thread::sleep(Duration::from_millis(10));
         assert!(validate_drain_request("chest", "p6", None, &reg).is_err());
     }
@@ -457,10 +547,35 @@ mod tests {
         // An approval recorded for `p-abc` must never vouch for another id —
         // not for a fabricated one, not for the same id under another worker.
         let reg = registry();
-        reg.approve("p-abc", "chest", GateDecision::Allow);
-        assert!(reg.is_approved("p-abc", "chest"));
-        assert!(!reg.is_approved("p-forged", "chest"));
+        reg.approve("p-abc", "chest", GateAction::Drain, GateDecision::Allow);
+        assert!(reg.is_approved("p-abc", "chest", GateAction::Drain));
+        assert!(!reg.is_approved("p-forged", "chest", GateAction::Drain));
         assert!(validate_drain_request("chest", "p-forged", None, &reg).is_err());
-        assert!(!reg.is_approved("p-abc", "evernight"));
+        assert!(!reg.is_approved("p-abc", "evernight", GateAction::Drain));
+    }
+
+    #[test]
+    fn an_approval_is_bound_to_its_action() {
+        let reg = registry();
+        // Issued for a restart, presented to the drain gate: refused with its
+        // own code, and the refusal spends nothing.
+        reg.approve(
+            "prop-act",
+            "chest",
+            GateAction::Restart,
+            GateDecision::Allow,
+        );
+        assert_eq!(
+            reg.status("prop-act", "chest", GateAction::Drain),
+            ApprovalStatus::WrongAction
+        );
+        let mismatch = validate_drain_request("chest", "prop-act", None, &reg)
+            .expect_err("a restart approval must not authorize a drain");
+        assert_eq!(mismatch.code(), "approval_action_mismatch");
+        // The approval is still whole for its own action.
+        assert!(
+            reg.consume("prop-act", "chest", GateAction::Restart)
+                .is_ok()
+        );
     }
 }

@@ -36,7 +36,7 @@ use rmcp::{
 };
 use schemars::JsonSchema;
 
-use crate::drain_auth::{ApprovalStatus, DrainAuthError, GateDecision};
+use crate::drain_auth::{ApprovalStatus, DrainAuthError, GateAction, GateDecision};
 use crate::worker::{FleetState, WorkerLogRing};
 use crate::{
     DrainController, RestartPolicy, ShutdownKind, Supervisor, WorkerInfo, WorkerPhase, WorkerSpec,
@@ -341,13 +341,26 @@ fn page_logs(all: &[String], max_lines: usize, max_bytes: usize) -> LogPage {
     }
 }
 
-/// What `malkuth_approve` accepts for the decision field.
+/// What `malkuth_approve` accepts for the decision field. An omitted or empty
+/// decision is REFUSED: absence must never read as consent.
 fn parse_gate_decision(raw: Option<&str>) -> Result<GateDecision, &'static str> {
     match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
-        None | Some("") | Some("allow") | Some("approved") => Ok(GateDecision::Allow),
+        None | Some("") => Err("approval_decision_required"),
+        Some("allow") | Some("approved") => Ok(GateDecision::Allow),
         Some("review") => Ok(GateDecision::Review),
         Some("block") | Some("blocked") => Ok(GateDecision::Block),
         _ => Err("unsupported_decision"),
+    }
+}
+
+/// What `malkuth_approve` accepts for the action field: the approval names the
+/// one action it authorizes, and can only be spent on that action.
+fn parse_gate_action(raw: Option<&str>) -> Result<GateAction, &'static str> {
+    match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        None | Some("") => Err("approval_action_required"),
+        Some("restart") => Ok(GateAction::Restart),
+        Some("drain") => Ok(GateAction::Drain),
+        _ => Err("unsupported_action"),
     }
 }
 
@@ -594,22 +607,37 @@ impl Server {
                 "proposal_id and worker_id must both be non-empty",
             );
         }
-        let decision = match parse_gate_decision(args.decision.as_deref()) {
-            Ok(decision) => decision,
+        let action = match parse_gate_action(args.action.as_deref()) {
+            Ok(action) => action,
             Err(code) => {
                 return Self::error_payload(
                     code,
-                    "decision must be allow (default), review, or block",
+                    "action is required and must be restart or drain — the approval names the one action it authorizes",
                 );
             }
         };
+        let decision = match parse_gate_decision(args.decision.as_deref()) {
+            Ok(decision) => decision,
+            Err(code) => {
+                let message = if code == "approval_decision_required" {
+                    "decision is required and must be allow, review, or block — an omitted decision is refused, not defaulted"
+                } else {
+                    "decision must be allow, review, or block"
+                };
+                return Self::error_payload(code, message);
+            }
+        };
         let registry = crate::drain_auth::global();
-        registry.approve(proposal_id, worker_id, decision);
+        registry.approve(proposal_id, worker_id, action, decision);
         json!({
             "ok": true,
             "registered": true,
             "proposal_id": proposal_id,
             "worker_id": worker_id,
+            "action": match action {
+                GateAction::Restart => "restart",
+                GateAction::Drain => "drain",
+            },
             "decision": match decision {
                 GateDecision::Allow => "allow",
                 GateDecision::Review => "review",
@@ -619,13 +647,16 @@ impl Server {
         })
     }
 
-    /// Refuse an action that does not name a proposal, with the stable gate code.
+    /// Refuse an action that does not name a proposal, with the stable gate
+    /// code. The refusal states the requirement; it does not teach the caller
+    /// how to obtain one (that guidance let an unattended client self-serve
+    /// the gate).
     fn require_proposal(proposal_id: Option<&str>) -> Result<String, Value> {
         match proposal_id.map(str::trim) {
             Some(id) if !id.is_empty() => Ok(id.to_string()),
             _ => Err(Self::error_payload(
                 DrainAuthError::Required.code(),
-                "this action requires an approved proposal_id: register the approval with malkuth_approve first",
+                "this action requires an approved proposal_id",
             )),
         }
     }
@@ -655,14 +686,17 @@ impl Server {
         };
         // The gate is checked (not spent) before the atomic accept: a refusal
         // below must not burn an approval, and a spent approval must not
-        // authorize an action twice.
-        match crate::drain_auth::global().status(&proposal_id, &args.worker_id) {
+        // authorize an action twice. The status carries the action: an
+        // approval issued for a drain never vouches for a restart.
+        match crate::drain_auth::global().status(&proposal_id, &args.worker_id, GateAction::Restart)
+        {
             ApprovalStatus::Approved => {}
             other => {
                 let code = match other {
                     ApprovalStatus::Expired => "approval_expired",
                     ApprovalStatus::Consumed => "approval_consumed",
                     ApprovalStatus::Blocked => "approval_blocked",
+                    ApprovalStatus::WrongAction => "approval_action_mismatch",
                     _ => "approval_required",
                 };
 
@@ -691,7 +725,9 @@ impl Server {
         }
         // The action is accepted: now spend the approval. Anything that failed
         // above left it whole.
-        if let Err(error) = crate::drain_auth::global().consume(&proposal_id, &args.worker_id) {
+        if let Err(error) =
+            crate::drain_auth::global().consume(&proposal_id, &args.worker_id, GateAction::Restart)
+        {
             return Self::error_payload(error.code(), error.to_string());
         }
         signal.notify_one();
@@ -817,7 +853,12 @@ struct ApproveArgs {
     proposal_id: String,
     /// The one worker this approval authorizes.
     worker_id: String,
-    /// `allow` (default), `review`, or `block`.
+    /// Required — the one action this approval authorizes: `restart` or
+    /// `drain`. The approval can only be spent on that action.
+    #[serde(default)]
+    action: Option<String>,
+    /// Required — `allow`, `review`, or `block`. An omitted decision is
+    /// refused (`approval_decision_required`), never defaulted.
     #[serde(default)]
     decision: Option<String>,
 }
@@ -1004,7 +1045,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Register ONE target-bound approval for a future restart/drain. `proposal_id` is the approval token (scepter's `gate_proposal_id`: a bare 32-hex string), `worker_id` the single worker it authorizes, `decision` one of allow (default) / review / block. An approval is live for 300 s, is bound to exactly that proposal + worker pair, and authorizes AT MOST ONE action: the gate spends it on success, and a replay answers approval_consumed. This tool only records the approval — it performs nothing."
+        description = "Register ONE target-bound approval for a future restart/drain. `proposal_id` is the approval token (scepter's `gate_proposal_id`: a bare 32-hex string), `worker_id` the single worker it authorizes, `action` (required) restart or drain — the approval is spent by that action only, and `decision` (required) allow / review / block; omitting either field is refused. An approval is live for 300 s, is bound to exactly that proposal + worker + action, and authorizes AT MOST ONE action: the gate spends it on success, and a replay answers approval_consumed. This tool only records the approval — it performs nothing."
     )]
     async fn malkuth_approve(
         &self,
@@ -1186,11 +1227,11 @@ mod tests {
     /// Approve a throwaway proposal for this worker and hand back its id: the
     /// gate now requires one, and a fresh id per call keeps tests independent
     /// (a spent approval may never authorize a second action).
-    fn approval_for(worker_id: &str) -> String {
+    fn approval_for(worker_id: &str, action: GateAction) -> String {
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let seq = SEQ.fetch_add(1, Ordering::Relaxed) + 1;
         let proposal = format!("gate-test-{}-{seq}", std::process::id());
-        crate::drain_auth::global().approve(&proposal, worker_id, GateDecision::Allow);
+        crate::drain_auth::global().approve(&proposal, worker_id, action, GateDecision::Allow);
         proposal
     }
 
@@ -1198,7 +1239,7 @@ mod tests {
         RestartArgs {
             run_id: run_id.to_string(),
             worker_id: worker_id.to_string(),
-            proposal_id: Some(approval_for(worker_id)),
+            proposal_id: Some(approval_for(worker_id, GateAction::Restart)),
         }
     }
 
@@ -1216,7 +1257,7 @@ mod tests {
             run_id: run_id.to_string(),
             kind: kind.map(str::to_string),
             timeout_secs: Some(0),
-            proposal_id: Some(approval_for(worker_id)),
+            proposal_id: Some(approval_for(worker_id, GateAction::Drain)),
             worker_id: Some(worker_id.to_string()),
         }
     }
@@ -1406,6 +1447,13 @@ mod tests {
             .await;
         assert_eq!(restart["ok"], json!(false));
         assert_eq!(restart["code"], json!("approval_required"));
+        // The refusal states the requirement; it must not teach an unattended
+        // caller how to satisfy it.
+        let message = restart["message"].as_str().unwrap_or_default();
+        assert!(
+            !message.contains("malkuth_approve"),
+            "refusal message must not point at the approve tool: {message}"
+        );
 
         let drain = server
             .drain_payload(DrainArgs {
@@ -1428,7 +1476,7 @@ mod tests {
         server
             .insert_run(run_with_workers("g2", &[("api", "backend")]))
             .unwrap();
-        let proposal = approval_for("api");
+        let proposal = approval_for("api", GateAction::Restart);
         let args = || RestartArgs {
             run_id: "g2".into(),
             worker_id: "api".into(),
@@ -1455,7 +1503,7 @@ mod tests {
         run.fleet.draining("api");
         server.insert_run(run.clone()).unwrap();
 
-        let proposal = approval_for("api");
+        let proposal = approval_for("api", GateAction::Restart);
         let args = || RestartArgs {
             run_id: "g3".into(),
             worker_id: "api".into(),
@@ -1464,7 +1512,7 @@ mod tests {
         let refused = server.restart_payload(args()).await;
         assert_eq!(refused["code"], json!("worker_draining"));
         assert_eq!(
-            crate::drain_auth::global().status(&proposal, "api"),
+            crate::drain_auth::global().status(&proposal, "api", GateAction::Restart),
             ApprovalStatus::Approved,
             "a refused action must not spend the approval"
         );
@@ -1480,7 +1528,7 @@ mod tests {
         server
             .insert_run(run_with_workers("g4", &[("svc", "backend")]))
             .unwrap();
-        let proposal = approval_for("svc");
+        let proposal = approval_for("svc", GateAction::Drain);
         let args = || DrainArgs {
             run_id: "g4".into(),
             kind: None,
@@ -1516,7 +1564,7 @@ mod tests {
             .await;
         assert_eq!(forged["code"], json!("approval_required"));
 
-        let bound_elsewhere = approval_for("other-worker");
+        let bound_elsewhere = approval_for("other-worker", GateAction::Restart);
         let wrong_worker = server
             .restart_payload(RestartArgs {
                 run_id: "g5".into(),
@@ -1526,9 +1574,39 @@ mod tests {
             .await;
         assert_eq!(wrong_worker["code"], json!("approval_required"));
         assert_eq!(
-            crate::drain_auth::global().status(&bound_elsewhere, "other-worker"),
+            crate::drain_auth::global().status(
+                &bound_elsewhere,
+                "other-worker",
+                GateAction::Restart
+            ),
             ApprovalStatus::Approved,
             "a mismatched worker must not spend the real target's approval"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_approval_cannot_authorize_the_other_action() {
+        let server = test_server();
+        server
+            .insert_run(run_with_workers("g6", &[("api", "backend")]))
+            .unwrap();
+
+        // Registered for a drain, spent on a restart attempt: refused with its
+        // own code — and the refusal must not spend the real approval.
+        let proposal = approval_for("api", GateAction::Drain);
+        let refused = server
+            .restart_payload(RestartArgs {
+                run_id: "g6".into(),
+                worker_id: "api".into(),
+                proposal_id: Some(proposal.clone()),
+            })
+            .await;
+        assert_eq!(refused["ok"], json!(false));
+        assert_eq!(refused["code"], json!("approval_action_mismatch"));
+        assert_eq!(
+            crate::drain_auth::global().status(&proposal, "api", GateAction::Drain),
+            ApprovalStatus::Approved,
+            "a mismatched action must not spend the real approval"
         );
     }
 
@@ -1537,35 +1615,67 @@ mod tests {
         let ok = Server::approve_payload(&ApproveArgs {
             proposal_id: unique_token(),
             worker_id: "api".into(),
-            decision: None,
+            action: Some("restart".into()),
+            decision: Some("allow".into()),
         });
         assert_eq!(ok["ok"], json!(true));
         assert_eq!(ok["registered"], json!(true));
+        assert_eq!(ok["action"], json!("restart"));
+        assert_eq!(ok["decision"], json!("allow"));
         assert_eq!(ok["expires_in_secs"], json!(300));
+
+        // An omitted decision must never read as consent.
+        let no_decision = Server::approve_payload(&ApproveArgs {
+            proposal_id: unique_token(),
+            worker_id: "api".into(),
+            action: Some("drain".into()),
+            decision: None,
+        });
+        assert_eq!(no_decision["code"], json!("approval_decision_required"));
+
+        // An omitted action is refused too: the approval names its action.
+        let no_action = Server::approve_payload(&ApproveArgs {
+            proposal_id: unique_token(),
+            worker_id: "api".into(),
+            action: None,
+            decision: Some("allow".into()),
+        });
+        assert_eq!(no_action["code"], json!("approval_action_required"));
 
         let empty = Server::approve_payload(&ApproveArgs {
             proposal_id: "  ".into(),
             worker_id: "api".into(),
-            decision: None,
+            action: Some("restart".into()),
+            decision: Some("allow".into()),
         });
         assert_eq!(empty["code"], json!("invalid_request"));
 
         let bad = Server::approve_payload(&ApproveArgs {
             proposal_id: unique_token(),
             worker_id: "api".into(),
+            action: Some("restart".into()),
             decision: Some("maybe".into()),
         });
         assert_eq!(bad["code"], json!("unsupported_decision"));
+
+        let bad_action = Server::approve_payload(&ApproveArgs {
+            proposal_id: unique_token(),
+            worker_id: "api".into(),
+            action: Some("hibernate".into()),
+            decision: Some("allow".into()),
+        });
+        assert_eq!(bad_action["code"], json!("unsupported_action"));
 
         let blocked_token = unique_token();
         let blocked = Server::approve_payload(&ApproveArgs {
             proposal_id: blocked_token.clone(),
             worker_id: "api".into(),
+            action: Some("drain".into()),
             decision: Some("block".into()),
         });
         assert_eq!(blocked["decision"], json!("block"));
         assert_eq!(
-            crate::drain_auth::global().status(&blocked_token, "api"),
+            crate::drain_auth::global().status(&blocked_token, "api", GateAction::Drain),
             ApprovalStatus::Blocked,
             "a block is a real, stored decision — not a missing entry"
         );
