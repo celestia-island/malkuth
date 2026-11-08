@@ -245,8 +245,10 @@ of waiting for it to end. Every arm answers a JSON object with an `ok` field
 and, on failure, a stable `code`: `unknown_run`, `unknown_worker`,
 `run_finished`, `worker_stopped`, `worker_draining`, `already_restarting`,
 `restart_budget_exhausted`, `unsupported_kind`, `worker_required`,
-`approval_required`, `approval_expired`, `approval_consumed`, `invalid_request`,
-`invalid_budget`, `unsupported_decision`.
+`approval_required`, `approval_expired`, `approval_consumed`,
+`approval_blocked`, `approval_action_mismatch`, `invalid_request`,
+`invalid_budget`, `unsupported_decision` (and the `malkuth_approve` refusals
+`approval_decision_required` / `approval_action_required`).
 
 Wire it into an MCP client:
 
