@@ -260,9 +260,9 @@ and, on failure, a stable `code`: `unknown_run`, `unknown_worker`,
 `approval_required`, `approval_expired`, `approval_consumed`,
 `approval_blocked`, `approval_action_mismatch`, `approval_unattested`,
 `approval_epoch_stale`, `approval_registry_full`, `invalid_request`,
-`invalid_budget`, `unsupported_action`, `unsupported_decision` (and the
-`malkuth_approve` refusals `approval_decision_required` /
-`approval_action_required`).
+`invalid_budget`, `unsupported_action`, `unsupported_decision`,
+`internal_state_poisoned` (and the `malkuth_approve` refusals
+`approval_decision_required` / `approval_action_required`).
 
 Wire it into an MCP client:
 

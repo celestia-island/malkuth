@@ -238,6 +238,11 @@ impl ApprovalRegistry {
         // lets a flood of registrations evict the entries it targets). A
         // same-pair re-approval replaces its own slot below, so it is never
         // blocked here.
+        //
+        // Precedence note (deliberate): this capacity check runs BEFORE the
+        // epoch window below, so a full registry answers `RegistryFull` even
+        // for an epoch-stale grant — both are fail-closed; callers must not
+        // read `RegistryFull` as evidence about the grant's clock validity.
         let pair_exists = entries
             .iter()
             .any(|e| e.proposal_id == proposal_id && e.worker_id == worker_id);

@@ -842,9 +842,12 @@ impl Server {
         // P0b identity pre-check, BEFORE the accept: `accept_restart` commits
         // restart budget and arms the signal, so an attested approval must
         // already match the live incarnation here. A mismatch refuses without
-        // touching the worker or the approval (the tiny accept→consume race
-        // below re-checks atomically; if it loses, the acceptance is rolled
-        // back below — no wedge, no budget spent).
+        // touching the worker or the approval (the accept→consume gap below
+        // re-checks approval liveness atomically — the identity it compares
+        // against is this same snapshot, so a respawn inside that
+        // preemption-only, `.await`-free window — microseconds — is accepted;
+        // if the spend loses, the acceptance is rolled back below — no wedge,
+        // no budget spent).
         let live_identity = run
             .fleet
             .get(&args.worker_id)
@@ -883,11 +886,11 @@ impl Server {
             }
         };
         // The action is accepted: now spend the approval. Anything that failed
-        // above left it whole. A failure HERE (identity moved between the
-        // fleet read and the atomic re-check, or a concurrent block/drain on
-        // the same pair) must also give the acceptance back: nothing was
-        // signalled yet, so a leftover pending entry would wedge the worker
-        // on `already_restarting` until it exits on its own.
+        // above left it whole. A failure HERE (a concurrent block, drain, or
+        // second spend of the same approval — the registry re-checks liveness
+        // atomically under its write lock) must also give the acceptance
+        // back: nothing was signalled yet, so a leftover pending entry would
+        // wedge the worker on `already_restarting` until it exits on its own.
         if let Err(error) = registry.consume(
             &proposal_id,
             &args.worker_id,
@@ -2458,6 +2461,78 @@ mod tests {
         let refused = server.restart_payload(restart_args("rb", "w")).await;
         assert_eq!(refused["ok"], json!(false));
         assert_eq!(refused["code"], json!("restart_budget_exhausted"));
+    }
+
+    /// Round-3 S3 killer: `rollback_restart_accept` must return exactly the
+    /// acceptance it was handed. A live acceptance gives back BOTH its
+    /// pending entry and its stamp; a settled acceptance (superseded by a
+    /// later one whose accept removed the old pending entry via retain)
+    /// owns nothing — rolling it back must leave the successor's pending
+    /// entry AND its budget stamp untouched.
+    #[test]
+    fn rollback_returns_a_live_acceptance_and_never_a_settled_one() {
+        let server = test_server();
+        let handle = run_with_workers("rbk", &[("w", "svc")]);
+        server.insert_run(handle.clone()).unwrap();
+
+        let live_pendings = |worker: &str| {
+            handle
+                .restart_book
+                .lock()
+                .unwrap()
+                .pending
+                .iter()
+                .filter(|(id, _)| id == worker)
+                .count()
+        };
+        let stamps_of = |worker: &str| {
+            handle
+                .restart_book
+                .lock()
+                .unwrap()
+                .stamps
+                .iter()
+                .filter(|(id, _)| id == worker)
+                .count()
+        };
+
+        // Live acceptance: both the pending entry and the stamp come back.
+        let count = handle.accept_restart("w").expect("accept");
+        assert_eq!(live_pendings("w"), 1);
+        assert_eq!(stamps_of("w"), 1);
+        handle.rollback_restart_accept("w", count);
+        assert_eq!(live_pendings("w"), 0, "pending entry returned");
+        assert_eq!(stamps_of("w"), 0, "budget stamp returned");
+
+        // Settled acceptance: the supervisor finished that restart and a
+        // successor acceptance is live. Rolling back the OLD acceptance
+        // owns nothing — the restart really happened, so its budget stamp
+        // stays spent, and above all the successor's pending entry AND its
+        // stamp must not be touched.
+        let first = handle.accept_restart("w").expect("re-accept");
+        handle.fleet.restarting("w", first + 1);
+        handle.fleet.running("w", Some(4242));
+        let second = handle.accept_restart("w").expect("successor accept");
+        assert_eq!(second, first + 1, "supervisor counter moved");
+        assert_eq!(live_pendings("w"), 1, "old entry settled by retain");
+        assert_eq!(stamps_of("w"), 2, "both restarts spent budget");
+
+        handle.rollback_restart_accept("w", first);
+        assert_eq!(
+            live_pendings("w"),
+            1,
+            "settled rollback keeps the successor pending"
+        );
+        assert_eq!(
+            stamps_of("w"),
+            2,
+            "settled rollback keeps every stamp — its restart really happened"
+        );
+
+        // The successor's own rollback still works normally.
+        handle.rollback_restart_accept("w", second);
+        assert_eq!(live_pendings("w"), 0);
+        assert_eq!(stamps_of("w"), 1, "only the settled stamp stays spent");
     }
 
     /// S2-9 / S2-2 killer: "never queued" must hold under REAL concurrency.

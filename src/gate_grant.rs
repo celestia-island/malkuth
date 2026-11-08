@@ -138,14 +138,17 @@ pub fn verify_with_key(
         .map_err(|_| GrantError::InvalidSignature)
 }
 
-/// Resolve the verify key: `MALKUTH_GATE_VERIFY_KEY` when set (and valid
-/// hex), the embedded production key when the variable is absent or blank.
+/// Resolve the verify key: `MALKUTH_GATE_VERIFY_KEY` when set (and a valid
+/// curve point), the embedded production key when the variable is absent or
+/// blank.
 ///
 /// # Errors
 ///
 /// [`GrantError::MalformedVerifyKey`] when the override is set but unusable
-/// (bad hex, wrong length, or non-UTF-8 bytes) — a configured key must never
-/// silently fall back to the embedded one.
+/// (bad hex, wrong length, non-UTF-8 bytes, or bytes that are not a curve
+/// point) — a configured key must never silently fall back to the embedded
+/// one, and a non-point override must be refused HERE, at startup, rather
+/// than failing every later verification per-call.
 pub fn resolve_verify_key() -> Result<String, GrantError> {
     match std::env::var("MALKUTH_GATE_VERIFY_KEY") {
         Ok(raw) => {
@@ -153,7 +156,11 @@ pub fn resolve_verify_key() -> Result<String, GrantError> {
             if trimmed.is_empty() {
                 return Ok(DEFAULT_GATE_VERIFY_KEY_HEX.to_string());
             }
-            if decode_hex(&trimmed).map(|b| b.len() == 32) != Some(true) {
+            let bytes = match decode_hex(&trimmed) {
+                Some(bytes) if bytes.len() == 32 => bytes,
+                _ => return Err(GrantError::MalformedVerifyKey),
+            };
+            if VerifyingKey::from_bytes(&bytes.try_into().expect("length checked above")).is_err() {
                 return Err(GrantError::MalformedVerifyKey);
             }
             Ok(trimmed)
@@ -232,7 +239,8 @@ pub(crate) mod tests {
     /// The frozen golden vector: fixed fields, the exact canonical message,
     /// and the signature the devtools reference oracle (pure-python RFC 8032)
     /// computed for it. Cross-pinned in celestia-devtools
-    /// `tests/test_ed25519_ref.py`.
+    /// `tests/test_ed25519_ref.py` (companion branch `p0b-gate-seam`, PR
+    /// celestia-devtools#274 — merges in the same P0b wave).
     const GOLDEN: (&str, &str, &str, &str, u64, u64, u64) = (
         "0123456789abcdef0123456789abcdef",
         "w-alpha-1",
@@ -453,6 +461,22 @@ pub(crate) mod tests {
                 );
             });
         }
+    }
+
+    /// Hex-and-length-valid but NOT a curve point: startup must refuse it
+    /// instead of passing it through and failing every later verification
+    /// per-call. y=2 has no x on the curve (checked offline against the
+    /// RFC 8032 reference oracle in celestia-devtools `tests/ed25519_ref.py`).
+    #[test]
+    fn resolve_verify_key_refuses_an_override_that_is_not_a_curve_point() {
+        let not_a_point = format!("02{}", "0".repeat(62));
+        with_gate_key_env(Some(&not_a_point), || {
+            assert_eq!(
+                resolve_verify_key(),
+                Err(GrantError::MalformedVerifyKey),
+                "32 well-formed bytes that are not a curve point"
+            );
+        });
     }
 
     /// A set-but-non-UTF-8 override is still a CONFIGURED key: the only
