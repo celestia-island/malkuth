@@ -354,20 +354,17 @@ pub(crate) mod tests {
     }
 
     /// The embedded production key must stay well-formed; a typo in the const
-    /// would otherwise only surface at first production verification.
+    /// would otherwise only surface at first production verification. Decodes
+    /// the constant DIRECTLY (no env read) so it cannot race the ENV_LOCK
+    /// test family that mutates `MALKUTH_GATE_VERIFY_KEY`; the
+    /// absent/blank-env resolution path is covered under the lock by
+    /// `resolve_verify_key_prefers_the_embedded_key_when_unset_or_blank`.
     #[test]
     fn embedded_production_key_decodes_to_32_bytes() {
-        let override_set = std::env::var("MALKUTH_GATE_VERIFY_KEY")
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false);
-        if override_set {
-            return; // an override is configured; the embedded key is not in play
-        }
-        let key = resolve_verify_key().expect("embedded key must resolve");
         assert_eq!(
-            decode_hex(&key).map(|bytes| bytes.len()),
+            decode_hex(DEFAULT_GATE_VERIFY_KEY_HEX).map(|bytes| bytes.len()),
             Some(32),
-            "key: {key}"
+            "key: {DEFAULT_GATE_VERIFY_KEY_HEX}"
         );
     }
 
