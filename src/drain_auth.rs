@@ -958,9 +958,13 @@ mod tests {
         // (`now + skew`) and just inside it (`now + 1`) must also register —
         // refusal is strictly `> now + skew`, and time only moves forward
         // between this stamp and the check, which can only shrink the gap.
+        // Issued AT the past bound (`now - ttl`) registers by the mirror
+        // argument: refusal is strictly `issued_at + ttl < now`, so a stamp
+        // exactly TTL old stays valid for at least this instant.
         for (label, issued_at) in [
             ("now", now),
             ("recent", now - 100),
+            ("past-at-bound", now - 300),
             ("future-at-bound", now + GRANT_CLOCK_SKEW_SECS),
             ("future-inside-skew", now + 1),
         ] {

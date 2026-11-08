@@ -2227,6 +2227,56 @@ mod tests {
         assert_eq!(restarted["accepted"], json!(true));
     }
 
+    /// Two runs of the SAME worker id under the SAME live process (run
+    /// replacement / snapshot overlap): the incarnations AGREE on one
+    /// (pid, starttime), so the dedup in the identity scan must fold them
+    /// into one grantable identity — a conflict refusal here would break
+    /// issuance exactly during approve-after-supervise transitions.
+    #[tokio::test]
+    async fn agreeing_duplicate_incarnations_register() {
+        let server = test_server();
+        // BOTH incarnations live under pid 1, so they AGREE on one
+        // (pid, starttime): the dedup in the identity scan must fold them
+        // into one grantable identity — a conflict refusal here would break
+        // issuance exactly during approve-after-supervise transitions.
+        let mine = run_with_workers_at("pd", &[("api", "backend")], 1);
+        let echo = run_with_workers_at("pe", &[("api", "backend")], 1);
+        let identity = live_identity(&echo, "api");
+        assert_eq!(
+            live_identity(&mine, "api"),
+            identity,
+            "fixture: both incarnations must report the SAME identity"
+        );
+        server.insert_run(mine).unwrap();
+        server.insert_run(echo).unwrap();
+
+        // Signed over the pid-1 identity BOTH runs of the second incarnation
+        // report — this is exactly the duplicate the dedup exists for.
+        let payload = server.approve_payload(&signed_grant_args(
+            "api",
+            GateAction::Restart,
+            &hex_proposal(),
+            identity,
+            unix_now(),
+        ));
+        assert_eq!(payload["ok"], json!(true), "{payload}");
+
+        // And the grant spends normally.
+        let proposal = payload["proposal_id"].as_str().unwrap().to_string();
+        let restart = server
+            .restart_payload(RestartArgs {
+                run_id: "pd".into(),
+                worker_id: "api".into(),
+                proposal_id: Some(proposal.clone()),
+            })
+            .await;
+        assert_eq!(restart["ok"], json!(true), "{restart}");
+        assert_eq!(
+            crate::drain_auth::global().status(&proposal, "api", GateAction::Restart),
+            ApprovalStatus::Consumed
+        );
+    }
+
     /// Proposal shapes that can never have been signed: wrong length, non-hex
     /// characters, and UPPERCASE hex (the whole grant chain is
     /// lowercase-strict — the issuer only ever mints lowercase).
@@ -2243,13 +2293,13 @@ mod tests {
             "0F".repeat(16),                // uppercase hex
             "0".repeat(33),                 // one long
         ];
-        for bad in bad_proposals {
+        for bad in &bad_proposals {
             // Signed over the malformed id anyway — the shape check must
             // refuse before any signature work.
             let payload = server.approve_payload(&signed_grant_args(
                 "api",
                 GateAction::Restart,
-                &bad,
+                bad,
                 identity,
                 unix_now(),
             ));
@@ -2261,6 +2311,24 @@ mod tests {
                     .unwrap_or_default()
                     .contains("32-hex"),
                 "the refusal must point at the proposal shape: {payload}"
+            );
+        }
+
+        // Doubly invalid — malformed proposal AND a garbage signature — must
+        // still blame the proposal shape: the shape gate runs first, so
+        // reordering verification ahead of it (which would surface the
+        // signature error instead) is a pinned observable difference.
+        for bad in &bad_proposals {
+            let mut args = signed_grant_args("api", GateAction::Restart, bad, identity, unix_now());
+            args.sig = Some("00".repeat(64));
+            let payload = server.approve_payload(&args);
+            assert_eq!(payload["ok"], json!(false), "proposal {bad:?}: {payload}");
+            assert!(
+                payload["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("32-hex"),
+                "shape refusal must precede verification: {payload}"
             );
         }
     }

@@ -375,22 +375,39 @@ pub(crate) mod tests {
     /// releasing it.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    fn with_gate_key_env(value: Option<&str>, body: impl FnOnce()) {
-        let _guard = ENV_LOCK.lock().unwrap();
-        // SAFETY: single-threaded under ENV_LOCK; the variable is always
-        // removed before the lock is released, so no other test can observe
-        // the override.
+    /// Restores `MALKUTH_GATE_VERIFY_KEY` on drop — including when the body
+    /// panics — so a failing test can never leak the override into later
+    /// tests while the lock sits poisoned. The guard field is never read:
+    /// it exists to tie the restore to the ENV_LOCK critical section.
+    struct RestoreEnv(#[expect(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            // SAFETY: the guard in self.0 still holds ENV_LOCK, so the
+            // restore stays inside the exclusive section.
+            unsafe {
+                std::env::remove_var("MALKUTH_GATE_VERIFY_KEY");
+            }
+        }
+    }
+
+    fn with_gate_key_env_raw(value: Option<&std::ffi::OsStr>, body: impl FnOnce()) {
+        let guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: single-threaded under ENV_LOCK; the RestoreEnv guard
+        // removes the variable before the lock is released, panic or not,
+        // so no other test can observe the override.
         unsafe {
             match value {
                 Some(v) => std::env::set_var("MALKUTH_GATE_VERIFY_KEY", v),
                 None => std::env::remove_var("MALKUTH_GATE_VERIFY_KEY"),
             }
         }
+        let _restore = RestoreEnv(guard);
         body();
-        // SAFETY: same exclusive section — restore the pristine state.
-        unsafe {
-            std::env::remove_var("MALKUTH_GATE_VERIFY_KEY");
-        }
+    }
+
+    fn with_gate_key_env(value: Option<&str>, body: impl FnOnce()) {
+        with_gate_key_env_raw(value.map(std::ffi::OsStr::new), body);
     }
 
     #[test]
@@ -442,23 +459,13 @@ pub(crate) mod tests {
     /// fail-closed answer is an error, not the embedded production key.
     #[test]
     fn resolve_verify_key_refuses_a_non_utf8_override() {
-        use std::os::unix::ffi::OsStringExt;
-        let _guard = ENV_LOCK.lock().unwrap();
-        // SAFETY: single-threaded under ENV_LOCK; removed before release.
-        unsafe {
-            std::env::set_var(
-                "MALKUTH_GATE_VERIFY_KEY",
-                std::ffi::OsString::from_vec(vec![0x80, 0xff]),
+        use std::os::unix::ffi::OsStrExt;
+        with_gate_key_env_raw(Some(std::ffi::OsStr::from_bytes(&[0x80, 0xff])), || {
+            assert_eq!(
+                resolve_verify_key(),
+                Err(GrantError::MalformedVerifyKey),
+                "NotUnicode must not fall back to the embedded key"
             );
-        }
-        assert_eq!(
-            resolve_verify_key(),
-            Err(GrantError::MalformedVerifyKey),
-            "NotUnicode must not fall back to the embedded key"
-        );
-        // SAFETY: same exclusive section — restore the pristine state.
-        unsafe {
-            std::env::remove_var("MALKUTH_GATE_VERIFY_KEY");
-        }
+        });
     }
 }
