@@ -153,7 +153,7 @@ fn mcp_server_lists_supervision_tools() {
         "tools/call",
         serde_json::json!({
             "name": "malkuth_approve",
-            "arguments": {"proposal_id": proposal, "worker_id": "smoke-worker"},
+            "arguments": {"proposal_id": proposal, "worker_id": "smoke-worker", "action": "restart", "decision": "allow"},
         }),
     );
     let approve = read_response(&mut stdout, 5, Duration::from_secs(20));
@@ -163,6 +163,29 @@ fn mcp_server_lists_supervision_tools() {
     let approve_body: serde_json::Value = serde_json::from_str(approve_text).expect("approve JSON");
     assert_eq!(approve_body["ok"], serde_json::json!(true));
     assert_eq!(approve_body["registered"], serde_json::json!(true));
+
+    // Wire-level negative control: an approval with no decision must be
+    // refused, not defaulted to allow.
+    write_msg(
+        &mut stdin,
+        Some(7),
+        "tools/call",
+        serde_json::json!({
+            "name": "malkuth_approve",
+            "arguments": {"proposal_id": format!("smoke-nodecision-{}", std::process::id()), "worker_id": "smoke-worker", "action": "restart"},
+        }),
+    );
+    let refused = read_response(&mut stdout, 7, Duration::from_secs(20));
+    let refused_text = refused["result"]["content"][0]["text"]
+        .as_str()
+        .expect("refused approve text content");
+    let refused_body: serde_json::Value =
+        serde_json::from_str(refused_text).expect("refused approve JSON");
+    assert_eq!(refused_body["ok"], serde_json::json!(false));
+    assert_eq!(
+        refused_body["code"],
+        serde_json::json!("approval_decision_required")
+    );
 
     write_msg(
         &mut stdin,
