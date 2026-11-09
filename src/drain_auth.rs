@@ -12,7 +12,8 @@
 //!    `review` — both mean "a human already looked", see ruling B1) must
 //!    carry a verified [`GrantRecord`]: the scepter-side issuer's ed25519
 //!    signature over the worker's live `(pid, starttime)` identity. A `block`
-//!    is a refusal record and needs no grant.
+//!    (refuse this pair) or an `unblock` (lift exactly that refusal) authorizes
+//!    no action and needs no grant.
 //! 3. malkuth receives a DrainRequest → `validate_drain_request()` checks
 //!    that a live approval entry exists whose stored `proposal_id` AND
 //!    `worker_id` both match the request exactly, that it was issued for the
@@ -104,13 +105,15 @@ pub enum ApprovalStatus {
     Expired,
     /// Already spent on an action (one approval authorizes at most one).
     Consumed,
-    /// Deliberately blocked: the operator changed their mind. A block overrides
-    /// an earlier allow for the same pair.
+    /// Deliberately blocked: the operator stopped this pair. The block is
+    /// pair-wide and immortal — no later allow/review lifts it; only an
+    /// explicit `unblock` does.
     Blocked,
     /// Registered for this pair, but for the other action: a drain approval
     /// presented to the restart gate (or vice versa).
     WrongAction,
-    /// Nothing was ever registered for this pair (or it was blocked).
+    /// Nothing registered for this pair — or the pair was blocked and then
+    /// explicitly unblocked (the unblock removes the block, not any approval).
     Unknown,
 }
 
@@ -365,6 +368,11 @@ impl ApprovalRegistry {
     /// stored `proposal_id` must match exactly: an approval recorded for one
     /// proposal must never authorize a different or fabricated id, even for
     /// the same worker.
+    ///
+    /// This consults the approval entries only — it does NOT check the
+    /// operator block section (an approved entry under a block still returns
+    /// true here). `status` and `consume` are the authorities: they check
+    /// blocks first.
     pub fn is_approved(&self, proposal_id: &str, worker_id: &str, action: GateAction) -> bool {
         let entries = self.entries.read().unwrap();
         entries.iter().any(|e| {
@@ -524,7 +532,9 @@ impl ApprovalRegistry {
     ///
     /// Used for pre-action checks BEFORE a side effect (signalling a restart,
     /// where the registry's `consume` word would come too late); the final
-    /// authority is still [`Self::consume`], which re-checks atomically.
+    /// authority is still [`Self::consume`], which re-checks atomically. Like
+    /// [`Self::is_approved`], this reads the approval entries only and does not
+    /// consult the operator block section.
     #[must_use]
     pub fn attested_identity(
         &self,
@@ -697,7 +707,16 @@ impl ApprovalRegistry {
             let already = blocks
                 .iter()
                 .any(|b| &b.proposal_id == proposal_id && &b.worker_id == worker_id);
-            if already || blocks.len() >= self.block_cap {
+            if already {
+                continue;
+            }
+            if blocks.len() >= self.block_cap {
+                tracing::warn!(
+                    proposal_id,
+                    worker_id,
+                    block_cap = self.block_cap,
+                    "replayed block dropped: the block section is at capacity (replay never evicts)"
+                );
                 continue;
             }
             blocks.push(BlockEntry {
@@ -789,55 +808,63 @@ fn unix_now() -> u64 {
 pub fn global() -> &'static ApprovalRegistry {
     static REGISTRY: std::sync::OnceLock<ApprovalRegistry> = std::sync::OnceLock::new();
     REGISTRY.get_or_init(|| {
-        let journal_path = std::env::var("MALKUTH_GATE_JOURNAL")
+        let configured = std::env::var("MALKUTH_GATE_JOURNAL")
             .ok()
             .map(|p| p.trim().to_string())
             .filter(|p| !p.is_empty());
-        journal_path
-            .and_then(|path| {
-                // A configured-but-unwritable journal is an operator mistake
-                // that must be LOUD; the open below answers the same way.
-                if let Err(error) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(std::path::Path::new(&path))
-                {
-                    tracing::error!(
-                        journal = %path,
-                        %error,
-                        "MALKUTH_GATE_JOURNAL is set but not writable; gate receipts will NOT survive a restart"
-                    );
-                }
-                match crate::gate_receipt::FileReceiptJournal::open(&path) {
-                    Ok(journal) => {
-                        let (blocks, _) = crate::gate_receipt::replay_blocks(journal.path())
-                            .unwrap_or_default();
-                        let registry = ApprovalRegistry::with_sink(
-                            100,
-                            Duration::from_secs(300),
-                            std::sync::Arc::new(journal),
-                            crate::gate_receipt::boot_epoch(),
-                        );
-                        let rehydrated = registry.rehydrate_blocks(&blocks);
-                        tracing::info!(
-                            journal = %path,
-                            rehydrated_blocks = rehydrated,
-                            "gate receipt journal wired; blocks replayed"
-                        );
-                        Some(registry)
-                    }
-                    Err(error) => {
-                        tracing::error!(
-                            journal = %path,
-                            %error,
-                            "gate journal could not be opened; falling back to the memory sink"
-                        );
-                        None
-                    }
-                }
-            })
-            .unwrap_or_else(|| ApprovalRegistry::new(100, Duration::from_secs(300)))
+        registry_from_journal_path(configured.as_deref())
     })
+}
+
+/// The startup assembly `global()` runs: a file-backed registry with its
+/// journal replayed when a path is configured, the in-memory sink otherwise.
+/// Split out of the `OnceLock` so the deployment wiring has a testable seam —
+/// process-global env vars cannot be set safely from parallel tests, but the
+/// function this feeds can be called directly.
+fn registry_from_journal_path(path: Option<&str>) -> ApprovalRegistry {
+    path.and_then(|path| {
+        // A configured-but-unwritable journal is an operator mistake that must
+        // be LOUD; the open below answers the same way.
+        if let Err(error) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(std::path::Path::new(path))
+        {
+            tracing::error!(
+                journal = %path,
+                %error,
+                "MALKUTH_GATE_JOURNAL is set but not writable; gate receipts will NOT survive a restart"
+            );
+        }
+        match crate::gate_receipt::FileReceiptJournal::open(path) {
+            Ok(journal) => {
+                let (blocks, _) =
+                    crate::gate_receipt::replay_blocks(journal.path()).unwrap_or_default();
+                let registry = ApprovalRegistry::with_sink(
+                    100,
+                    Duration::from_secs(300),
+                    std::sync::Arc::new(journal),
+                    crate::gate_receipt::boot_epoch(),
+                );
+                let rehydrated = registry.rehydrate_blocks(&blocks);
+                tracing::info!(
+                    journal = %path,
+                    rehydrated_blocks = rehydrated,
+                    "gate receipt journal wired; blocks replayed"
+                );
+                Some(registry)
+            }
+            Err(error) => {
+                tracing::error!(
+                    journal = %path,
+                    %error,
+                    "gate journal could not be opened; falling back to the memory sink"
+                );
+                None
+            }
+        }
+    })
+    .unwrap_or_else(|| ApprovalRegistry::new(100, Duration::from_secs(300)))
 }
 
 #[cfg(test)]
@@ -967,7 +994,7 @@ mod tests {
     }
 
     #[test]
-    fn a_block_overrides_an_earlier_allow() {
+    fn a_block_refuses_a_later_allow() {
         let reg = registry();
         reg.approve(
             "prop-flip",
@@ -1449,7 +1476,7 @@ mod tests {
 
     // ── P1 durability: the receipt sink vetoes, blocks are immortal ──
 
-    use crate::gate_receipt::{FailingReceiptSink, MemoryReceiptSink, ReceiptKind};
+    use crate::gate_receipt::{FailingReceiptSink, MemoryReceiptSink, ReceiptKind, ReceiptSink};
 
     fn temp_journal_path(tag: &str) -> std::path::PathBuf {
         let nanos = SystemTime::now()
@@ -1608,6 +1635,48 @@ mod tests {
             validate_drain_request("chest", "prop-flood", None, None, &reg).is_err(),
             "the flood must not have lifted the block"
         );
+    }
+
+    #[test]
+    fn the_configured_journal_is_wired_and_replayed() {
+        // The deployment seam `drain_auth::global()` feeds: a configured path
+        // must produce a registry whose block section was replayed from that
+        // journal; no configuration must produce a clean memory registry.
+        let path = temp_journal_path("wiring");
+        {
+            let journal = crate::gate_receipt::FileReceiptJournal::open(&path).unwrap();
+            journal
+                .append(&crate::gate_receipt::Receipt {
+                    seq: 0,
+                    epoch: "seed".into(),
+                    kind: ReceiptKind::Blocked,
+                    proposal_id: "prop-wire".into(),
+                    worker_id: "chest".into(),
+                    action: None,
+                    code: None,
+                    at: 0,
+                })
+                .unwrap();
+        }
+        let wired = registry_from_journal_path(Some(path.to_str().unwrap()));
+        assert_eq!(
+            wired.status("prop-wire", "chest", GateAction::Drain),
+            ApprovalStatus::Blocked,
+            "the wiring must replay operator blocks into the live registry"
+        );
+        let plain = registry_from_journal_path(None);
+        assert_eq!(
+            plain.status("prop-wire", "chest", GateAction::Drain),
+            ApprovalStatus::Unknown,
+            "without a configured journal there is nothing to replay"
+        );
+        // An empty-string configuration must behave like None (treated as unset).
+        let blank = registry_from_journal_path(Some("   "));
+        assert_eq!(
+            blank.status("prop-wire", "chest", GateAction::Drain),
+            ApprovalStatus::Unknown
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

@@ -102,7 +102,11 @@ pub enum ReceiptError {
 }
 
 /// Where receipts go. Every append is synchronous: the caller's control flow
-/// (spend or refuse) waits for the durability answer.
+/// (spend or refuse) waits for the durability answer. The spend path holds the
+/// registry's entries write lock across the append, so a slow sink stalls the
+/// whole gate — blocking is the fail-closed direction (an unanswered append
+/// never becomes a spent approval), but sinks are expected to be local and
+/// fast, not network-backed.
 pub trait ReceiptSink: Send + Sync {
     /// Persist one receipt. `Err` vetoes what the caller was about to do (for
     /// spends) or is surfaced as degradation (for blocks, which are inserted
@@ -220,7 +224,6 @@ impl FileReceiptJournal {
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .read(true)
             .open(&path)
             .map_err(|e| ReceiptError::Io(format!("{}: {e}", path.display())))?;
         let (mut next_seq, mut corrupt_lines) = (0u64, 0u64);
@@ -282,6 +285,9 @@ impl FileReceiptJournal {
 impl ReceiptSink for FileReceiptJournal {
     fn append(&self, receipt: &Receipt) -> Result<ReceiptAck, ReceiptError> {
         let mut state = self.inner.lock().map_err(|_| ReceiptError::Poisoned)?;
+        // The number is claimed before the write: a failed append leaves a
+        // permanent (cosmetic) gap in the journal — (epoch, seq) uniqueness is
+        // preserved and replay takes the max, so nothing reads the gap.
         state.next_seq += 1;
         let mut stored = receipt.clone();
         stored.seq = state.next_seq;

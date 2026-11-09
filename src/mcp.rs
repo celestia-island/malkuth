@@ -686,7 +686,7 @@ impl Server {
                 let message = if code == "approval_decision_required" {
                     "decision is required and must be allow, review, block, or unblock — an omitted decision is refused, not defaulted"
                 } else {
-                    "decision must be allow, review, or block"
+                    "decision must be allow, review, block, or unblock"
                 };
                 return Self::error_payload(code, message);
             }
@@ -1847,6 +1847,27 @@ mod tests {
             crate::drain_auth::global().status(&blocked_token, "api", GateAction::Drain),
             ApprovalStatus::Blocked,
             "a block is a real, stored decision — not a missing entry"
+        );
+
+        // P1: the block survives contact with the decision plumbing. A fresh
+        // allow on the blocked pair cannot lift it — at the registry level that
+        // refusal is `approval_blocked` (drain_auth tests), and at this
+        // boundary an unattested allow is refused even earlier; only the
+        // explicit `unblock` decision lifts the pair.
+        let unblocked = server.approve_payload(&ApproveArgs {
+            proposal_id: blocked_token.clone(),
+            worker_id: "api".into(),
+            action: Some("drain".into()),
+            decision: Some("unblock".into()),
+            sig: None,
+            issued_at: None,
+        });
+        assert_eq!(unblocked["ok"], json!(true));
+        assert_eq!(unblocked["decision"], json!("unblock"));
+        assert_eq!(
+            crate::drain_auth::global().status(&blocked_token, "api", GateAction::Drain),
+            ApprovalStatus::Unknown,
+            "an explicit unblock lifts the pair cleanly"
         );
 
         // An omitted decision must never read as consent.
