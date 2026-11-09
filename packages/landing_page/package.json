@@ -9,8 +9,8 @@
     "serve": "python3 -m http.server 5173 -d ../../target/landing_page"
   },
   "dependencies": {
-    "vue": "^*",
-    "@xterm/xterm": "^*"
+    "vue": "^3",
+    "@xterm/xterm": "^6"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^*",
