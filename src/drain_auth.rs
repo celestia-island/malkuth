@@ -1356,8 +1356,9 @@ mod tests {
             Some(grant),
         )
         .unwrap();
-        let refused = validate_drain_request("chest", "prop-low", None, Some((4242, 987_654)), &reg)
-            .expect_err("the resolved default 30 must exceed a 10s envelope");
+        let refused =
+            validate_drain_request("chest", "prop-low", None, Some((4242, 987_654)), &reg)
+                .expect_err("the resolved default 30 must exceed a 10s envelope");
         assert_eq!(refused.code(), "approval_budget_exceeded");
         assert_eq!(
             reg.status("prop-low", "chest", GateAction::Drain),
