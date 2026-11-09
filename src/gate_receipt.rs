@@ -261,8 +261,11 @@ impl FileReceiptJournal {
         self.inner.lock().map(|s| s.corrupt_lines).unwrap_or(0)
     }
 
-    /// Read the journal back: every parseable receipt, in file order. Used by
-    /// startup rehydration and by P2's reconciliation.
+    /// Read the journal back: the PARSEABLE receipts, in file order. Lines that
+    /// fail to parse are skipped silently here and counted in
+    /// [`Self::corrupt_lines`] — an audit that must see corruption counts those
+    /// lines separately; [`reconcile`] over this output sees only the well-formed
+    /// tail of the file. Used by startup rehydration and by P2's reconciliation.
     ///
     /// # Errors
     ///
@@ -309,6 +312,99 @@ impl ReceiptSink for FileReceiptJournal {
 /// The blocks a journal replay carries: `(proposal_id, worker_id)` pairs that
 /// must be live again before the registry answers anything.
 pub type ReplayedBlocks = Vec<(String, String)>;
+
+/// P2 reconciliation: what the journal admits to when audited end to end.
+///
+/// Every finding is a fact about the FILE, not an accusation — several of them
+/// (sequence gaps, pending-without-done) are the documented crash/failed-append
+/// windows, and the point of the audit is that they are LISTED for a human, not
+/// silently absorbed by replay's max-seq shortcut.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reconciliation {
+    /// Sequence discontinuities, in file order: each is (epoch, the seq the
+    /// previous line carried, the seq this line carries) with `next != prev + 1`
+    /// (a first line above 1 is a gap after 0). A failed append claims its
+    /// number before writing, so a gap is a permanent, cosmetic-but-real mark —
+    /// the audit surfaces it, replay ignores it (it takes the max).
+    pub seq_gaps: Vec<(String, u64, u64)>,
+    /// Approval batches with no completion receipt: the latest `pending` for an
+    /// (epoch, proposal, worker, action) whose kind never reaches `done` after
+    /// it — the 已花未做 crash window (spent, completion unknown).
+    pub pending_without_done: Vec<(String, String, String, String)>,
+    /// Completion receipts with no approval batch: a `done` whose
+    /// (epoch, proposal, worker, action) has no `pending` before it — the file
+    /// records an acceptance the journal never approved. Under append-only
+    /// writing this is tampering or foreign input, never a crash artifact.
+    pub done_without_pending: Vec<(String, String, String, String)>,
+}
+
+/// Reconcile a journal read ([`FileReceiptJournal::read_all`], file order):
+/// sequence gaps, approval batches whose completion receipt is missing, and
+/// completion receipts without an approval batch. Pure over the input — the
+/// caller decides what a finding means for their surface (a human audit page,
+/// a startup warning, an RPC answer).
+#[must_use]
+pub fn reconcile(receipts: &[Receipt]) -> Reconciliation {
+    let mut reconciliation = Reconciliation {
+        seq_gaps: Vec::new(),
+        pending_without_done: Vec::new(),
+        done_without_pending: Vec::new(),
+    };
+    // Sequence continuity, per epoch, in file order (the journal is append-only,
+    // so file order IS sequence order within an epoch).
+    let mut last_seq: Option<(&str, u64)> = None;
+    // Batch ledger: the latest pending per (epoch, proposal, worker, action).
+    let mut open_batches: std::collections::HashSet<(String, String, String, String)> =
+        std::collections::HashSet::new();
+    for receipt in receipts {
+        let (last_epoch, last) = match last_seq {
+            Some((epoch, seq)) => (epoch, seq),
+            None => ("", 0),
+        };
+        if last_epoch != receipt.epoch {
+            // An epoch switch restarts the numbering; only a first line above 1
+            // is a gap within its own epoch — checked when the epoch is seen.
+            if receipt.seq > 1 {
+                reconciliation
+                    .seq_gaps
+                    .push((receipt.epoch.clone(), 0, receipt.seq));
+            }
+        } else if receipt.seq != last + 1 {
+            reconciliation
+                .seq_gaps
+                .push((receipt.epoch.clone(), last, receipt.seq));
+        }
+        last_seq = Some((receipt.epoch.as_str(), receipt.seq));
+
+        let action = receipt.action.clone().unwrap_or_default();
+        let key = (
+            receipt.epoch.clone(),
+            receipt.proposal_id.clone(),
+            receipt.worker_id.clone(),
+            action,
+        );
+        match receipt.kind {
+            ReceiptKind::Pending => {
+                open_batches.insert(key);
+            }
+            ReceiptKind::Done => {
+                if open_batches.remove(&key) {
+                    // Batch closed: nothing owed.
+                } else {
+                    reconciliation.done_without_pending.push(key);
+                }
+            }
+            ReceiptKind::Blocked | ReceiptKind::Unblocked | ReceiptKind::Refused => {
+                // Pair-wide / refusal events carry no approval batch.
+            }
+        }
+    }
+    reconciliation.pending_without_done = open_batches.into_iter().collect();
+    reconciliation
+        .pending_without_done
+        .sort_by(|a, b| (a.0.as_str(), &a.1, &a.2, &a.3).cmp(&(b.0.as_str(), &b.1, &b.2, &b.3)));
+    reconciliation
+}
 
 /// Replay a journal for startup: the block pairs it contains, and the highest
 /// sequence seen (so a fresh sink continues the numbering).
@@ -360,6 +456,28 @@ mod tests {
             proposal_id: proposal.into(),
             worker_id: "chest".into(),
             action: None,
+            code: None,
+            at: 0,
+        }
+    }
+
+    /// A receipt with every identity field under the test's control (the
+    /// reconciliation keys on epoch + proposal + worker + action).
+    fn full_receipt(
+        kind: ReceiptKind,
+        epoch: &str,
+        seq: u64,
+        proposal: &str,
+        worker: &str,
+        action: Option<&str>,
+    ) -> Receipt {
+        Receipt {
+            seq,
+            epoch: epoch.into(),
+            kind,
+            proposal_id: proposal.into(),
+            worker_id: worker.into(),
+            action: action.map(Into::into),
             code: None,
             at: 0,
         }
@@ -458,5 +576,135 @@ mod tests {
             .unwrap();
         assert_eq!(ack.seq, 2);
         let _ = std::fs::remove_file(&path);
+    }
+    // ── P2: reconciliation ─────────────────────────────────
+
+    #[test]
+    fn reconciliation_lists_sequence_gaps_per_epoch() {
+        let receipts = vec![
+            full_receipt(ReceiptKind::Pending, "e1", 1, "p", "chest", Some("restart")),
+            full_receipt(ReceiptKind::Done, "e1", 2, "p", "chest", Some("restart")),
+            // A failed append claimed 3 and wrote nothing: 4 arrives with 3 gone.
+            full_receipt(ReceiptKind::Pending, "e1", 4, "p", "chest", Some("restart")),
+            full_receipt(ReceiptKind::Done, "e1", 5, "p", "chest", Some("restart")),
+            // A new epoch restarts the numbering at 1: no phantom gap.
+            full_receipt(ReceiptKind::Blocked, "e2", 1, "q", "chest", None),
+        ];
+        let report = reconcile(&receipts);
+        assert_eq!(
+            report.seq_gaps,
+            vec![("e1".to_string(), 2, 4)],
+            "the missing 3 is listed exactly once, with the numbers on both sides"
+        );
+        assert!(report.pending_without_done.is_empty() && report.done_without_pending.is_empty());
+    }
+
+    #[test]
+    fn reconciliation_lists_a_first_line_above_one() {
+        let receipts = vec![full_receipt(
+            ReceiptKind::Blocked,
+            "e",
+            7,
+            "q",
+            "chest",
+            None,
+        )];
+        let report = reconcile(&receipts);
+        assert_eq!(report.seq_gaps, vec![("e".to_string(), 0, 7)]);
+    }
+
+    #[test]
+    fn reconciliation_lists_spent_batches_without_completion() {
+        // 已花未做: batch A spent and left open (the crash window), batch B
+        // spent and completed. Only A is owed a done.
+        let receipts = vec![
+            full_receipt(ReceiptKind::Pending, "e", 1, "pa", "chest", Some("restart")),
+            full_receipt(ReceiptKind::Pending, "e", 2, "pb", "chest", Some("drain")),
+            full_receipt(ReceiptKind::Done, "e", 3, "pb", "chest", Some("drain")),
+        ];
+        let report = reconcile(&receipts);
+        assert_eq!(
+            report.pending_without_done,
+            vec![(
+                "e".to_string(),
+                "pa".to_string(),
+                "chest".to_string(),
+                "restart".to_string()
+            )]
+        );
+        assert!(report.done_without_pending.is_empty());
+        assert!(report.seq_gaps.is_empty());
+    }
+
+    #[test]
+    fn reconciliation_lists_completion_without_a_batch() {
+        // A done with no pending before it is tampering or foreign input, never
+        // a crash artifact — append-only writing cannot lose the earlier line.
+        let receipts = vec![full_receipt(
+            ReceiptKind::Done,
+            "e",
+            1,
+            "p",
+            "chest",
+            Some("drain"),
+        )];
+        let report = reconcile(&receipts);
+        assert_eq!(
+            report.done_without_pending,
+            vec![(
+                "e".to_string(),
+                "p".to_string(),
+                "chest".to_string(),
+                "drain".to_string()
+            )]
+        );
+        assert!(report.pending_without_done.is_empty());
+    }
+
+    #[test]
+    fn reconciliation_treats_a_second_done_as_an_open_batch_anomaly() {
+        // pending + done closes the batch; a SECOND done for the same batch has
+        // no open pending left: completion without a batch.
+        let receipts = vec![
+            full_receipt(ReceiptKind::Pending, "e", 1, "p", "chest", Some("restart")),
+            full_receipt(ReceiptKind::Done, "e", 2, "p", "chest", Some("restart")),
+            full_receipt(ReceiptKind::Done, "e", 3, "p", "chest", Some("restart")),
+        ];
+        let report = reconcile(&receipts);
+        assert_eq!(report.done_without_pending.len(), 1);
+        assert!(report.pending_without_done.is_empty());
+    }
+
+    #[test]
+    fn reconciliation_of_a_clean_journal_is_empty() {
+        let receipts = vec![
+            full_receipt(ReceiptKind::Blocked, "e", 1, "q", "chest", None),
+            full_receipt(ReceiptKind::Unblocked, "e", 2, "q", "chest", None),
+            full_receipt(ReceiptKind::Refused, "e", 3, "p", "chest", Some("drain")),
+            full_receipt(ReceiptKind::Pending, "e", 4, "p", "chest", Some("drain")),
+            full_receipt(ReceiptKind::Done, "e", 5, "p", "chest", Some("drain")),
+        ];
+        let report = reconcile(&receipts);
+        assert_eq!(
+            report,
+            Reconciliation {
+                seq_gaps: Vec::new(),
+                pending_without_done: Vec::new(),
+                done_without_pending: Vec::new(),
+            },
+            "a clean journal lists nothing — the audit is not noise"
+        );
+    }
+
+    #[test]
+    fn reconciliation_distinguishes_epochs_so_a_foreign_epoch_is_its_own_batches() {
+        // Two epochs sharing a proposal: each epoch's ledger is its own.
+        let receipts = vec![
+            full_receipt(ReceiptKind::Pending, "e1", 1, "p", "chest", Some("restart")),
+            full_receipt(ReceiptKind::Done, "e2", 1, "p", "chest", Some("restart")),
+        ];
+        let report = reconcile(&receipts);
+        assert_eq!(report.pending_without_done.len(), 1);
+        assert_eq!(report.done_without_pending.len(), 1);
     }
 }
