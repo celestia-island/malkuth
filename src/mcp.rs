@@ -380,6 +380,7 @@ fn parse_gate_decision(raw: Option<&str>) -> Result<GateDecision, &'static str> 
         Some("allow") | Some("approved") => Ok(GateDecision::Allow),
         Some("review") => Ok(GateDecision::Review),
         Some("block") | Some("blocked") => Ok(GateDecision::Block),
+        Some("unblock") => Ok(GateDecision::Unblock),
         _ => Err("unsupported_decision"),
     }
 }
@@ -575,6 +576,10 @@ impl Server {
             }
         };
         let already = run.drain.is_draining();
+        // What this call spent: `(proposal_id, worker_id)` when a real spend
+        // happened (an idempotent retry of an already-draining run never
+        // spends, so it must never write a `done` receipt either).
+        let mut spent = None;
         // An already-draining run is a no-op retry: answer idempotently and do
         // not spend the approval (nothing was done).
         if !already {
@@ -609,8 +614,14 @@ impl Server {
             ) {
                 return Self::error_payload(error.code(), error.to_string());
             }
+            spent = Some((proposal_id, worker_id));
         }
         run.drain.begin_drain(kind);
+        // The synchronous acceptance is out: pair the spend's pending receipt
+        // with its `done`.
+        if let Some((proposal_id, worker_id)) = &spent {
+            crate::drain_auth::global().spend_completed(proposal_id, worker_id, GateAction::Drain);
+        }
         let budget = Duration::from_secs(args.timeout_secs.unwrap_or(DEFAULT_DRAIN_TIMEOUT_SECS));
         let deadline = Instant::now() + budget;
         let mut timed_out = false;
@@ -673,9 +684,9 @@ impl Server {
             Ok(decision) => decision,
             Err(code) => {
                 let message = if code == "approval_decision_required" {
-                    "decision is required and must be allow, review, or block — an omitted decision is refused, not defaulted"
+                    "decision is required and must be allow, review, block, or unblock — an omitted decision is refused, not defaulted"
                 } else {
-                    "decision must be allow, review, or block"
+                    "decision must be allow, review, block, or unblock"
                 };
                 return Self::error_payload(code, message);
             }
@@ -683,9 +694,10 @@ impl Server {
         let unattested =
             |message: String| Self::error_payload(DrainAuthError::Unattested.code(), message);
 
-        // `block` refuses everything; it authorizes nothing, so it needs no
-        // attestation. Everything spendable goes through the grant path.
-        let grant = if decision == GateDecision::Block {
+        // `block` refuses everything and `unblock` lifts exactly that; neither
+        // authorizes an action, so neither needs an attestation. Everything
+        // spendable goes through the grant path.
+        let grant = if matches!(decision, GateDecision::Block | GateDecision::Unblock) {
             None
         } else {
             let Some(sig) = args.sig.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
@@ -778,6 +790,7 @@ impl Server {
                 GateDecision::Allow => "allow",
                 GateDecision::Review => "review",
                 GateDecision::Block => "block",
+                GateDecision::Unblock => "unblock",
             },
             "expires_in_secs": registry.ttl_secs(),
         })
@@ -901,6 +914,10 @@ impl Server {
             return Self::error_payload(error.code(), error.to_string());
         }
         signal.notify_one();
+        // The acceptance is out: pair the spend's pending receipt with its
+        // `done` (the pending/done gap is the crash window P1's reconciliation
+        // reads as 已花未做).
+        registry.spend_completed(&proposal_id, &args.worker_id, GateAction::Restart);
         json!({
             "ok": true,
             "run_id": args.run_id,
@@ -1830,6 +1847,27 @@ mod tests {
             crate::drain_auth::global().status(&blocked_token, "api", GateAction::Drain),
             ApprovalStatus::Blocked,
             "a block is a real, stored decision — not a missing entry"
+        );
+
+        // P1: the block survives contact with the decision plumbing. A fresh
+        // allow on the blocked pair cannot lift it — at the registry level that
+        // refusal is `approval_blocked` (drain_auth tests), and at this
+        // boundary an unattested allow is refused even earlier; only the
+        // explicit `unblock` decision lifts the pair.
+        let unblocked = server.approve_payload(&ApproveArgs {
+            proposal_id: blocked_token.clone(),
+            worker_id: "api".into(),
+            action: Some("drain".into()),
+            decision: Some("unblock".into()),
+            sig: None,
+            issued_at: None,
+        });
+        assert_eq!(unblocked["ok"], json!(true));
+        assert_eq!(unblocked["decision"], json!("unblock"));
+        assert_eq!(
+            crate::drain_auth::global().status(&blocked_token, "api", GateAction::Drain),
+            ApprovalStatus::Unknown,
+            "an explicit unblock lifts the pair cleanly"
         );
 
         // An omitted decision must never read as consent.

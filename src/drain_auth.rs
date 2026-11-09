@@ -12,7 +12,8 @@
 //!    `review` — both mean "a human already looked", see ruling B1) must
 //!    carry a verified [`GrantRecord`]: the scepter-side issuer's ed25519
 //!    signature over the worker's live `(pid, starttime)` identity. A `block`
-//!    is a refusal record and needs no grant.
+//!    (refuse this pair) or an `unblock` (lift exactly that refusal) authorizes
+//!    no action and needs no grant.
 //! 3. malkuth receives a DrainRequest → `validate_drain_request()` checks
 //!    that a live approval entry exists whose stored `proposal_id` AND
 //!    `worker_id` both match the request exactly, that it was issued for the
@@ -50,6 +51,11 @@ pub enum GateDecision {
     Allow,
     Review,
     Block,
+    /// Lift a block on this pair. Like `Block` it authorizes nothing and
+    /// needs no grant — it only removes the block. A spendable decision on a
+    /// blocked pair is refused, not a silent unblock: the operator must
+    /// explicitly say `unblock`.
+    Unblock,
 }
 
 /// The one action an approval authorizes. A grant names its action at
@@ -99,13 +105,15 @@ pub enum ApprovalStatus {
     Expired,
     /// Already spent on an action (one approval authorizes at most one).
     Consumed,
-    /// Deliberately blocked: the operator changed their mind. A block overrides
-    /// an earlier allow for the same pair.
+    /// Deliberately blocked: the operator stopped this pair. The block is
+    /// pair-wide and immortal — no later allow/review lifts it; only an
+    /// explicit `unblock` does.
     Blocked,
     /// Registered for this pair, but for the other action: a drain approval
     /// presented to the restart gate (or vice versa).
     WrongAction,
-    /// Nothing was ever registered for this pair (or it was blocked).
+    /// Nothing registered for this pair — or the pair was blocked and then
+    /// explicitly unblocked (the unblock removes the block, not any approval).
     Unknown,
 }
 
@@ -138,6 +146,10 @@ pub enum DrainAuthError {
     /// The registry is at capacity after purging expired entries. Refused
     /// loudly instead of silently evicting a possibly-live approval.
     RegistryFull,
+    /// The receipt journal refused the write, so the spend cannot be
+    /// evidenced — the approval is un-spent and the action refused
+    /// (`Err ⇒ 拒绝兑现`). Retry once the journal recovers.
+    JournalUnavailable,
 }
 
 impl DrainAuthError {
@@ -155,6 +167,7 @@ impl DrainAuthError {
             Self::Unattested => "approval_unattested",
             Self::EpochStale => "approval_epoch_stale",
             Self::RegistryFull => "approval_registry_full",
+            Self::JournalUnavailable => "approval_journal_unavailable",
         }
     }
 }
@@ -183,6 +196,9 @@ impl std::fmt::Display for DrainAuthError {
             Self::RegistryFull => {
                 f.write_str("the approval registry is full; wait for entries to expire")
             }
+            Self::JournalUnavailable => f.write_str(
+                "the receipt journal refused the write; the spend is refused and the approval left unspent",
+            ),
         }
     }
 }
@@ -191,16 +207,68 @@ impl std::fmt::Display for DrainAuthError {
 ///
 /// Shared between the drain validation path and the daemon's RPC/MCP
 /// handlers that receive approval notifications.
+///
+/// P1 durability: every spend appends a receipt to the [`ReceiptSink`] and a
+/// failed append un-spends the approval and refuses the action (`Err ⇒ 拒绝兑现`);
+/// blocks live in their own immortal section — no TTL, no capacity eviction,
+/// replayed from the journal at startup (`rehydrate_blocks`) and lifted only
+/// by an explicit `unblock`.
 pub struct ApprovalRegistry {
     entries: RwLock<Vec<ApprovalEntry>>,
+    /// Blocked pairs. Separate from `entries` because a block is permanent:
+    /// TTL purges and capacity pressure never touch it, and a flood of
+    /// approvals must not evict one (blocks cap out with an explicit refusal
+    /// instead).
+    blocks: RwLock<Vec<BlockEntry>>,
+    block_cap: usize,
+    /// Every spend/block/unblock/refusal is evidenced here; a failed append
+    /// vetoes the spend.
+    sink: std::sync::Arc<dyn crate::gate_receipt::ReceiptSink>,
+    /// Minted by malkuth at construction; receipts carry it so a prior life
+    /// of the process is tellable from this one. Never derived from caller
+    /// fields.
+    epoch: String,
     max_entries: usize,
     ttl: Duration,
 }
 
+/// A blocked pair: protection that survives restarts, washes, and floods.
+#[derive(Debug, Clone)]
+struct BlockEntry {
+    proposal_id: String,
+    worker_id: String,
+}
+
+/// Hard ceiling on immortal blocks. Beyond it a new block is REFUSED (with
+/// `approval_registry_full`) rather than evicting an existing one — the
+/// operator seeing the refusal is the correct response to a block flood, a
+/// silently dropped block is not.
+const BLOCK_CAP: usize = 4096;
+
 impl ApprovalRegistry {
     pub fn new(max_entries: usize, ttl: Duration) -> Self {
+        Self::with_sink(
+            max_entries,
+            ttl,
+            std::sync::Arc::new(crate::gate_receipt::MemoryReceiptSink::new()),
+            crate::gate_receipt::boot_epoch(),
+        )
+    }
+
+    /// Full constructor: an explicit sink (the file journal in production,
+    /// the memory sink in tests) and an explicit epoch.
+    pub fn with_sink(
+        max_entries: usize,
+        ttl: Duration,
+        sink: std::sync::Arc<dyn crate::gate_receipt::ReceiptSink>,
+        epoch: String,
+    ) -> Self {
         Self {
             entries: RwLock::new(Vec::new()),
+            blocks: RwLock::new(Vec::new()),
+            block_cap: BLOCK_CAP,
+            sink,
+            epoch,
             max_entries,
             ttl,
         }
@@ -230,6 +298,25 @@ impl ApprovalRegistry {
         decision: GateDecision,
         grant: Option<GrantRecord>,
     ) -> Result<(), DrainAuthError> {
+        // Blocks outrank everything: a spendable decision on a blocked pair is
+        // REFUSED, not a silent lift — the autonomous loop cannot talk itself
+        // past an operator's stop. Only an explicit `unblock` clears it, and
+        // the refusal is archived (拒绝入档).
+        if self.is_blocked(proposal_id, worker_id) && decision != GateDecision::Unblock {
+            let _ = self.append_receipt(
+                crate::gate_receipt::ReceiptKind::Refused,
+                proposal_id,
+                worker_id,
+                Some(action),
+                Some(DrainAuthError::Blocked.code()),
+            );
+            return Err(DrainAuthError::Blocked);
+        }
+        match decision {
+            GateDecision::Block => return self.block_pair(proposal_id, worker_id),
+            GateDecision::Unblock => return self.unblock_pair(proposal_id, worker_id),
+            GateDecision::Allow | GateDecision::Review => {}
+        }
         let mut entries = self.entries.write().unwrap();
         // Evict expired entries.
         entries.retain(|e| e.is_valid(self.ttl));
@@ -281,6 +368,11 @@ impl ApprovalRegistry {
     /// stored `proposal_id` must match exactly: an approval recorded for one
     /// proposal must never authorize a different or fabricated id, even for
     /// the same worker.
+    ///
+    /// This consults the approval entries only — it does NOT check the
+    /// operator block section (an approved entry under a block still returns
+    /// true here). `status` and `consume` are the authorities: they check
+    /// blocks first.
     pub fn is_approved(&self, proposal_id: &str, worker_id: &str, action: GateAction) -> bool {
         let entries = self.entries.read().unwrap();
         entries.iter().any(|e| {
@@ -296,6 +388,11 @@ impl ApprovalRegistry {
     /// never consumes).
     #[must_use]
     pub fn status(&self, proposal_id: &str, worker_id: &str, action: GateAction) -> ApprovalStatus {
+        // A block outranks any entry for the pair, for BOTH actions, forever
+        // (no TTL): the pair-level stop groove is checked first.
+        if self.is_blocked(proposal_id, worker_id) {
+            return ApprovalStatus::Blocked;
+        }
         let entries = self.entries.read().unwrap();
         for entry in entries.iter().rev() {
             if entry.proposal_id != proposal_id || entry.worker_id != worker_id {
@@ -306,6 +403,9 @@ impl ApprovalRegistry {
                 return ApprovalStatus::WrongAction;
             }
 
+            // Defense-in-depth: since P1 no entry with decision==Block can
+            // exist (approve routes block/unblock away and block_pair revokes
+            // entries), so this branch is unreachable — kept harmless.
             if entry.decision == GateDecision::Block {
                 return ApprovalStatus::Blocked;
             }
@@ -336,6 +436,33 @@ impl ApprovalRegistry {
         live_identity: Option<(u64, u64)>,
     ) -> Result<(), DrainAuthError> {
         let mut entries = self.entries.write().unwrap();
+        // Blocks first, pair-wide and immortal: a spend against a blocked pair
+        // is refused and the refusal archived (拒绝入档). Checked on the
+        // `blocks` field directly (disjoint from the `entries` guard) so the
+        // check stays inside the same critical section as the spend: a block
+        // landing concurrently cannot be raced past.
+        let blocked = self
+            .blocks
+            .read()
+            .unwrap()
+            .iter()
+            .any(|b| b.proposal_id == proposal_id && b.worker_id == worker_id);
+        if blocked {
+            let refused = crate::gate_receipt::Receipt {
+                seq: 0,
+                epoch: self.epoch.clone(),
+                kind: crate::gate_receipt::ReceiptKind::Refused,
+                proposal_id: proposal_id.to_string(),
+                worker_id: worker_id.to_string(),
+                action: Some(action.as_str().to_string()),
+                code: Some(DrainAuthError::Blocked.code().to_string()),
+                at: unix_now(),
+            };
+            // Best-effort: the refusal itself already refuses; losing its
+            // receipt to a broken journal is degradation, not fail-open.
+            let _ = self.sink.append(&refused);
+            return Err(DrainAuthError::Blocked);
+        }
         let mut answer = Err(DrainAuthError::Required);
 
         for entry in entries.iter_mut().rev() {
@@ -348,6 +475,8 @@ impl ApprovalRegistry {
                 break;
             }
 
+            // Defense-in-depth: unreachable since P1 (no Block entries can be
+            // created; see the note in `status`).
             if entry.decision == GateDecision::Block {
                 answer = Err(DrainAuthError::Blocked);
                 break;
@@ -375,7 +504,28 @@ impl ApprovalRegistry {
             }
 
             entry.consumed_at = Some(SystemTime::now());
-            answer = Ok(());
+            // The spend is only real once its receipt is durable: a failed
+            // append un-spends the approval and refuses the action — the
+            // caller retries when the journal recovers, nothing was done.
+            // (`Err ⇒ 拒绝兑现`; the pending marker is what a restart
+            // reconciles as 已花未做 when the process dies before `done`.)
+            let receipt = crate::gate_receipt::Receipt {
+                seq: 0,
+                epoch: self.epoch.clone(),
+                kind: crate::gate_receipt::ReceiptKind::Pending,
+                proposal_id: proposal_id.to_string(),
+                worker_id: worker_id.to_string(),
+                action: Some(action.as_str().to_string()),
+                code: None,
+                at: unix_now(),
+            };
+            match self.sink.append(&receipt) {
+                Ok(_) => answer = Ok(()),
+                Err(_) => {
+                    entry.consumed_at = None;
+                    answer = Err(DrainAuthError::JournalUnavailable);
+                }
+            }
             break;
         }
         answer
@@ -387,7 +537,9 @@ impl ApprovalRegistry {
     ///
     /// Used for pre-action checks BEFORE a side effect (signalling a restart,
     /// where the registry's `consume` word would come too late); the final
-    /// authority is still [`Self::consume`], which re-checks atomically.
+    /// authority is still [`Self::consume`], which re-checks atomically. Like
+    /// [`Self::is_approved`], this reads the approval entries only and does not
+    /// consult the operator block section.
     #[must_use]
     pub fn attested_identity(
         &self,
@@ -416,6 +568,191 @@ impl ApprovalRegistry {
     pub fn purge(&self) {
         let mut entries = self.entries.write().unwrap();
         entries.retain(|e| e.is_valid(self.ttl));
+    }
+
+    /// Is this pair under a block? Blocks are pair-wide (both actions),
+    /// immortal until an explicit `unblock`, and never evicted.
+    #[must_use]
+    pub fn is_blocked(&self, proposal_id: &str, worker_id: &str) -> bool {
+        self.blocks
+            .read()
+            .unwrap()
+            .iter()
+            .any(|b| b.proposal_id == proposal_id && b.worker_id == worker_id)
+    }
+
+    /// Register the pair-wide, immortal block and archive it. The in-memory
+    /// insert happens REGARDLESS of journal health — losing protection to a
+    /// journal outage would be fail-open. A failed append is still returned
+    /// as [`DrainAuthError::JournalUnavailable`] so the caller knows the
+    /// block will not survive a restart until the journal recovers.
+    fn block_pair(&self, proposal_id: &str, worker_id: &str) -> Result<(), DrainAuthError> {
+        // The block revokes any live approval for the pair: in the old model
+        // that revocation was a side effect of replacing the entry; here the
+        // block lives in its own section, so the revocation is explicit.
+        self.entries
+            .write()
+            .unwrap()
+            .retain(|e| !(e.proposal_id == proposal_id && e.worker_id == worker_id));
+        let mut blocks = self.blocks.write().unwrap();
+        let already = blocks
+            .iter()
+            .any(|b| b.proposal_id == proposal_id && b.worker_id == worker_id);
+        if !already {
+            if blocks.len() >= self.block_cap {
+                // 拒绝入档: the over-cap refusal is archived like any other
+                // refusal (best-effort — the refusal itself already refused).
+                let _ = self.append_receipt(
+                    crate::gate_receipt::ReceiptKind::Refused,
+                    proposal_id,
+                    worker_id,
+                    None,
+                    Some(DrainAuthError::RegistryFull.code()),
+                );
+                return Err(DrainAuthError::RegistryFull);
+            }
+            blocks.push(BlockEntry {
+                proposal_id: proposal_id.to_string(),
+                worker_id: worker_id.to_string(),
+            });
+        }
+        let receipt = crate::gate_receipt::Receipt {
+            seq: 0,
+            epoch: self.epoch.clone(),
+            kind: crate::gate_receipt::ReceiptKind::Blocked,
+            proposal_id: proposal_id.to_string(),
+            worker_id: worker_id.to_string(),
+            action: None,
+            code: None,
+            at: unix_now(),
+        };
+        match self.sink.append(&receipt) {
+            Ok(_) => Ok(()),
+            Err(_) => Err(DrainAuthError::JournalUnavailable),
+        }
+    }
+
+    /// Lift a block explicitly. Idempotent: unblocking a non-blocked pair
+    /// succeeds without appending anything (the journal only records the
+    /// lift that actually lifted something).
+    ///
+    /// The in-memory block is lifted FIRST; the journal append is best-effort.
+    /// On append failure the lift stands in memory but the journal still holds
+    /// the `blocked` line — a restart replays it and the block RESURRECTS (the
+    /// fail-closed direction), while this call answers
+    /// [`DrainAuthError::JournalUnavailable`] so the operator knows the lift
+    /// is not yet durable.
+    fn unblock_pair(&self, proposal_id: &str, worker_id: &str) -> Result<(), DrainAuthError> {
+        let removed = {
+            let mut blocks = self.blocks.write().unwrap();
+            let before = blocks.len();
+            blocks.retain(|b| !(b.proposal_id == proposal_id && b.worker_id == worker_id));
+            before != blocks.len()
+        };
+        if !removed {
+            return Ok(());
+        }
+        let receipt = crate::gate_receipt::Receipt {
+            seq: 0,
+            epoch: self.epoch.clone(),
+            kind: crate::gate_receipt::ReceiptKind::Unblocked,
+            proposal_id: proposal_id.to_string(),
+            worker_id: worker_id.to_string(),
+            action: None,
+            code: None,
+            at: unix_now(),
+        };
+        match self.sink.append(&receipt) {
+            Ok(_) => Ok(()),
+            Err(_) => Err(DrainAuthError::JournalUnavailable),
+        }
+    }
+
+    /// Append a receipt through the sink (helper for paths that hold no other
+    /// `self` borrow; the spend path calls `sink.append` directly to stay
+    /// field-disjoint from the entries guard).
+    fn append_receipt(
+        &self,
+        kind: crate::gate_receipt::ReceiptKind,
+        proposal_id: &str,
+        worker_id: &str,
+        action: Option<GateAction>,
+        code: Option<&str>,
+    ) -> Result<crate::gate_receipt::ReceiptAck, crate::gate_receipt::ReceiptError> {
+        let receipt = crate::gate_receipt::Receipt {
+            seq: 0,
+            epoch: self.epoch.clone(),
+            kind,
+            proposal_id: proposal_id.to_string(),
+            worker_id: worker_id.to_string(),
+            action: action.map(|a| a.as_str().to_string()),
+            code: code.map(str::to_string),
+            at: unix_now(),
+        };
+        self.sink.append(&receipt)
+    }
+
+    /// Record that a spent action's synchronous acceptance completed (the
+    /// pending marker now has its `done` pair). Best-effort: the action is
+    /// already out; a failed `done` append leaves the crash window open and
+    /// is logged, not fatal.
+    pub fn spend_completed(&self, proposal_id: &str, worker_id: &str, action: GateAction) {
+        let receipt = crate::gate_receipt::Receipt {
+            seq: 0,
+            epoch: self.epoch.clone(),
+            kind: crate::gate_receipt::ReceiptKind::Done,
+            proposal_id: proposal_id.to_string(),
+            worker_id: worker_id.to_string(),
+            action: Some(action.as_str().to_string()),
+            code: None,
+            at: unix_now(),
+        };
+        if let Err(error) = self.sink.append(&receipt) {
+            tracing::warn!(
+                proposal_id,
+                worker_id,
+                action = action.as_str(),
+                %error,
+                "gate receipt `done` append failed; the spend stays pending in the journal"
+            );
+        }
+    }
+
+    /// Insert replayed blocks (startup rehydration). Idempotent per pair;
+    /// over the block cap it refuses the remainder loudly — replay never
+    /// evicts.
+    pub fn rehydrate_blocks(&self, pairs: &[(String, String)]) -> usize {
+        let mut blocks = self.blocks.write().unwrap();
+        let mut inserted = 0usize;
+        for (proposal_id, worker_id) in pairs {
+            let already = blocks
+                .iter()
+                .any(|b| &b.proposal_id == proposal_id && &b.worker_id == worker_id);
+            if already {
+                continue;
+            }
+            if blocks.len() >= self.block_cap {
+                tracing::warn!(
+                    proposal_id,
+                    worker_id,
+                    block_cap = self.block_cap,
+                    "replayed block dropped: the block section is at capacity (replay never evicts)"
+                );
+                continue;
+            }
+            blocks.push(BlockEntry {
+                proposal_id: proposal_id.clone(),
+                worker_id: worker_id.clone(),
+            });
+            inserted += 1;
+        }
+        inserted
+    }
+
+    /// The minted epoch receipts from this registry carry.
+    #[must_use]
+    pub fn epoch(&self) -> &str {
+        &self.epoch
     }
 }
 
@@ -478,13 +815,70 @@ fn unix_now() -> u64 {
 
 /// The process-wide approval registry every MCP tool handler shares.
 ///
-/// malkuth's approvals live in-process (there is no second store to drift from),
-/// so one registry per server process is the whole contract. Defaults: 100
-/// entries, 300 s TTL.
+/// malkuth's approvals live in-process (there is no second store to drift
+/// from), so one registry per server process is the whole contract. Defaults:
+/// 100 entries, 300 s TTL.
+///
+/// Durability is deployment-wired: `MALKUTH_GATE_JOURNAL` names a JSONL file
+/// and the registry replays its blocks at construction (`rehydrate_blocks`)
+/// and appends every spend/block/refusal there — a spend whose receipt cannot
+/// be persisted refuses the action. Without the variable the registry falls
+/// back to the in-memory sink (nothing survives a restart; the pre-P1
+/// behavior, kept for tests and embedders that have not adopted the journal).
 #[must_use]
 pub fn global() -> &'static ApprovalRegistry {
     static REGISTRY: std::sync::OnceLock<ApprovalRegistry> = std::sync::OnceLock::new();
-    REGISTRY.get_or_init(ApprovalRegistry::default)
+    REGISTRY.get_or_init(|| {
+        let configured = std::env::var("MALKUTH_GATE_JOURNAL")
+            .ok()
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty());
+        registry_from_journal_path(configured.as_deref())
+    })
+}
+
+/// The startup assembly `global()` runs: a file-backed registry with its
+/// journal replayed when a path is configured, the in-memory sink otherwise.
+/// Split out of the `OnceLock` so the deployment wiring has a testable seam —
+/// process-global env vars cannot be set safely from parallel tests, but the
+/// function this feeds can be called directly.
+fn registry_from_journal_path(path: Option<&str>) -> ApprovalRegistry {
+    path.and_then(|path| match crate::gate_receipt::FileReceiptJournal::open(path) {
+            Ok(journal) => {
+                let (blocks, _) = crate::gate_receipt::replay_blocks(journal.path()).unwrap_or_else(
+                    |error| {
+                        tracing::warn!(
+                            journal = %path,
+                            %error,
+                            "block replay failed; operator blocks will NOT be restored this boot"
+                        );
+                        Default::default()
+                    },
+                );
+                let registry = ApprovalRegistry::with_sink(
+                    100,
+                    Duration::from_secs(300),
+                    std::sync::Arc::new(journal),
+                    crate::gate_receipt::boot_epoch(),
+                );
+                let rehydrated = registry.rehydrate_blocks(&blocks);
+                tracing::info!(
+                    journal = %path,
+                    rehydrated_blocks = rehydrated,
+                    "gate receipt journal wired; blocks replayed"
+                );
+                Some(registry)
+            }
+        Err(error) => {
+            tracing::error!(
+                journal = %path,
+                %error,
+                "gate journal could not be opened; falling back to the memory sink; gate receipts will NOT survive a restart"
+            );
+            None
+        }
+    })
+    .unwrap_or_else(|| ApprovalRegistry::new(100, Duration::from_secs(300)))
 }
 
 #[cfg(test)]
@@ -614,7 +1008,7 @@ mod tests {
     }
 
     #[test]
-    fn a_block_overrides_an_earlier_allow() {
+    fn a_block_refuses_a_later_allow() {
         let reg = registry();
         reg.approve(
             "prop-flip",
@@ -647,7 +1041,37 @@ mod tests {
             .expect_err("a blocked proposal must not authorize anything");
         assert_eq!(blocked.code(), "approval_blocked");
 
-        // Un-blocking is just another approval: the pair becomes usable again.
+        // P1: un-blocking is NO LONGER just another approval — a fresh allow
+        // on a blocked pair is refused (an autonomous loop must not be able
+        // to talk itself past the operator's stop); only an explicit
+        // `unblock` lifts it.
+        let re_allow = reg.approve(
+            "prop-flip",
+            "chest",
+            GateAction::Drain,
+            GateDecision::Allow,
+            None,
+        );
+        assert_eq!(re_allow.unwrap_err().code(), "approval_blocked");
+        assert_eq!(
+            reg.status("prop-flip", "chest", GateAction::Drain),
+            ApprovalStatus::Blocked
+        );
+
+        // The explicit unblock lifts the block; the pair is clean (no live
+        // approval), so a fresh allow registers and spends normally again.
+        reg.approve(
+            "prop-flip",
+            "chest",
+            GateAction::Drain,
+            GateDecision::Unblock,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            reg.status("prop-flip", "chest", GateAction::Drain),
+            ApprovalStatus::Unknown
+        );
         reg.approve(
             "prop-flip",
             "chest",
@@ -1062,5 +1486,350 @@ mod tests {
             None,
         )
         .expect("after the first entry expired the slot is free again");
+    }
+
+    // ── P1 durability: the receipt sink vetoes, blocks are immortal ──
+
+    use crate::gate_receipt::{FailingReceiptSink, MemoryReceiptSink, ReceiptKind, ReceiptSink};
+
+    fn temp_journal_path(tag: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!(
+            "malkuth-gate-journal-{}-{tag}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    fn memory_sink() -> std::sync::Arc<MemoryReceiptSink> {
+        std::sync::Arc::new(MemoryReceiptSink::new())
+    }
+
+    #[test]
+    fn a_journal_failure_refuses_the_spend_and_leaves_it_unspent() {
+        // `Err ⇒ 拒绝兑现`: the sink's veto un-spends the approval, so the
+        // caller can retry once the journal recovers — nothing was done and
+        // nothing was lost.
+        let reg = ApprovalRegistry::with_sink(
+            10,
+            Duration::from_secs(300),
+            std::sync::Arc::new(FailingReceiptSink::new()),
+            "epoch-test".into(),
+        );
+        reg.approve(
+            "prop-j",
+            "chest",
+            GateAction::Drain,
+            GateDecision::Allow,
+            None,
+        )
+        .unwrap();
+        let refused = validate_drain_request("chest", "prop-j", None, None, &reg)
+            .expect_err("a broken journal must veto the spend");
+        assert_eq!(refused.code(), "approval_journal_unavailable");
+        assert_eq!(
+            reg.status("prop-j", "chest", GateAction::Drain),
+            ApprovalStatus::Approved,
+            "the spend must be rolled back when the receipt cannot be persisted"
+        );
+    }
+
+    #[test]
+    fn a_block_refuses_a_later_allow_and_archives_the_refusal() {
+        let sink = memory_sink();
+        let reg =
+            ApprovalRegistry::with_sink(10, Duration::from_secs(300), sink.clone(), "e".into());
+        reg.approve(
+            "prop-b",
+            "chest",
+            GateAction::Drain,
+            GateDecision::Block,
+            None,
+        )
+        .unwrap();
+        // A fresh allow does NOT lift the block — it is refused outright.
+        let re_allowed = reg.approve(
+            "prop-b",
+            "chest",
+            GateAction::Drain,
+            GateDecision::Allow,
+            None,
+        );
+        assert_eq!(re_allowed.unwrap_err().code(), "approval_blocked");
+        // …and a spend against the block refuses too, with the refusal in the
+        // journal (拒绝入档).
+        let refused = validate_drain_request("chest", "prop-b", None, None, &reg)
+            .expect_err("a blocked pair must not authorize anything");
+        assert_eq!(refused.code(), "approval_blocked");
+        let archived = sink.receipts();
+        assert!(
+            archived.iter().any(|r| r.kind == ReceiptKind::Refused
+                && r.proposal_id == "prop-b"
+                && r.code.as_deref() == Some("approval_blocked")),
+            "the refusal must be archived: {archived:?}"
+        );
+    }
+
+    #[test]
+    fn blocks_survive_a_restart_through_the_journal() {
+        // 重启后 block 仍在: the block is written to the journal; a FRESH
+        // registry (the restarted process) replays it and refuses again.
+        let path = temp_journal_path("replay");
+        let first = ApprovalRegistry::with_sink(
+            10,
+            Duration::from_secs(300),
+            std::sync::Arc::new(crate::gate_receipt::FileReceiptJournal::open(&path).unwrap()),
+            "epoch-a".into(),
+        );
+        first
+            .approve(
+                "prop-r",
+                "chest",
+                GateAction::Drain,
+                GateDecision::Block,
+                None,
+            )
+            .unwrap();
+
+        // Restarted-process construction: replay the journal FIRST (this is
+        // the startup assembly `drain_auth::global()` performs), then answer.
+        let journal = crate::gate_receipt::FileReceiptJournal::open(&path).unwrap();
+        let (blocks, _) = crate::gate_receipt::replay_blocks(journal.path()).unwrap();
+        let restarted = ApprovalRegistry::with_sink(
+            10,
+            Duration::from_secs(300),
+            std::sync::Arc::new(journal),
+            "epoch-b".into(),
+        );
+        restarted.rehydrate_blocks(&blocks);
+        assert_eq!(
+            restarted.status("prop-r", "chest", GateAction::Drain),
+            ApprovalStatus::Blocked,
+            "the replayed block must be live in the restarted registry"
+        );
+        assert!(
+            validate_drain_request("chest", "prop-r", None, None, &restarted).is_err(),
+            "the replayed block must refuse the spend"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_flood_of_approvals_never_evicts_blocks() {
+        // 洪水不驱逐: approvals are capped and refuse when full; the block,
+        // which lives outside that capacity, keeps refusing regardless.
+        let reg = registry();
+        reg.approve(
+            "prop-flood",
+            "chest",
+            GateAction::Drain,
+            GateDecision::Block,
+            None,
+        )
+        .unwrap();
+        for i in 0..20 {
+            let outcome = reg.approve(
+                &format!("prop-fill-{i}"),
+                &format!("worker-{i}"),
+                GateAction::Drain,
+                GateDecision::Allow,
+                None,
+            );
+            if let Err(error) = outcome {
+                assert_eq!(error.code(), "approval_registry_full", "iteration {i}");
+            }
+        }
+        assert_eq!(
+            reg.status("prop-flood", "chest", GateAction::Drain),
+            ApprovalStatus::Blocked
+        );
+        assert!(
+            validate_drain_request("chest", "prop-flood", None, None, &reg).is_err(),
+            "the flood must not have lifted the block"
+        );
+    }
+
+    #[test]
+    fn the_configured_journal_is_wired_and_replayed() {
+        // The deployment seam `drain_auth::global()` feeds: a configured path
+        // must produce a registry whose block section was replayed from that
+        // journal; no configuration must produce a clean memory registry.
+        let path = temp_journal_path("wiring");
+        {
+            let journal = crate::gate_receipt::FileReceiptJournal::open(&path).unwrap();
+            journal
+                .append(&crate::gate_receipt::Receipt {
+                    seq: 0,
+                    epoch: "seed".into(),
+                    kind: ReceiptKind::Blocked,
+                    proposal_id: "prop-wire".into(),
+                    worker_id: "chest".into(),
+                    action: None,
+                    code: None,
+                    at: 0,
+                })
+                .unwrap();
+        }
+        let wired = registry_from_journal_path(Some(path.to_str().unwrap()));
+        assert_eq!(
+            wired.status("prop-wire", "chest", GateAction::Drain),
+            ApprovalStatus::Blocked,
+            "the wiring must replay operator blocks into the live registry"
+        );
+        let plain = registry_from_journal_path(None);
+        assert_eq!(
+            plain.status("prop-wire", "chest", GateAction::Drain),
+            ApprovalStatus::Unknown,
+            "without a configured journal there is nothing to replay"
+        );
+        // A path that cannot open (here: the empty path) must fall back to the
+        // memory registry loudly — never create stray files, never refuse the
+        // gate outright. (Blank/whitespace configs are filtered to None by
+        // `global()` before they reach this seam.)
+        let fallback = registry_from_journal_path(Some(""));
+        assert_eq!(
+            fallback.status("prop-wire", "chest", GateAction::Drain),
+            ApprovalStatus::Unknown
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_unblock_lifts_only_an_explicit_pair() {
+        let reg = registry();
+        reg.approve(
+            "prop-u",
+            "chest",
+            GateAction::Drain,
+            GateDecision::Block,
+            None,
+        )
+        .unwrap();
+        reg.approve(
+            "prop-u",
+            "other",
+            GateAction::Drain,
+            GateDecision::Block,
+            None,
+        )
+        .unwrap();
+        reg.approve(
+            "prop-u",
+            "chest",
+            GateAction::Drain,
+            GateDecision::Unblock,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            reg.status("prop-u", "chest", GateAction::Drain),
+            ApprovalStatus::Unknown,
+            "the unblocked pair must be clean"
+        );
+        assert_eq!(
+            reg.status("prop-u", "other", GateAction::Drain),
+            ApprovalStatus::Blocked,
+            "the sibling pair's block must be untouched"
+        );
+    }
+
+    #[test]
+    fn the_block_section_refuses_at_capacity_and_never_evicts() {
+        // README claim pinned: the 4097th distinct pair is REFUSED
+        // (`approval_registry_full`) and every earlier block still refuses its
+        // spend — capacity pressure never lifts protection.
+        let sink = memory_sink();
+        let reg =
+            ApprovalRegistry::with_sink(10, Duration::from_secs(300), sink.clone(), "e".into());
+        for i in 0..4096 {
+            let outcome = reg.approve(
+                &format!("prop-cap-{i}"),
+                "chest",
+                GateAction::Drain,
+                GateDecision::Block,
+                None,
+            );
+            assert!(outcome.is_ok(), "block {i} must register: {outcome:?}");
+        }
+        let over = reg.approve(
+            "prop-cap-4096",
+            "chest",
+            GateAction::Drain,
+            GateDecision::Block,
+            None,
+        );
+        assert_eq!(over.unwrap_err().code(), "approval_registry_full");
+        // The FIRST block is as immortal as ever after the section filled.
+        assert_eq!(
+            reg.status("prop-cap-0", "chest", GateAction::Drain),
+            ApprovalStatus::Blocked
+        );
+        // Over-cap REFUSAL is archived like any other refusal.
+        assert!(
+            sink.receipts()
+                .iter()
+                .any(|r| r.kind == ReceiptKind::Refused && r.proposal_id == "prop-cap-4096")
+        );
+    }
+
+    #[test]
+    fn a_spend_writes_pending_then_done() {
+        let sink = memory_sink();
+        let reg =
+            ApprovalRegistry::with_sink(10, Duration::from_secs(300), sink.clone(), "e".into());
+        reg.approve(
+            "prop-p",
+            "chest",
+            GateAction::Drain,
+            GateDecision::Allow,
+            None,
+        )
+        .unwrap();
+        validate_drain_request("chest", "prop-p", None, None, &reg).unwrap();
+        reg.spend_completed("prop-p", "chest", GateAction::Drain);
+        let kinds: Vec<ReceiptKind> = sink.receipts().iter().map(|r| r.kind).collect();
+        assert_eq!(kinds, vec![ReceiptKind::Pending, ReceiptKind::Done]);
+    }
+
+    #[test]
+    fn receipts_carry_the_registry_epoch_never_caller_fields() {
+        // 自持纪元: the epoch is minted by malkuth at construction; two
+        // registries stamp different epochs even when callers pass identical
+        // fields into identical flows.
+        let sink_a = memory_sink();
+        let sink_b = memory_sink();
+        let a = ApprovalRegistry::with_sink(
+            10,
+            Duration::from_secs(300),
+            sink_a.clone(),
+            "epoch-a".into(),
+        );
+        let b = ApprovalRegistry::with_sink(
+            10,
+            Duration::from_secs(300),
+            sink_b.clone(),
+            "epoch-b".into(),
+        );
+        assert_ne!(a.epoch(), b.epoch());
+        for reg in [&a, &b] {
+            reg.approve(
+                "prop-ea",
+                "chest",
+                GateAction::Drain,
+                GateDecision::Allow,
+                None,
+            )
+            .unwrap();
+            validate_drain_request("chest", "prop-ea", None, None, reg).unwrap();
+        }
+        for (sink, epoch) in [(sink_a, "epoch-a"), (sink_b, "epoch-b")] {
+            let receipts = sink.receipts();
+            assert!(
+                receipts.iter().all(|r| r.epoch == epoch),
+                "every receipt stamps its own registry's epoch: {receipts:?}"
+            );
+        }
     }
 }
