@@ -126,6 +126,13 @@ pub enum DrainAuthError {
     InvalidRequest,
     /// The drain budget is 0 or above the 300 s ceiling.
     InvalidBudget(u64),
+    /// The spend's resolved budget exceeds the grant's signed envelope.
+    BudgetExceeded {
+        /// The envelope the issuer signed into the grant.
+        granted: u64,
+        /// The budget this spend resolved to.
+        requested: u64,
+    },
     /// Nothing live is registered for this proposal + worker.
     Required,
     /// The approval outlived the registry TTL.
@@ -159,6 +166,7 @@ impl DrainAuthError {
         match self {
             Self::InvalidRequest => "invalid_request",
             Self::InvalidBudget(_) => "invalid_budget",
+            Self::BudgetExceeded { .. } => "approval_budget_exceeded",
             Self::Required => "approval_required",
             Self::Expired => "approval_expired",
             Self::Consumed => "approval_consumed",
@@ -179,6 +187,10 @@ impl std::fmt::Display for DrainAuthError {
             Self::InvalidBudget(budget) => write!(
                 f,
                 "drain_budget_secs {budget} is outside the accepted range (1..=300)"
+            ),
+            Self::BudgetExceeded { granted, requested } => write!(
+                f,
+                "the resolved spend budget {requested}s exceeds the grant's signed envelope ({granted}s)"
             ),
             Self::Required => f.write_str("no live approval for this proposal and worker"),
             Self::Expired => f.write_str("the approval has expired"),
@@ -244,6 +256,11 @@ struct BlockEntry {
 /// operator seeing the refusal is the correct response to a block flood, a
 /// silently dropped block is not.
 const BLOCK_CAP: usize = 4096;
+/// The authorization budget a drain spend resolves to when the caller
+/// passes none (the MCP drain path). Deliberately NOT the drain wait
+/// timeout: that is operational, this is the number a grant's signed
+/// envelope must cover for the spend to be authorized.
+const DEFAULT_DRAIN_BUDGET_SECS: u64 = 30;
 
 impl ApprovalRegistry {
     pub fn new(max_entries: usize, ttl: Duration) -> Self {
@@ -434,6 +451,7 @@ impl ApprovalRegistry {
         worker_id: &str,
         action: GateAction,
         live_identity: Option<(u64, u64)>,
+        spend_budget_secs: Option<u64>,
     ) -> Result<(), DrainAuthError> {
         let mut entries = self.entries.write().unwrap();
         // Blocks first, pair-wide and immortal: a spend against a blocked pair
@@ -499,6 +517,18 @@ impl ApprovalRegistry {
             if let Some(grant) = entry.grant.as_ref() {
                 if live_identity != Some((grant.pid, grant.starttime)) {
                     answer = Err(DrainAuthError::Unattested);
+                    break;
+                }
+                // Budget envelope (v2): a signed drain envelope caps what any
+                // spend of this approval may resolve to. `budget > 0` marks an
+                // enveloped grant (restart grants mint 0 = no envelope, and
+                // restart spends pass no budget either); the check fires
+                // before the spend is marked, so nothing is consumed.
+                if grant.budget > 0 && spend_budget_secs.is_some_and(|spend| spend > grant.budget) {
+                    answer = Err(DrainAuthError::BudgetExceeded {
+                        granted: grant.budget,
+                        requested: spend_budget_secs.unwrap_or_default(),
+                    });
                     break;
                 }
             }
@@ -803,7 +833,19 @@ pub fn validate_drain_request(
         }
     }
 
-    registry.consume(proposal_id, worker_id, GateAction::Drain, live_identity)
+    // The spend's authorization budget (v2): an explicit library budget is
+    // checked against the grant's signed envelope; `None` resolves to the
+    // service default — the MCP drain path never passes one, so its effective
+    // authorization budget is this constant (distinct from the drain WAIT
+    // timeout, which is operational and never authorized).
+    let spend_budget = drain_budget_secs.or(Some(DEFAULT_DRAIN_BUDGET_SECS));
+    registry.consume(
+        proposal_id,
+        worker_id,
+        GateAction::Drain,
+        live_identity,
+        spend_budget,
+    )
 }
 
 fn unix_now() -> u64 {
@@ -1214,7 +1256,7 @@ mod tests {
         assert_eq!(mismatch.code(), "approval_action_mismatch");
         // The approval is still whole for its own action.
         assert!(
-            reg.consume("prop-act", "chest", GateAction::Restart, None)
+            reg.consume("prop-act", "chest", GateAction::Restart, None, None)
                 .is_ok()
         );
     }
@@ -1226,6 +1268,7 @@ mod tests {
             pid,
             starttime,
             issued_at,
+            budget: 0,
             digest: "0".repeat(64),
             sig: "0".repeat(128),
         }
@@ -1262,6 +1305,113 @@ mod tests {
             validate_drain_request("chest", "prop-ident", Some(30), Some((4242, 987_654)), &reg)
                 .expect_err("identity match on a spent approval is still a replay");
         assert_eq!(replay.code(), "approval_consumed");
+    }
+
+    #[test]
+    fn a_spend_above_the_granted_envelope_refuses_and_lefts_it_unspent() {
+        let reg = registry();
+        let mut grant = grant_for(4242, 987_654, unix_now_test());
+        grant.budget = 10;
+        reg.approve(
+            "prop-cap",
+            "chest",
+            GateAction::Drain,
+            GateDecision::Allow,
+            Some(grant),
+        )
+        .unwrap();
+        // The library budget 30 resolves fine by itself, but the grant's
+        // signed envelope is 10: the spend refuses and the approval stays
+        // spendable (nothing was consumed).
+        let over =
+            validate_drain_request("chest", "prop-cap", Some(30), Some((4242, 987_654)), &reg)
+                .expect_err("a 30s spend must not pass a 10s envelope");
+        assert_eq!(over.code(), "approval_budget_exceeded");
+        assert_eq!(
+            reg.status("prop-cap", "chest", GateAction::Drain),
+            ApprovalStatus::Approved,
+            "an envelope refusal must not consume the approval"
+        );
+        // …and within the envelope the same approval spends.
+        assert!(
+            validate_drain_request("chest", "prop-cap", Some(10), Some((4242, 987_654)), &reg)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn the_resolved_default_refuses_an_envelope_below_thirty() {
+        // The MCP path passes no explicit budget: it resolves to the service
+        // default 30. A grant enveloped BELOW that default therefore refuses
+        // the default spend too — resolving `None` must never skip the
+        // comparison, only fill it in.
+        let reg = registry();
+        let mut grant = grant_for(4242, 987_654, unix_now_test());
+        grant.budget = 10;
+        reg.approve(
+            "prop-low",
+            "chest",
+            GateAction::Drain,
+            GateDecision::Allow,
+            Some(grant),
+        )
+        .unwrap();
+        let refused =
+            validate_drain_request("chest", "prop-low", None, Some((4242, 987_654)), &reg)
+                .expect_err("the resolved default 30 must exceed a 10s envelope");
+        assert_eq!(refused.code(), "approval_budget_exceeded");
+        assert_eq!(
+            reg.status("prop-low", "chest", GateAction::Drain),
+            ApprovalStatus::Approved,
+            "the default-budget refusal must not consume the approval"
+        );
+    }
+
+    #[test]
+    fn the_mcp_default_budget_resolves_against_the_envelope() {
+        let reg = registry();
+        let mut grant = grant_for(4242, 987_654, unix_now_test());
+        grant.budget = 30;
+        reg.approve(
+            "prop-mcp",
+            "chest",
+            GateAction::Drain,
+            GateDecision::Allow,
+            Some(grant),
+        )
+        .unwrap();
+        // The MCP drain path passes no explicit budget: it resolves to the
+        // service default (30) and must exactly meet a 30s envelope.
+        assert!(
+            validate_drain_request("chest", "prop-mcp", None, Some((4242, 987_654)), &reg).is_ok()
+        );
+    }
+
+    #[test]
+    fn an_envelopeless_grant_never_binds_a_restart_spend() {
+        let reg = registry();
+        // Restart grants mint budget 0 (no per-spend envelope) — a restart
+        // spend passes no budget either, so nothing is compared.
+        let mut grant = grant_for(4242, 987_654, unix_now_test());
+        grant.budget = 0;
+        reg.approve(
+            "prop-rs",
+            "chest",
+            GateAction::Restart,
+            GateDecision::Allow,
+            Some(grant),
+        )
+        .unwrap();
+        assert!(
+            reg.consume(
+                "prop-rs",
+                "chest",
+                GateAction::Restart,
+                Some((4242, 987_654)),
+                None
+            )
+            .is_ok()
+        );
     }
 
     #[test]

@@ -5,19 +5,33 @@
 //! canonical grant message:
 //!
 //! ```text
-//! malkuth-gate-grant/v1
+//! malkuth-gate-grant/v2
 //! proposal_id:<32 hex>
 //! worker_id:<id>
 //! action:<restart|drain>
 //! pid:<u64>
 //! starttime:<u64>
 //! issued_at:<unix sec u64>
+//! budget:<u64>
 //! ```
 //!
 //! (every line `\n`-terminated, including the last). The signature binds the
 //! approval to the exact live process identity (`pid` + `/proc` starttime) of
 //! the worker it names, so a grant minted for one worker incarnation cannot
 //! vouch for a different process, a respawned worker, or another action.
+//!
+//! # The budget envelope (v2)
+//!
+//! `budget` is the spend envelope the issuer vouches for, in action-specific
+//! seconds: for a `drain` grant it is the maximum drain budget (1..=300) the
+//! approval may be spent with; for a `restart` grant there is no per-spend
+//! budget, so it is minted as `0` (= "no envelope", documented shape, never
+//! an omitted line). At spend time malkuth resolves the effective budget and
+//! refuses the spend when it exceeds the granted envelope
+//! (`approval_budget_exceeded`) — a grant minted for a 30 s drain can never
+//! authorize a 300 s one. `/v1` messages and signatures are not accepted:
+//! every grant in the wild is re-issued for v2 by the same coordinated wave
+//! that ships this verifier.
 //!
 //! # Key material
 //!
@@ -78,6 +92,11 @@ pub struct GrantRecord {
     /// Issuer clock at signing (unix seconds). Cross-node skew is bounded by
     /// the registry TTL at registration (`approval_epoch_stale`).
     pub issued_at: u64,
+    /// The spend envelope the issuer vouches for (action-specific seconds:
+    /// max drain budget for `drain`; `0` = no per-spend envelope for
+    /// `restart`). A spend whose resolved budget exceeds this refuses with
+    /// `approval_budget_exceeded`.
+    pub budget: u64,
     /// SHA-256 of the canonical message, hex (audit copy).
     pub digest: String,
     /// The ed25519 signature itself, 128 hex chars (audit copy).
@@ -86,8 +105,8 @@ pub struct GrantRecord {
 
 /// The canonical signed message. Field order and separators are frozen: the
 /// scepter-side signer, the Rust verifier, and the devtools reference oracle
-/// all build this exact byte string. Any change is a new `/v2` prefix, never
-/// an edit of `/v1`.
+/// all build this exact byte string. Any change is a new `/v3` prefix, never
+/// an edit of `/v2`.
 #[must_use]
 pub fn grant_message(
     proposal_id: &str,
@@ -96,9 +115,10 @@ pub fn grant_message(
     pid: u64,
     starttime: u64,
     issued_at: u64,
+    budget: u64,
 ) -> String {
     format!(
-        "malkuth-gate-grant/v1\nproposal_id:{proposal_id}\nworker_id:{worker_id}\naction:{action}\npid:{pid}\nstarttime:{starttime}\nissued_at:{issued_at}\n"
+        "malkuth-gate-grant/v2\nproposal_id:{proposal_id}\nworker_id:{worker_id}\naction:{action}\npid:{pid}\nstarttime:{starttime}\nissued_at:{issued_at}\nbudget:{budget}\n"
     )
 }
 
@@ -241,40 +261,45 @@ pub(crate) mod tests {
     /// computed for it. Cross-pinned in celestia-devtools
     /// `tests/test_ed25519_ref.py` (companion branch `p0b-gate-seam`, PR
     /// celestia-devtools#274 — merges in the same P0b wave).
-    const GOLDEN: (&str, &str, &str, &str, u64, u64, u64) = (
+    const GOLDEN: (&str, &str, &str, &str, u64, u64, u64, u64) = (
         "0123456789abcdef0123456789abcdef",
         "w-alpha-1",
         "restart",
-        // sig over the message below, by TEST_SEED
-        "17d864db178f5ee0d72a12d6d69a5b3a558027e3679d08ac332f93368142f34382084fd0f26a0af523ef467658bb13fa292bd94cdb0ab363a7a123f3b55c520c",
+        // sig over the message below, by TEST_SEED (computed by the devtools
+        // pure-python RFC 8032 oracle; cross-pinned in
+        // celestia-devtools `tests/test_ed25519_ref.py`)
+        "2b8a563965ec4dbd53da9590adb89dd300a14ef6e6d810185ad7ef1501184a631f01cadefa84fbbc354cc2673ed7264a265b5562728bdc5e4aae063d2a31910a",
         4242,
         987654,
         1_762_610_000,
+        // restart grants carry no per-spend envelope: the documented 0 shape
+        0,
     );
-    const GOLDEN_DIGEST: &str = "3fc9ff018ff2baba21c744ec2ce4867db493048af4df11bf9ae501af4eef48d5";
+    const GOLDEN_DIGEST: &str = "14bd74290ea816427c318773170191be77aa5a16938979dae52bb3d183a4eb48";
 
     fn golden_message() -> String {
-        let (proposal, worker, action, _sig, pid, starttime, issued_at) = GOLDEN;
-        grant_message(proposal, worker, action, pid, starttime, issued_at)
+        let (proposal, worker, action, _sig, pid, starttime, issued_at, budget) = GOLDEN;
+        grant_message(proposal, worker, action, pid, starttime, issued_at, budget)
     }
 
     #[test]
     fn canonical_message_is_frozen() {
         assert_eq!(
             golden_message(),
-            "malkuth-gate-grant/v1\n\
+            "malkuth-gate-grant/v2\n\
              proposal_id:0123456789abcdef0123456789abcdef\n\
              worker_id:w-alpha-1\n\
              action:restart\n\
              pid:4242\n\
              starttime:987654\n\
-             issued_at:1762610000\n"
+             issued_at:1762610000\n\
+             budget:0\n"
         );
     }
 
     #[test]
     fn golden_vector_verifies_and_pins_the_digest() {
-        let (_, _, _, sig, _, _, _) = GOLDEN;
+        let (_, _, _, sig, _, _, _, _) = GOLDEN;
         assert_eq!(grant_digest(&golden_message()), GOLDEN_DIGEST);
         assert_eq!(
             verify_with_key(&golden_message(), sig, TEST_VERIFY_KEY_HEX),
@@ -284,8 +309,8 @@ pub(crate) mod tests {
 
     #[test]
     fn every_field_is_bound_by_the_signature() {
-        let (proposal, worker, action, sig, pid, starttime, issued_at) = GOLDEN;
-        let cases: [String; 6] = [
+        let (proposal, worker, action, sig, pid, starttime, issued_at, budget) = GOLDEN;
+        let cases: [String; 7] = [
             grant_message(
                 &format!("{proposal}:x"),
                 worker,
@@ -293,6 +318,7 @@ pub(crate) mod tests {
                 pid,
                 starttime,
                 issued_at,
+                budget,
             ),
             grant_message(
                 proposal,
@@ -301,11 +327,45 @@ pub(crate) mod tests {
                 pid,
                 starttime,
                 issued_at,
+                budget,
             ),
-            grant_message(proposal, worker, "drain", pid, starttime, issued_at),
-            grant_message(proposal, worker, action, pid + 1, starttime, issued_at),
-            grant_message(proposal, worker, action, pid, starttime + 1, issued_at),
-            grant_message(proposal, worker, action, pid, starttime, issued_at + 1),
+            grant_message(proposal, worker, "drain", pid, starttime, issued_at, budget),
+            grant_message(
+                proposal,
+                worker,
+                action,
+                pid + 1,
+                starttime,
+                issued_at,
+                budget,
+            ),
+            grant_message(
+                proposal,
+                worker,
+                action,
+                pid,
+                starttime + 1,
+                issued_at,
+                budget,
+            ),
+            grant_message(
+                proposal,
+                worker,
+                action,
+                pid,
+                starttime,
+                issued_at + 1,
+                budget,
+            ),
+            grant_message(
+                proposal,
+                worker,
+                action,
+                pid,
+                starttime,
+                issued_at,
+                budget + 1,
+            ),
         ];
         for tampered in cases {
             assert_eq!(
@@ -318,7 +378,7 @@ pub(crate) mod tests {
 
     #[test]
     fn malformed_signature_and_key_encodings_are_refused() {
-        let (_, _, _, sig, _, _, _) = GOLDEN;
+        let (_, _, _, sig, _, _, _, _) = GOLDEN;
         assert_eq!(
             verify_with_key(&golden_message(), "zz", TEST_VERIFY_KEY_HEX),
             Err(GrantError::MalformedSignature)
@@ -344,6 +404,7 @@ pub(crate) mod tests {
             7,
             8,
             9,
+            300,
         );
         let sig = signing.sign(msg.as_bytes());
         assert_eq!(

@@ -711,6 +711,29 @@ impl Server {
                         .into(),
                 );
             };
+            // The v2 budget envelope: a drain grant MUST name one (1..=300);
+            // a restart grant carries no per-spend envelope and must omit the
+            // field (or pass 0). The envelope is signed into the message, so
+            // a wrong value fails verification — but a missing/oversized
+            // request is a shape error and answers here, before crypto.
+            let budget = match (action, args.budget_secs) {
+                (GateAction::Drain, Some(budget)) if (1..=300).contains(&budget) => budget,
+                (GateAction::Drain, _) => {
+                    return Self::error_payload(
+                        "invalid_request",
+                        "a drain grant must carry `budget_secs` (1..=300) — the maximum drain budget this approval may be spent with",
+                    );
+                }
+                (GateAction::Restart, None | Some(0)) => 0,
+                (GateAction::Restart, Some(other)) => {
+                    return Self::error_payload(
+                        "invalid_request",
+                        format!(
+                            "a restart grant carries no per-spend budget envelope; omit `budget_secs` (got {other})"
+                        ),
+                    );
+                }
+            };
             // The canonical grant message embeds the proposal id as bare
             // 32-hex (scepter's `gate_proposal_id` shape); anything else can
             // never have been signed. Lowercase-strict like every other hex
@@ -760,6 +783,7 @@ impl Server {
                 identity.0,
                 identity.1,
                 issued_at,
+                budget,
             );
             if let Err(error) =
                 crate::gate_grant::verify_with_key(&message, sig, &self.gate_verify_key)
@@ -772,6 +796,7 @@ impl Server {
                 pid: identity.0,
                 starttime: identity.1,
                 issued_at,
+                budget,
                 digest: crate::gate_grant::grant_digest(&message),
                 sig: sig.to_string(),
             })
@@ -909,6 +934,7 @@ impl Server {
             &args.worker_id,
             GateAction::Restart,
             live_identity,
+            None,
         ) {
             run.rollback_restart_accept(&args.worker_id, count_at_accept);
             return Self::error_payload(error.code(), error.to_string());
@@ -1059,6 +1085,14 @@ struct ApproveArgs {
     /// skew, TTL past) is refused (`approval_epoch_stale`).
     #[serde(default)]
     issued_at: Option<u64>,
+    /// The grant's spend envelope in seconds, signed into the v2 grant
+    /// message (`budget:` line). Required for a `drain` grant (1..=300 — the
+    /// maximum drain budget this approval may ever be spent with); a
+    /// `restart` grant carries no per-spend envelope and must omit it (or
+    /// pass 0). A spend that resolves above the granted envelope refuses
+    /// (`approval_budget_exceeded`).
+    #[serde(default)]
+    budget_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1837,6 +1871,7 @@ mod tests {
             decision: Some("block".into()),
             sig: None,
             issued_at: None,
+            budget_secs: None,
         });
         assert_eq!(blocked["ok"], json!(true));
         assert_eq!(blocked["registered"], json!(true));
@@ -1861,6 +1896,7 @@ mod tests {
             decision: Some("unblock".into()),
             sig: None,
             issued_at: None,
+            budget_secs: None,
         });
         assert_eq!(unblocked["ok"], json!(true));
         assert_eq!(unblocked["decision"], json!("unblock"));
@@ -1878,6 +1914,7 @@ mod tests {
             decision: None,
             sig: None,
             issued_at: None,
+            budget_secs: None,
         });
         assert_eq!(no_decision["code"], json!("approval_decision_required"));
 
@@ -1889,6 +1926,7 @@ mod tests {
             decision: Some("allow".into()),
             sig: None,
             issued_at: None,
+            budget_secs: None,
         });
         assert_eq!(no_action["code"], json!("approval_action_required"));
 
@@ -1899,6 +1937,7 @@ mod tests {
             decision: Some("allow".into()),
             sig: None,
             issued_at: None,
+            budget_secs: None,
         });
         assert_eq!(empty["code"], json!("invalid_request"));
 
@@ -1909,6 +1948,7 @@ mod tests {
             decision: Some("maybe".into()),
             sig: None,
             issued_at: None,
+            budget_secs: None,
         });
         assert_eq!(bad["code"], json!("unsupported_decision"));
 
@@ -1919,6 +1959,7 @@ mod tests {
             decision: Some("allow".into()),
             sig: None,
             issued_at: None,
+            budget_secs: None,
         });
         assert_eq!(bad_action["code"], json!("unsupported_action"));
 
@@ -1932,6 +1973,7 @@ mod tests {
                 decision: Some(decision.into()),
                 sig: None,
                 issued_at: None,
+                budget_secs: None,
             });
             assert_eq!(unattested["ok"], json!(false));
             assert_eq!(unattested["code"], json!("approval_unattested"));
@@ -1966,12 +2008,35 @@ mod tests {
     }
 
     /// `allow` args carrying a runtime-signed grant over the given identity.
+    /// `budget_secs` follows the v2 shape: a drain grant names its envelope
+    /// (default 30 = the service budget), a restart grant carries none.
     fn signed_grant_args(
         worker_id: &str,
         action: GateAction,
         proposal: &str,
         identity: (u64, u64),
         issued_at: u64,
+    ) -> ApproveArgs {
+        signed_grant_args_with_budget(
+            worker_id,
+            action,
+            proposal,
+            identity,
+            issued_at,
+            match action {
+                GateAction::Drain => Some(30),
+                GateAction::Restart => None,
+            },
+        )
+    }
+
+    fn signed_grant_args_with_budget(
+        worker_id: &str,
+        action: GateAction,
+        proposal: &str,
+        identity: (u64, u64),
+        issued_at: u64,
+        budget_secs: Option<u64>,
     ) -> ApproveArgs {
         let message = crate::gate_grant::grant_message(
             proposal,
@@ -1980,6 +2045,7 @@ mod tests {
             identity.0,
             identity.1,
             issued_at,
+            budget_secs.unwrap_or(0),
         );
         ApproveArgs {
             proposal_id: proposal.into(),
@@ -1988,7 +2054,56 @@ mod tests {
             decision: Some("allow".into()),
             sig: Some(crate::gate_grant::tests::sign_test_message(&message)),
             issued_at: Some(issued_at),
+            budget_secs,
         }
+    }
+
+    #[test]
+    fn the_v2_budget_envelope_is_shape_checked_at_the_boundary() {
+        let server = test_server();
+        // A drain grant MUST name a budget (1..=300): missing ⇒ invalid_request
+        // before any crypto.
+        let missing = server.approve_payload(&ApproveArgs {
+            proposal_id: "0123456789abcdef0123456789abcdef".into(),
+            worker_id: "api".into(),
+            action: Some("drain".into()),
+            decision: Some("allow".into()),
+            sig: Some("00".into()),
+            issued_at: Some(1),
+            budget_secs: None,
+        });
+        assert_eq!(missing["code"], json!("invalid_request"), "{missing}");
+        assert!(missing["message"].as_str().unwrap().contains("budget_secs"));
+
+        // An oversized envelope is a shape error too.
+        let oversized = server.approve_payload(&ApproveArgs {
+            proposal_id: "0123456789abcdef0123456789abcdef".into(),
+            worker_id: "api".into(),
+            action: Some("drain".into()),
+            decision: Some("allow".into()),
+            sig: Some("00".into()),
+            issued_at: Some(1),
+            budget_secs: Some(400),
+        });
+        assert_eq!(oversized["code"], json!("invalid_request"));
+
+        // A restart grant carries no envelope: a nonzero one is refused.
+        let restart_budget = server.approve_payload(&ApproveArgs {
+            proposal_id: "0123456789abcdef0123456789abcdef".into(),
+            worker_id: "api".into(),
+            action: Some("restart".into()),
+            decision: Some("allow".into()),
+            sig: Some("00".into()),
+            issued_at: Some(1),
+            budget_secs: Some(500),
+        });
+        assert_eq!(restart_budget["code"], json!("invalid_request"));
+        assert!(
+            restart_budget["message"]
+                .as_str()
+                .unwrap()
+                .contains("no per-spend budget")
+        );
     }
 
     #[tokio::test]
