@@ -243,8 +243,10 @@ future skew, 300 s TTL), and `approval_registry_full` means a bounded section
 is at capacity — the approval registry refuses instead of silently evicting
 older approvals (a same-pair re-approval still replaces its own entry), and the
 operator block list refuses its 4097th distinct pair rather than evicting a
-block. `approval_blocked` covers both the spend against a blocked pair and a
-later `allow`/`review` attempt on it. `approval_journal_unavailable` means the
+block. `approval_blocked` covers the spend against a blocked pair, a later
+`allow`/`review` attempt on it, and a redundant re-`block` of an
+already-blocked pair (blocks are refused rather than silently idempotent —
+the refusal receipt is archived either way). `approval_journal_unavailable` means the
 receipt journal refused the write: the spend is refused and the approval left
 unspent (fail-closed — retry after the journal recovers).
 `invalid_budget` is reachable only through the library API — the MCP paths pass

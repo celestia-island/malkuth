@@ -403,6 +403,9 @@ impl ApprovalRegistry {
                 return ApprovalStatus::WrongAction;
             }
 
+            // Defense-in-depth: since P1 no entry with decision==Block can
+            // exist (approve routes block/unblock away and block_pair revokes
+            // entries), so this branch is unreachable — kept harmless.
             if entry.decision == GateDecision::Block {
                 return ApprovalStatus::Blocked;
             }
@@ -472,6 +475,8 @@ impl ApprovalRegistry {
                 break;
             }
 
+            // Defense-in-depth: unreachable since P1 (no Block entries can be
+            // created; see the note in `status`).
             if entry.decision == GateDecision::Block {
                 answer = Err(DrainAuthError::Blocked);
                 break;
@@ -595,6 +600,15 @@ impl ApprovalRegistry {
             .any(|b| b.proposal_id == proposal_id && b.worker_id == worker_id);
         if !already {
             if blocks.len() >= self.block_cap {
+                // 拒绝入档: the over-cap refusal is archived like any other
+                // refusal (best-effort — the refusal itself already refused).
+                let _ = self.append_receipt(
+                    crate::gate_receipt::ReceiptKind::Refused,
+                    proposal_id,
+                    worker_id,
+                    None,
+                    Some(DrainAuthError::RegistryFull.code()),
+                );
                 return Err(DrainAuthError::RegistryFull);
             }
             blocks.push(BlockEntry {
@@ -621,6 +635,13 @@ impl ApprovalRegistry {
     /// Lift a block explicitly. Idempotent: unblocking a non-blocked pair
     /// succeeds without appending anything (the journal only records the
     /// lift that actually lifted something).
+    ///
+    /// The in-memory block is lifted FIRST; the journal append is best-effort.
+    /// On append failure the lift stands in memory but the journal still holds
+    /// the `blocked` line — a restart replays it and the block RESURRECTS (the
+    /// fail-closed direction), while this call answers
+    /// [`DrainAuthError::JournalUnavailable`] so the operator knows the lift
+    /// is not yet durable.
     fn unblock_pair(&self, proposal_id: &str, worker_id: &str) -> Result<(), DrainAuthError> {
         let removed = {
             let mut blocks = self.blocks.write().unwrap();
@@ -822,24 +843,18 @@ pub fn global() -> &'static ApprovalRegistry {
 /// process-global env vars cannot be set safely from parallel tests, but the
 /// function this feeds can be called directly.
 fn registry_from_journal_path(path: Option<&str>) -> ApprovalRegistry {
-    path.and_then(|path| {
-        // A configured-but-unwritable journal is an operator mistake that must
-        // be LOUD; the open below answers the same way.
-        if let Err(error) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(std::path::Path::new(path))
-        {
-            tracing::error!(
-                journal = %path,
-                %error,
-                "MALKUTH_GATE_JOURNAL is set but not writable; gate receipts will NOT survive a restart"
-            );
-        }
-        match crate::gate_receipt::FileReceiptJournal::open(path) {
+    path.and_then(|path| match crate::gate_receipt::FileReceiptJournal::open(path) {
             Ok(journal) => {
-                let (blocks, _) =
-                    crate::gate_receipt::replay_blocks(journal.path()).unwrap_or_default();
+                let (blocks, _) = crate::gate_receipt::replay_blocks(journal.path()).unwrap_or_else(
+                    |error| {
+                        tracing::warn!(
+                            journal = %path,
+                            %error,
+                            "block replay failed; operator blocks will NOT be restored this boot"
+                        );
+                        Default::default()
+                    },
+                );
                 let registry = ApprovalRegistry::with_sink(
                     100,
                     Duration::from_secs(300),
@@ -854,14 +869,13 @@ fn registry_from_journal_path(path: Option<&str>) -> ApprovalRegistry {
                 );
                 Some(registry)
             }
-            Err(error) => {
-                tracing::error!(
-                    journal = %path,
-                    %error,
-                    "gate journal could not be opened; falling back to the memory sink"
-                );
-                None
-            }
+        Err(error) => {
+            tracing::error!(
+                journal = %path,
+                %error,
+                "gate journal could not be opened; falling back to the memory sink; gate receipts will NOT survive a restart"
+            );
+            None
         }
     })
     .unwrap_or_else(|| ApprovalRegistry::new(100, Duration::from_secs(300)))
@@ -1670,10 +1684,13 @@ mod tests {
             ApprovalStatus::Unknown,
             "without a configured journal there is nothing to replay"
         );
-        // An empty-string configuration must behave like None (treated as unset).
-        let blank = registry_from_journal_path(Some("   "));
+        // A path that cannot open (here: the empty path) must fall back to the
+        // memory registry loudly — never create stray files, never refuse the
+        // gate outright. (Blank/whitespace configs are filtered to None by
+        // `global()` before they reach this seam.)
+        let fallback = registry_from_journal_path(Some(""));
         assert_eq!(
-            blank.status("prop-wire", "chest", GateAction::Drain),
+            fallback.status("prop-wire", "chest", GateAction::Drain),
             ApprovalStatus::Unknown
         );
         let _ = std::fs::remove_file(&path);
@@ -1715,6 +1732,45 @@ mod tests {
             reg.status("prop-u", "other", GateAction::Drain),
             ApprovalStatus::Blocked,
             "the sibling pair's block must be untouched"
+        );
+    }
+
+    #[test]
+    fn the_block_section_refuses_at_capacity_and_never_evicts() {
+        // README claim pinned: the 4097th distinct pair is REFUSED
+        // (`approval_registry_full`) and every earlier block still refuses its
+        // spend — capacity pressure never lifts protection.
+        let sink = memory_sink();
+        let reg =
+            ApprovalRegistry::with_sink(10, Duration::from_secs(300), sink.clone(), "e".into());
+        for i in 0..4096 {
+            let outcome = reg.approve(
+                &format!("prop-cap-{i}"),
+                "chest",
+                GateAction::Drain,
+                GateDecision::Block,
+                None,
+            );
+            assert!(outcome.is_ok(), "block {i} must register: {outcome:?}");
+        }
+        let over = reg.approve(
+            "prop-cap-4096",
+            "chest",
+            GateAction::Drain,
+            GateDecision::Block,
+            None,
+        );
+        assert_eq!(over.unwrap_err().code(), "approval_registry_full");
+        // The FIRST block is as immortal as ever after the section filled.
+        assert_eq!(
+            reg.status("prop-cap-0", "chest", GateAction::Drain),
+            ApprovalStatus::Blocked
+        );
+        // Over-cap REFUSAL is archived like any other refusal.
+        assert!(
+            sink.receipts()
+                .iter()
+                .any(|r| r.kind == ReceiptKind::Refused && r.proposal_id == "prop-cap-4096")
         );
     }
 

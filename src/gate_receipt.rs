@@ -216,9 +216,10 @@ impl FileReceiptJournal {
     /// # Errors
     ///
     /// [`ReceiptError::Io`] when the file cannot be opened — the caller
-    /// decides whether that is fatal (a configured-but-unopenable journal
-    /// means the operator asked for durability malkuth cannot provide: the
-    /// server construction refuses rather than silently dropping to memory).
+    /// decides whether that is fatal. The startup seam
+    /// (`drain_auth::registry_from_journal_path`) logs loudly and falls back
+    /// to the in-memory sink: the gate keeps working, but receipts will not
+    /// survive a restart until the journal path is fixed.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, ReceiptError> {
         let path = path.into();
         let file = std::fs::OpenOptions::new()
