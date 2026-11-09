@@ -495,6 +495,25 @@ mod tests {
 
     #[tokio::test]
     async fn remote_probe_reads_local_repo() {
+        // probe_remote spawns `git` with the PROCESS cwd inherited. When the
+        // tests run inside a container whose source mount is a git worktree
+        // (a `.git` FILE naming a gitdir outside the mount), repo discovery
+        // fails with exit 128 for EVERY invocation regardless of arguments —
+        // the fixture below is fine; the shell around it is not. That is a
+        // host-mount artifact, not this test's subject: skip when the process
+        // cwd looks like a repo but git cannot even find it, in the same
+        // spirit as the git-unavailable guard further down.
+        let cwd = std::env::current_dir().unwrap_or_default();
+        if cwd.join(".git").exists() {
+            let discovery_ok = std::process::Command::new("git")
+                .args(["rev-parse", "--show-toplevel"])
+                .output()
+                .map(|out| out.status.success())
+                .unwrap_or(false);
+            if !discovery_ok {
+                return; // broken repo discovery from the process cwd; skip
+            }
+        }
         // A throwaway local git repo: HEAD resolves and changes on commit.
         let dir = std::env::temp_dir().join(format!(
             "malkuth-remote-{}-{:?}",
