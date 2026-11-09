@@ -1340,6 +1340,33 @@ mod tests {
     }
 
     #[test]
+    fn the_resolved_default_refuses_an_envelope_below_thirty() {
+        // The MCP path passes no explicit budget: it resolves to the service
+        // default 30. A grant enveloped BELOW that default therefore refuses
+        // the default spend too — resolving `None` must never skip the
+        // comparison, only fill it in.
+        let reg = registry();
+        let mut grant = grant_for(4242, 987_654, unix_now_test());
+        grant.budget = 10;
+        reg.approve(
+            "prop-low",
+            "chest",
+            GateAction::Drain,
+            GateDecision::Allow,
+            Some(grant),
+        )
+        .unwrap();
+        let refused = validate_drain_request("chest", "prop-low", None, Some((4242, 987_654)), &reg)
+            .expect_err("the resolved default 30 must exceed a 10s envelope");
+        assert_eq!(refused.code(), "approval_budget_exceeded");
+        assert_eq!(
+            reg.status("prop-low", "chest", GateAction::Drain),
+            ApprovalStatus::Approved,
+            "the default-budget refusal must not consume the approval"
+        );
+    }
+
+    #[test]
     fn the_mcp_default_budget_resolves_against_the_envelope() {
         let reg = registry();
         let mut grant = grant_for(4242, 987_654, unix_now_test());
