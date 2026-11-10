@@ -173,8 +173,13 @@ fn classify_health_body(body: Option<&str>) -> ProbeOutcome {
 /// any probe failure, which the fetcher maps to idle — ends the wait at once.
 /// The total wait never exceeds `cap`: the final pause is clamped so the
 /// wait lands exactly on the cap, then the restart proceeds regardless
-/// (fail-open beats blocking a rollout). `cap == 0` disables probing
-/// entirely (`--busy-wait-secs 0` = today's behavior).
+/// (fail-open beats blocking a rollout). `cap == 0` (`--busy-wait-secs 0`)
+/// switches the probe off entirely: no reading, no pause, the restart is
+/// handed straight back. That flag disables ONLY the probe — the
+/// duplicate-trigger coalescing that landed with it still runs at all three
+/// discard sites, so it is not literally the pre-flag behaviour: a pod asked
+/// to restart twice in quick succession still drains once instead of twice
+/// (one drain round fewer, never more).
 async fn wait_until_idle_with<P: BusyWaitIo>(
     probe: &mut P,
     pod: usize,
@@ -242,6 +247,27 @@ async fn wait_until_idle_with<P: BusyWaitIo>(
     }
 }
 
+/// The shared `/health` probe client, built once at startup.
+///
+/// `.no_proxy()` is load-bearing, not a nicety (review round 3, must-fix): the
+/// probe always addresses a pod on this host's own backend port, while
+/// reqwest's default "system" proxy matcher reads `HTTP_PROXY` /
+/// `HTTPS_PROXY` / `ALL_PROXY` when the client is BUILT. A unit started from a
+/// shell that exports the workspace build proxy — routine here, not exotic —
+/// would then route every probe through that proxy, which cannot reach the
+/// pod. Every probe would fail, and since every failure maps to idle
+/// (fail-open) the busy wait would silently never delay a restart: the C+B
+/// protection would look alive in the logs ("never delayed") while doing
+/// nothing at all. Only this client bypasses the proxy;
+/// `malkuth::http_client_builder()` keeps its global semantics for every other
+/// HTTP user.
+fn build_busy_probe_client() -> Result<reqwest::Client, reqwest::Error> {
+    malkuth::http_client_builder()
+        .timeout(BUSY_PROBE_HTTP_TIMEOUT)
+        .no_proxy()
+        .build()
+}
+
 /// `http://<host>:<port>/health` for a pod on `port`. Addresses the pod
 /// exactly like the readiness TCP probe ([`PodManager::wait_ready`]) so a pod
 /// bound to a non-default `--host` is still reached; an unparseable host falls
@@ -302,12 +328,11 @@ impl PodManager {
         // reqwest's client owns the connection pool, and rebuilding it per
         // restart would throw that away. `http_client_builder` is the crate's
         // canonical builder — it installs the process-wide rustls provider
-        // (this binary is built with `rustls-no-provider`). A build failure
-        // disables only the busy wait; rolling restarts proceed (fail-open).
-        let busy_probe_client = match malkuth::http_client_builder()
-            .timeout(BUSY_PROBE_HTTP_TIMEOUT)
-            .build()
-        {
+        // (this binary is built with `rustls-no-provider`); the probe client
+        // additionally bypasses the proxy environment (see
+        // [`build_busy_probe_client`]). A build failure disables only the busy
+        // wait; rolling restarts proceed (fail-open).
+        let busy_probe_client = match build_busy_probe_client() {
             Ok(client) => Some(client),
             Err(e) => {
                 warn!(
@@ -1280,8 +1305,14 @@ mod busy_wait_tests {
     // can produce.
 
     fn probe_client(timeout: Duration) -> reqwest::Client {
+        // `.no_proxy()` for the same reason the production client has it
+        // (review round 3): these tests address a loopback fake pod, and a
+        // proxy exported by the developer's shell — or by the brief override
+        // window of `probe_in_flight_ignores_proxy_env_vars` — must not
+        // reroute them.
         malkuth::http_client_builder()
             .timeout(timeout)
+            .no_proxy()
             .build()
             .expect("build probe client")
     }
@@ -1371,5 +1402,133 @@ mod busy_wait_tests {
             started.elapsed()
         );
         silent.abort();
+    }
+
+    // ── Proxy-environment immunity (review round 3, must-fix) ─────────
+    //
+    // The probe always dials a loopback pod. A unit started from a shell that
+    // exports `HTTP_PROXY`/`ALL_PROXY` (routine in this workspace) would, with
+    // a proxy-honoring client, send every probe to that proxy instead — all
+    // probes fail, all failures map to idle (fail-open), and the busy wait
+    // silently never delays a single restart: the C+B protection would look
+    // alive ("never delayed") while doing nothing. These tests pin the
+    // `.no_proxy()` on the production client.
+
+    /// Process env is global, so every test mutating proxy variables must hold
+    /// this lock. The critical section is deliberately tiny: reqwest resolves
+    /// the "system" proxy once, inside `Client::builder().build()`, so the dead
+    /// proxy only has to be in place while the clients are BUILT. The probes
+    /// run afterwards, outside the lock, with the environment already restored.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Every spelling reqwest's system-proxy matcher consults: the upper-case
+    /// name wins when both exist, so the override below sets upper-case and
+    /// clears `NO_PROXY` in both spellings.
+    const PROXY_ENV_VARS: [&str; 8] = [
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "NO_PROXY",
+        "no_proxy",
+    ];
+
+    /// Points every proxy variable at a dead port and clears `NO_PROXY` for as
+    /// long as it lives, then restores the exact prior state — value or
+    /// absence — and releases [`ENV_LOCK`]. Restoring on `Drop` means a panic
+    /// in `body` cannot leak the dead proxy into the rest of the suite.
+    struct DeadProxyEnv {
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+        /// Released explicitly in `Drop`, after the restore, so the restore
+        /// stays inside the critical section.
+        guard: Option<std::sync::MutexGuard<'static, ()>>,
+    }
+
+    impl Drop for DeadProxyEnv {
+        fn drop(&mut self) {
+            // SAFETY: the guard is still held, so this is the exclusive
+            // section — and it is the last write to these variables before
+            // the lock is released below.
+            unsafe {
+                for (name, prior) in &self.saved {
+                    match prior {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+            self.guard.take();
+        }
+    }
+
+    fn with_dead_proxy_env<T>(body: impl FnOnce() -> T) -> T {
+        // A panic inside `body` poisons the lock while the restore above still
+        // runs, so take the guard without panicking on poison: a later test
+        // must be able to enter.
+        let guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let saved = PROXY_ENV_VARS
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect::<Vec<_>>();
+        let _restore = DeadProxyEnv {
+            saved,
+            guard: Some(guard),
+        };
+        // SAFETY: exclusive under ENV_LOCK; `DeadProxyEnv::drop` restores it.
+        unsafe {
+            for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
+                std::env::set_var(name, "http://127.0.0.1:1");
+            }
+            for name in ["NO_PROXY", "no_proxy"] {
+                std::env::remove_var(name);
+            }
+        }
+        body()
+    }
+
+    /// With a dead proxy exported and no `NO_PROXY`, the production probe
+    /// client must still reach the loopback pod: `Busy(3)`, not the idle a
+    /// proxy-bound client would report. The control client — the same builder
+    /// without `.no_proxy()`, i.e. the pre-fix shape — must be captured by the
+    /// environment and read idle, which is what makes the first assertion mean
+    /// something: it proves these variables really would break the probe here,
+    /// instead of the test passing because reqwest ignores them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn probe_in_flight_ignores_proxy_env_vars() {
+        use super::fake_pod;
+
+        let (production, control) = with_dead_proxy_env(|| {
+            (
+                build_busy_probe_client().expect("build the /health probe client"),
+                malkuth::http_client_builder()
+                    .timeout(BUSY_PROBE_HTTP_TIMEOUT)
+                    .build()
+                    .expect("build the control client"),
+            )
+        });
+
+        let port = fake_pod::scripted(vec![fake_pod::reply(200, r#"{"in_flight_turns":3}"#)]).await;
+        let got = probe_in_flight(&production, &format!("http://127.0.0.1:{port}/health")).await;
+        assert_eq!(
+            got,
+            ProbeOutcome::Busy(3),
+            "a proxy in the environment hijacked the loopback busy probe: the busy wait \
+             would silently never delay a restart"
+        );
+
+        let port = fake_pod::scripted(vec![fake_pod::reply(200, r#"{"in_flight_turns":3}"#)]).await;
+        let control_got =
+            probe_in_flight(&control, &format!("http://127.0.0.1:{port}/health")).await;
+        assert_eq!(
+            control_got,
+            ProbeOutcome::Idle,
+            "control: a client without .no_proxy() must inherit the dead proxy and read idle — \
+             if it reaches the pod too, the environment override proves nothing and this test \
+             must be rebuilt"
+        );
     }
 }

@@ -106,8 +106,12 @@ pub struct Args {
 
     /// Before draining a pod for a rolling restart, poll the pod's `/health`
     /// endpoint and wait while it reports in-flight turns, so a busy pod is
-    /// not killed mid-turn (default: 120; 0 disables the probe entirely —
-    /// today's behavior, and the escape hatch for time-critical rollouts).
+    /// not killed mid-turn (default: 120; `0` disables the probe entirely —
+    /// the escape hatch for time-critical rollouts). `0` switches off only the
+    /// probe: the duplicate-trigger coalescing that landed alongside it still
+    /// runs at all three discard sites, so a pod restarted twice in quick
+    /// succession still drains once, not twice — one drain round fewer than
+    /// before the flag existed, never more.
     /// Every probe failure (connection refused, timeout, non-200, malformed
     /// body) is treated as idle: the probe can delay a restart, never block it.
     #[arg(long = "busy-wait-secs", default_value = "120")]
@@ -272,7 +276,8 @@ mod tests {
 
     /// Pin the busy-wait contract: the flag defaults to 120 (wait up to two
     /// minutes for in-flight turns) and `--busy-wait-secs 0` parses as the
-    /// explicit opt-out (today's behavior).
+    /// explicit opt-out (the probe is skipped; only the probe — duplicate
+    /// triggers are still coalesced).
     #[test]
     fn busy_wait_secs_defaults_to_120_and_zero_disables() {
         let args = Args::parse_from(["malkuth", "--", "sleep", "1"]);
