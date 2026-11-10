@@ -104,6 +104,15 @@ pub struct Args {
     #[arg(long = "drain-secs", default_value = "8")]
     pub drain_secs: u64,
 
+    /// Before draining a pod for a rolling restart, poll the pod's `/health`
+    /// endpoint and wait while it reports in-flight turns, so a busy pod is
+    /// not killed mid-turn (default: 120; 0 disables the probe entirely —
+    /// today's behavior, and the escape hatch for time-critical rollouts).
+    /// Every probe failure (connection refused, timeout, non-200, malformed
+    /// body) is treated as idle: the probe can delay a restart, never block it.
+    #[arg(long = "busy-wait-secs", default_value = "120")]
+    pub busy_wait_secs: u64,
+
     /// Ensure only one malkuth instance runs per proxy port.
     /// Same binary mtime → refuses to start. Different mtime → kills old instance.
     #[arg(long = "singleton")]
@@ -259,5 +268,18 @@ mod tests {
     fn parse_rejects_bad() {
         assert!(ProxySpec::parse("3000").is_err());
         assert!(ProxySpec::parse("3000:4000-3999").is_err());
+    }
+
+    /// Pin the busy-wait contract: the flag defaults to 120 (wait up to two
+    /// minutes for in-flight turns) and `--busy-wait-secs 0` parses as the
+    /// explicit opt-out (today's behavior).
+    #[test]
+    fn busy_wait_secs_defaults_to_120_and_zero_disables() {
+        let args = Args::parse_from(["malkuth", "--", "sleep", "1"]);
+        assert_eq!(args.busy_wait_secs, 120);
+        let args = Args::parse_from(["malkuth", "--busy-wait-secs", "0", "--", "sleep", "1"]);
+        assert_eq!(args.busy_wait_secs, 0);
+        let args = Args::parse_from(["malkuth", "--busy-wait-secs", "30", "--", "sleep", "1"]);
+        assert_eq!(args.busy_wait_secs, 30);
     }
 }

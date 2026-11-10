@@ -352,6 +352,7 @@ async fn main() {
         proxy_state.clone(),
         ports,
         args.drain_secs,
+        args.busy_wait_secs,
         runtime_log.clone(),
     ));
     Arc::clone(&manager).run().await;

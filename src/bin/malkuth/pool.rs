@@ -10,6 +10,7 @@
 
 use std::{
     collections::HashMap,
+    future::Future,
     net::SocketAddr,
     process::Stdio,
     sync::{Arc, Mutex as StdMutex},
@@ -70,6 +71,188 @@ fn send_graceful(pid: u32) {
     }
 }
 
+/// Poll `/health` every 5 s while waiting for in-flight turns to finish.
+const BUSY_PROBE_INTERVAL: Duration = Duration::from_secs(5);
+/// Per-request HTTP timeout for one `/health` probe.
+const BUSY_PROBE_HTTP_TIMEOUT: Duration = Duration::from_secs(2);
+/// While still busy, emit a progress line at least this often.
+const BUSY_WAIT_PROGRESS_EVERY: Duration = Duration::from_secs(60);
+
+/// One observation of the pod's busy signal (design
+/// `_reports/chain-resume-cb-design-20261111` §1.1: busy = at least one
+/// user turn currently being processed, as reported by scepter's
+/// `in_flight_turns` semaphore count).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeOutcome {
+    /// `/health` reported a positive in-flight turn count.
+    Busy(u64),
+    /// Idle: zero in-flight turns — or any probe failure shape mapped to
+    /// idle by design (fail-open, DESIGN §1.5).
+    Idle,
+}
+
+/// Why the busy wait ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaitReason {
+    /// The pod went idle (or every probe failed — fail-open).
+    Idle,
+    /// The pod kept reporting in-flight turns until the cap elapsed; the
+    /// restart proceeds anyway (`restart_proceeding_busy_expired`).
+    CapExpired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WaitSummary {
+    /// Time spent waiting (virtual under tests).
+    waited: Duration,
+    /// Last observed in-flight turn count; `None` when never busy.
+    last_in_flight: Option<u64>,
+    reason: WaitReason,
+}
+
+/// Fetcher + clock seam for [`wait_until_idle_with`]. Production wires HTTP
+/// GETs to the pod's `/health` and real sleeps; tests inject scripted
+/// outcomes and a virtual clock so the wait semantics are pinned without
+/// network or real time.
+trait BusyWaitIo {
+    fn fetch(&mut self) -> impl Future<Output = ProbeOutcome>;
+    fn pause(&mut self, step: Duration) -> impl Future<Output = ()>;
+}
+
+/// Production IO for [`wait_until_idle_with`].
+struct HealthHttp {
+    client: reqwest::Client,
+    url: String,
+}
+
+impl BusyWaitIo for HealthHttp {
+    async fn fetch(&mut self) -> ProbeOutcome {
+        probe_in_flight(&self.client, &self.url).await
+    }
+
+    async fn pause(&mut self, step: Duration) {
+        sleep(step).await;
+    }
+}
+
+/// One `GET /health` observation. Fail-open by construction: only a 2xx
+/// response whose body is JSON carrying a positive integer
+/// `in_flight_turns` counts as busy; connection refused, timeout, non-2xx,
+/// non-JSON body and missing/malformed fields all return [`ProbeOutcome::Idle`].
+async fn probe_in_flight(client: &reqwest::Client, url: &str) -> ProbeOutcome {
+    let response = match client.get(url).send().await {
+        Ok(response) => response,
+        Err(_) => return ProbeOutcome::Idle,
+    };
+    if !response.status().is_success() {
+        return ProbeOutcome::Idle;
+    }
+    match response.text().await {
+        Ok(body) => classify_health_body(Some(&body)),
+        Err(_) => classify_health_body(None),
+    }
+}
+
+/// Pure classifier for a `/health` body (`None` = body unreadable). Kept
+/// free of IO so the fail-open mapping is unit-testable without HTTP.
+fn classify_health_body(body: Option<&str>) -> ProbeOutcome {
+    let Some(body) = body else {
+        return ProbeOutcome::Idle;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return ProbeOutcome::Idle;
+    };
+    match value.get("in_flight_turns").and_then(|v| v.as_u64()) {
+        Some(n) if n > 0 => ProbeOutcome::Busy(n),
+        _ => ProbeOutcome::Idle,
+    }
+}
+
+/// Bounded busy wait before a drain (DESIGN §1.4/§1.5). Polls `probe.fetch()`
+/// every `interval`; a busy observation delays the restart, an idle one — or
+/// any probe failure, which the fetcher maps to idle — ends the wait at once.
+/// The total wait never exceeds `cap`: the final pause is clamped so the
+/// wait lands exactly on the cap, then the restart proceeds regardless
+/// (fail-open beats blocking a rollout). `cap == 0` disables probing
+/// entirely (`--busy-wait-secs 0` = today's behavior).
+async fn wait_until_idle_with<P: BusyWaitIo>(
+    probe: &mut P,
+    pod: usize,
+    cap: Duration,
+    interval: Duration,
+) -> WaitSummary {
+    if cap.is_zero() {
+        return WaitSummary {
+            waited: Duration::ZERO,
+            last_in_flight: None,
+            reason: WaitReason::Idle,
+        };
+    }
+    let mut waited = Duration::ZERO;
+    let mut last_in_flight = None;
+    let mut progress_logged_at = Duration::ZERO;
+    let mut announced = false;
+    loop {
+        // Cap check first: never probe once the budget is spent, and never
+        // wait past the cap (the final step is clamped below).
+        if waited >= cap {
+            return WaitSummary {
+                waited,
+                last_in_flight,
+                reason: WaitReason::CapExpired,
+            };
+        }
+        match probe.fetch().await {
+            ProbeOutcome::Idle => {
+                // Fail-open: an idle reading — including every probe failure
+                // shape the fetcher maps to idle — never delays the restart.
+                return WaitSummary {
+                    waited,
+                    last_in_flight,
+                    reason: WaitReason::Idle,
+                };
+            }
+            ProbeOutcome::Busy(n) => {
+                if !announced {
+                    info!(
+                        pod,
+                        event = "restart_delayed_inflight",
+                        in_flight_turns = n,
+                        "pod still has in-flight turns; delaying drain"
+                    );
+                    announced = true;
+                }
+                last_in_flight = Some(n);
+            }
+        }
+        // Clamp the final step so the total wait is exactly `cap`.
+        let step = interval.min(cap - waited);
+        probe.pause(step).await;
+        waited += step;
+        if waited - progress_logged_at >= BUSY_WAIT_PROGRESS_EVERY {
+            info!(
+                pod,
+                event = "restart_wait_inflight_progress",
+                waited_secs = waited.as_secs(),
+                in_flight_turns = last_in_flight.unwrap_or(0),
+                "still waiting for in-flight turns to finish"
+            );
+            progress_logged_at = waited;
+        }
+    }
+}
+
+/// `http://<host>:<port>/health` for a pod on `port`. Addresses the pod
+/// exactly like the readiness TCP probe ([`PodManager::wait_ready`]) so a pod
+/// bound to a non-default `--host` is still reached; an unparseable host falls
+/// back to loopback the same way.
+fn health_url(host: &str, port: u16) -> String {
+    let addr: SocketAddr = format!("{host}:{port}")
+        .parse()
+        .unwrap_or_else(|_| format!("127.0.0.1:{port}").parse().unwrap());
+    format!("http://{addr}/health")
+}
+
 struct PodMeta {
     port: u16,
 }
@@ -88,6 +271,14 @@ pub struct PodManager {
     /// Per-pod restart trigger.
     restart: HashMap<usize, Arc<Notify>>,
     drain_secs: u64,
+    /// Upper bound on the pre-drain busy wait (`--busy-wait-secs`; 0 disables
+    /// the probe entirely).
+    busy_wait_secs: u64,
+    /// Shared client for `/health` busy probes, built once and reused by every
+    /// pod's supervision task. `None` when the build failed: the busy wait is
+    /// then skipped outright (fail-open — a probe-side failure must never
+    /// block a rolling restart).
+    busy_probe_client: Option<reqwest::Client>,
     runtime_log: Arc<StdMutex<Vec<String>>>,
 }
 
@@ -100,12 +291,32 @@ impl PodManager {
         proxy: Option<Arc<ProxyState>>,
         ports: HashMap<usize, u16>,
         drain_secs: u64,
+        busy_wait_secs: u64,
         runtime_log: Arc<StdMutex<Vec<String>>>,
     ) -> Self {
         let restart = ports
             .keys()
             .map(|id| (*id, Arc::new(Notify::new())))
             .collect();
+        // Built once here (never inside `supervise`) and shared by every pod:
+        // reqwest's client owns the connection pool, and rebuilding it per
+        // restart would throw that away. `http_client_builder` is the crate's
+        // canonical builder — it installs the process-wide rustls provider
+        // (this binary is built with `rustls-no-provider`). A build failure
+        // disables only the busy wait; rolling restarts proceed (fail-open).
+        let busy_probe_client = match malkuth::http_client_builder()
+            .timeout(BUSY_PROBE_HTTP_TIMEOUT)
+            .build()
+        {
+            Ok(client) => Some(client),
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    "failed to build the /health probe client; busy wait disabled (fail-open)"
+                );
+                None
+            }
+        };
         Self {
             host,
             port_env,
@@ -116,6 +327,8 @@ impl PodManager {
             ports,
             restart,
             drain_secs,
+            busy_wait_secs,
+            busy_probe_client,
             runtime_log,
         }
     }
@@ -143,6 +356,40 @@ impl PodManager {
         info!(pod = id, "rolling restart requested");
         if let Some(n) = self.restart.get(&id) {
             n.notify_one();
+        }
+    }
+
+    /// Hold the coming drain while the pod reports in-flight turns
+    /// (DESIGN §1.3–§1.5). Returns at once when the pod reads idle, on any
+    /// probe failure shape (fail-open), on `--busy-wait-secs 0`, and when the
+    /// deployment has no backend port to probe (`--serve-only` assigns port
+    /// 0). If the cap expires the restart proceeds anyway, after a warn: a
+    /// stuck busy signal must never stall a rollout forever.
+    async fn wait_until_idle(&self, pod: usize, port: u16) {
+        if port == 0 {
+            // No --proxy: no backend port was assigned, so there is nothing
+            // to probe (same reasoning as the readiness skip above).
+            return;
+        }
+        let Some(client) = self.busy_probe_client.clone() else {
+            return;
+        };
+        let mut probe = HealthHttp {
+            client,
+            url: health_url(&self.host, port),
+        };
+        // `busy_wait_secs` is a u64 (already non-negative); a zero cap is
+        // short-circuited inside `wait_until_idle_with`.
+        let cap = Duration::from_secs(self.busy_wait_secs);
+        let summary = wait_until_idle_with(&mut probe, pod, cap, BUSY_PROBE_INTERVAL).await;
+        if summary.reason == WaitReason::CapExpired {
+            warn!(
+                pod,
+                event = "restart_proceeding_busy_expired",
+                waited_secs = summary.waited.as_secs(),
+                in_flight_turns = summary.last_in_flight.unwrap_or(0),
+                "pod still reported in-flight turns at the busy-wait cap; restarting anyway"
+            );
         }
     }
 
@@ -259,6 +506,7 @@ impl PodManager {
             // that already exited during that probing) must skip the wait
             // entirely — the notification permit is consumed, not parked.
             if restart_now {
+                self.wait_until_idle(id, port).await;
                 info!(
                     pod = id,
                     "draining pod for restart (requested during readiness probing)"
@@ -270,6 +518,7 @@ impl PodManager {
                         warn!(pod = id, ?status, "pod exited");
                     }
                     _ = notify.notified() => {
+                        self.wait_until_idle(id, port).await;
                         info!(pod = id, "draining pod for restart");
                         stop_draining(&mut child, self.drain_secs).await;
                     }
@@ -437,6 +686,9 @@ mod tests {
             None,
             HashMap::from([(0, port)]),
             1,
+            // The busy wait is unit-tested directly below; these supervision
+            // tests keep it off so their timing stays about spawn/drain.
+            0,
             log,
         );
         let mgr = match readiness_timeout {
@@ -570,5 +822,212 @@ mod stop_draining_tests {
             status.signal() == Some(libc::SIGKILL),
             "the child must have been SIGKILLed, got {status:?}"
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod busy_wait_tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    /// Scripted [`BusyWaitIo`]: serves a fixed outcome sequence and records
+    /// every pause instead of sleeping — the wait semantics are pinned
+    /// without network IO or real time.
+    struct ScriptedProbe {
+        outcomes: VecDeque<ProbeOutcome>,
+        /// Served once the script is exhausted, so a regression that probes
+        /// more than expected still terminates instead of panicking.
+        tail: ProbeOutcome,
+        fetches: usize,
+        steps: Vec<Duration>,
+    }
+
+    impl ScriptedProbe {
+        fn scripted(outcomes: impl IntoIterator<Item = ProbeOutcome>) -> Self {
+            Self {
+                outcomes: outcomes.into_iter().collect(),
+                tail: ProbeOutcome::Idle,
+                fetches: 0,
+                steps: Vec::new(),
+            }
+        }
+
+        fn always(outcome: ProbeOutcome) -> Self {
+            let mut probe = Self::scripted(std::iter::empty());
+            probe.tail = outcome;
+            probe
+        }
+    }
+
+    impl BusyWaitIo for ScriptedProbe {
+        async fn fetch(&mut self) -> ProbeOutcome {
+            self.fetches += 1;
+            self.outcomes.pop_front().unwrap_or(self.tail)
+        }
+
+        async fn pause(&mut self, step: Duration) {
+            self.steps.push(step);
+        }
+    }
+
+    /// Busy once, then idle: the wait ends on the first idle reading and
+    /// charges exactly the one 5s pause that followed the busy reading.
+    #[tokio::test]
+    async fn busy_then_idle_returns_immediately() {
+        let mut probe = ScriptedProbe::scripted([ProbeOutcome::Busy(2), ProbeOutcome::Idle]);
+        let summary = wait_until_idle_with(
+            &mut probe,
+            0,
+            Duration::from_secs(120),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(summary.reason, WaitReason::Idle);
+        assert_eq!(
+            summary.waited,
+            Duration::from_secs(5),
+            "only the pause charged to the busy reading counts"
+        );
+        assert_eq!(summary.last_in_flight, Some(2));
+        assert_eq!(probe.fetches, 2, "idle ends the wait at the second fetch");
+        assert_eq!(probe.steps, vec![Duration::from_secs(5)]);
+    }
+
+    /// Busy until the cap: 12s budget at a 5s interval must land on exactly
+    /// 12s (5 + 5 + clamped 2), then hand the restart back to the caller.
+    #[tokio::test]
+    async fn always_busy_stops_exactly_at_cap() {
+        let mut probe = ScriptedProbe::always(ProbeOutcome::Busy(1));
+        let summary = wait_until_idle_with(
+            &mut probe,
+            3,
+            Duration::from_secs(12),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(summary.reason, WaitReason::CapExpired);
+        assert_eq!(summary.waited, Duration::from_secs(12));
+        assert_eq!(summary.last_in_flight, Some(1));
+        assert_eq!(probe.fetches, 3);
+        assert_eq!(
+            probe.steps,
+            vec![
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+                Duration::from_secs(2),
+            ],
+            "the final step is clamped to the remaining budget"
+        );
+        assert_eq!(
+            probe.steps.iter().copied().sum::<Duration>(),
+            summary.waited,
+            "pauses must account for the whole wait"
+        );
+    }
+
+    /// Fail-open (DESIGN §1.5): every failure shape the fetcher can produce
+    /// — classified by the real classifier, exactly as `probe_in_flight`
+    /// does — must end the wait at once instead of burning the cap.
+    #[tokio::test]
+    async fn probe_failures_are_fail_open() {
+        let failure_shapes: [Option<&str>; 5] = [
+            // Idle by value: a `n >= 0` regression would read this as busy.
+            Some(r#"{"in_flight_turns":0}"#),
+            // Unreadable body: timeout / truncated read.
+            None,
+            // Non-2xx / non-JSON error page.
+            Some("<html>502 Bad Gateway</html>"),
+            // Missing field on an older engine.
+            Some("{}"),
+            // Right field, wrong JSON type.
+            Some(r#"{"in_flight_turns":"3"}"#),
+        ];
+        for body in failure_shapes {
+            let mut probe = ScriptedProbe::scripted([classify_health_body(body)]);
+            let summary = wait_until_idle_with(
+                &mut probe,
+                0,
+                Duration::from_secs(120),
+                Duration::from_secs(5),
+            )
+            .await;
+            assert_eq!(
+                summary.reason,
+                WaitReason::Idle,
+                "shape {body:?} must fail open"
+            );
+            assert_eq!(
+                summary.waited,
+                Duration::ZERO,
+                "shape {body:?} must never delay the restart"
+            );
+            assert_eq!(summary.last_in_flight, None, "shape {body:?}");
+            assert_eq!(probe.fetches, 1, "shape {body:?}: one reading, then out");
+            assert!(
+                probe.steps.is_empty(),
+                "shape {body:?}: no pause may be charged"
+            );
+        }
+    }
+
+    /// `--busy-wait-secs 0` is the escape hatch: not a single probe.
+    #[tokio::test]
+    async fn zero_cap_never_probes() {
+        let mut probe = ScriptedProbe::always(ProbeOutcome::Busy(9));
+        let summary =
+            wait_until_idle_with(&mut probe, 0, Duration::ZERO, Duration::from_secs(5)).await;
+        assert_eq!(summary.reason, WaitReason::Idle);
+        assert_eq!(summary.waited, Duration::ZERO);
+        assert_eq!(summary.last_in_flight, None);
+        assert_eq!(probe.fetches, 0, "a zero cap must not issue any probe");
+        assert!(probe.steps.is_empty());
+    }
+
+    /// Only a positive integer count is busy; zero is idle (the semaphore is
+    /// free), and a missing or non-integer field fails open.
+    #[test]
+    fn classify_health_body_only_positive_integer_is_busy() {
+        assert_eq!(
+            classify_health_body(Some(r#"{"in_flight_turns":3}"#)),
+            ProbeOutcome::Busy(3)
+        );
+        assert_eq!(
+            classify_health_body(Some(r#"{"in_flight_turns":0}"#)),
+            ProbeOutcome::Idle
+        );
+        assert_eq!(
+            classify_health_body(Some(r#"{"in_flight_turns":1}"#)),
+            ProbeOutcome::Busy(1)
+        );
+    }
+
+    /// The fail-open table on its own: unreadable body, empty/non-JSON body,
+    /// missing field, wrong JSON type, negative count and unrelated JSON all
+    /// read as idle.
+    #[test]
+    fn classify_health_body_failure_shapes_are_idle() {
+        for body in [
+            None,
+            Some(""),
+            Some("not json"),
+            Some("{}"),
+            Some(r#"{"in_flight_turns":"3"}"#),
+            Some(r#"{"in_flight_turns":-1}"#),
+            Some(r#"{"other":3}"#),
+        ] {
+            assert_eq!(classify_health_body(body), ProbeOutcome::Idle, "{body:?}");
+        }
+    }
+
+    /// The probe must address the pod exactly like the readiness TCP probe:
+    /// the same host plus the assigned backend port (`--host` defaults to
+    /// loopback).
+    #[test]
+    fn health_url_targets_the_assigned_backend_port() {
+        assert_eq!(
+            health_url("127.0.0.1", 3001),
+            "http://127.0.0.1:3001/health"
+        );
+        assert_eq!(health_url("0.0.0.0", 4100), "http://0.0.0.0:4100/health");
     }
 }
