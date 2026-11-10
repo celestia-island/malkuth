@@ -59,7 +59,7 @@ fn bench_ring(c: &mut Criterion) {
         let ring = Ring::new(n);
         group.bench_function(format!("backends={n}"), |b| {
             b.iter(|| {
-                let _ = black_box(ring.route(black_box("10.0.0.42")));
+                let _ = black_box(ring.route(black_box("2001:db8::42")));
             });
         });
     }
