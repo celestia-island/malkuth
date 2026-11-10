@@ -365,6 +365,13 @@ impl PodManager {
     /// deployment has no backend port to probe (`--serve-only` assigns port
     /// 0). If the cap expires the restart proceeds anyway, after a warn: a
     /// stuck busy signal must never stall a rollout forever.
+    ///
+    /// Accepted by design (DESIGN §1.4/§1.5): the pod is still registered as
+    /// a proxy backend for the whole wait, so a pod under sustained load keeps
+    /// receiving new turns and `in_flight_turns` rarely reaches zero — such a
+    /// rolling restart honestly pays the full cap (120 s per pod by default).
+    /// That trade is the point of the feature (a slower rollout instead of
+    /// dropped turns); `--busy-wait-secs 0` is the escape hatch.
     async fn wait_until_idle(&self, pod: usize, port: u16) {
         if port == 0 {
             // No --proxy: no backend port was assigned, so there is nothing
@@ -505,8 +512,19 @@ impl PodManager {
             // A restart requested while readiness was being probed (or a pod
             // that already exited during that probing) must skip the wait
             // entirely — the notification permit is consumed, not parked.
+            //
+            // Accepted by design (DESIGN §1.4/§1.5): the pod stays registered
+            // as a proxy backend while `wait_until_idle` runs, so a pod under
+            // sustained load keeps receiving new turns and `in_flight_turns`
+            // rarely reaches zero — such a rollout honestly pays the full cap
+            // per pod (120 s by default). Slower rollouts instead of dropped
+            // turns is the documented trade; `--busy-wait-secs 0` opts out.
+            // What would NOT be acceptable is a duplicate trigger parked
+            // during that wait buying a second drain round afterwards, so the
+            // permit is dropped as soon as the wait ends.
             if restart_now {
                 self.wait_until_idle(id, port).await;
+                discard_pending_restarts(&notify, id);
                 info!(
                     pod = id,
                     "draining pod for restart (requested during readiness probing)"
@@ -519,11 +537,18 @@ impl PodManager {
                     }
                     _ = notify.notified() => {
                         self.wait_until_idle(id, port).await;
+                        discard_pending_restarts(&notify, id);
                         info!(pod = id, "draining pod for restart");
                         stop_draining(&mut child, self.drain_secs).await;
                     }
                 }
             }
+
+            // Pod gone: also coalesce a restart request that landed during the
+            // drain itself (bounded by `drain_secs`) — this respawn already
+            // starts the newest binary, so a repeat request for this pod has
+            // nothing left to do.
+            discard_pending_restarts(&notify, id);
 
             // Pod gone: deregister + refresh the proxy, brief backoff, respawn.
             {
@@ -601,6 +626,37 @@ impl PodManager {
             .unwrap_or_else(|_| format!("127.0.0.1:{port}").parse().unwrap());
         TcpStream::connect(addr).await.is_ok()
     }
+}
+
+/// Coalesce a repeat rolling-restart request that arrived while this pod was
+/// already being taken out of rotation (review S2-2 on PR #192).
+///
+/// [`PodManager::restart_one`] signals one [`Notify`] per pod, and `Notify`
+/// parks at most one permit when nobody is waiting — exactly the state a
+/// duplicate trigger leaves behind during the long busy wait
+/// (`--busy-wait-secs`, 120 s by default). The respawned pod would consume
+/// that parked permit on its first `select!` and pay a second, pointless drain
+/// round ("多一次重启"). `Notified::enable` takes a parked permit without
+/// awaiting, so the duplicate is dropped here instead.
+///
+/// This cannot swallow a real signal: the map is a restart-request channel
+/// written only by [`PodManager::restart_one`]; shutdown/reload travel through
+/// the signal handler, never through this `Notify`. A dropped request is also
+/// already satisfied: the respawn that follows starts the pod from the newest
+/// binary on disk, which is all a rolling-restart request asks for. Returns
+/// whether a duplicate was actually discarded.
+fn discard_pending_restarts(notify: &Notify, pod: usize) -> bool {
+    let notified = notify.notified();
+    tokio::pin!(notified);
+    if !notified.as_mut().enable() {
+        return false;
+    }
+    info!(
+        pod,
+        event = "restart_request_coalesced",
+        "restart requested while this pod was already draining; the respawn covers it"
+    );
+    true
 }
 
 fn backends_from(host: &str, meta: &HashMap<usize, PodMeta>) -> Vec<Backend> {
@@ -756,6 +812,90 @@ mod tests {
             "restart during readiness probing never respawned the pod"
         );
     }
+
+    /// `Notify` parks at most one permit when nobody is waiting, and that
+    /// permit is exactly what a duplicate trigger leaves behind during a busy
+    /// wait. Coalescing must take it without awaiting, and idempotently.
+    #[tokio::test]
+    async fn busy_wait_coalesces_the_parked_restart_permit() {
+        let notify = Notify::new();
+        assert!(!discard_pending_restarts(&notify, 0), "nothing parked yet");
+
+        notify.notify_one();
+        notify.notify_one();
+        assert!(
+            discard_pending_restarts(&notify, 0),
+            "the parked permit must be discarded"
+        );
+        assert!(
+            !discard_pending_restarts(&notify, 0),
+            "a second call must find nothing: Notify holds at most one permit"
+        );
+        // Nothing stale is left over, so the next wait really has to wait.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), notify.notified())
+                .await
+                .is_err(),
+            "the discard must not leave a wakeup behind"
+        );
+    }
+
+    /// Review S2-2: a repeat rolling-restart request that lands while the
+    /// supervisor is already busy-waiting for in-flight turns must be
+    /// coalesced. Before the fix it parked a permit that the respawned pod
+    /// consumed immediately, paying a second, pointless drain round.
+    #[tokio::test]
+    async fn duplicate_trigger_during_busy_wait_adds_no_extra_drain() {
+        use super::fake_pod;
+
+        // Busy for the first health reading (the wait below), idle afterwards:
+        // a coalesced duplicate cannot hide behind a second full cap — it would
+        // drain the fresh pod at once and spawn a third child.
+        let port = fake_pod::busy_then_idle(1).await;
+        let log = Arc::new(StdMutex::new(Vec::new()));
+        let mgr = Arc::new(PodManager::new(
+            "127.0.0.1".into(),
+            "PORT".into(),
+            fake_pod_command(),
+            None,
+            HashMap::from([(0, port)]),
+            1, // drain_secs
+            2, // busy_wait_secs: one busy reading + a 2s clamped pause
+            Arc::clone(&log),
+        ));
+        mgr.clone().run().await;
+
+        for _ in 0..100 {
+            if !marker_pids(&log).is_empty() {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(marker_pids(&log).len(), 1, "first spawn missing");
+
+        // Let readiness + registration finish so the trigger lands in the
+        // supervision `select!`, then start the restart: the pod reports busy,
+        // so the drain is held for the whole 2s cap.
+        sleep(Duration::from_millis(300)).await;
+        mgr.restart_one(0).await;
+        sleep(Duration::from_millis(700)).await; // inside the busy wait
+        mgr.restart_one(0).await; // duplicate trigger
+
+        // The legitimate restart lands after the wait + drain + respawn. A
+        // third spawn would mean the duplicate bought another drain round.
+        let mut max_seen = 0;
+        for _ in 0..120 {
+            max_seen = max_seen.max(marker_pids(&log).len());
+            if max_seen > 2 {
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            max_seen, 2,
+            "a duplicate trigger during the busy wait must not add a drain round"
+        );
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -822,6 +962,105 @@ mod stop_draining_tests {
             status.signal() == Some(libc::SIGKILL),
             "the child must have been SIGKILLed, got {status:?}"
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod fake_pod {
+    //! Hand-rolled loopback HTTP pods for the wire-level probe tests
+    //! (review S2-1). No axum and no test HTTP framework: a `TcpListener` on
+    //! port 0 plus a few lines of request/response is enough to drive the
+    //! real reqwest path, and it keeps the fake pod's answer shape — status
+    //! line, headers, truncated bodies, silence — under the test's control.
+    use super::*;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    /// One HTTP/1.1 reply, `Connection: close` so the client dials afresh for
+    /// the next probe (the pool reuses one client across pods).
+    pub(super) fn reply(status: u16, body: &str) -> Vec<u8> {
+        let reason = match status {
+            200 => "OK",
+            400 => "Bad Request",
+            500 => "Internal Server Error",
+            _ => "Unknown",
+        };
+        format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    /// Read one request head. `false` means the peer closed without sending a
+    /// byte — a readiness `TcpStream::connect` behaves exactly so.
+    pub(super) async fn read_request_head(stream: &mut TcpStream) -> bool {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 256];
+        loop {
+            match stream.read(&mut chunk).await {
+                Ok(0) | Err(_) => return !buf.is_empty(),
+                Ok(n) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.windows(4).any(|w| w == b"\r\n\r\n") || buf.len() > 8192 {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Serve one scripted raw response per accepted request, then stop.
+    pub(super) async fn scripted(replies: Vec<Vec<u8>>) -> u16 {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind fake pod");
+        let port = listener.local_addr().expect("fake pod addr").port();
+        tokio::spawn(async move {
+            for reply in replies {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let _ = read_request_head(&mut stream).await;
+                let _ = stream.write_all(&reply).await;
+            }
+        });
+        port
+    }
+
+    /// Answer `/health` with in-flight turns for the first `busy_rounds`
+    /// requests, idle afterwards; accept readiness connects too (they send no
+    /// bytes, so there is nothing to answer).
+    pub(super) async fn busy_then_idle(busy_rounds: usize) -> u16 {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind fake pod");
+        let port = listener.local_addr().expect("fake pod addr").port();
+        let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let seen = Arc::clone(&seen);
+                tokio::spawn(async move {
+                    if !read_request_head(&mut stream).await {
+                        return;
+                    }
+                    let busy = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < busy_rounds;
+                    let reply = if busy {
+                        reply(200, r#"{"in_flight_turns":3}"#)
+                    } else {
+                        reply(200, r#"{"in_flight_turns":0}"#)
+                    };
+                    let _ = stream.write_all(&reply).await;
+                });
+            }
+        });
+        port
     }
 }
 
@@ -1029,5 +1268,108 @@ mod busy_wait_tests {
             "http://127.0.0.1:3001/health"
         );
         assert_eq!(health_url("0.0.0.0", 4100), "http://0.0.0.0:4100/health");
+    }
+
+    // ── The wire half of the fail-open table (review S2-1) ────────────
+    //
+    // The design asked for a "fake pod over TCP"; the wait itself was built
+    // against a `BusyWaitIo` seam, which leaves `probe_in_flight` — the
+    // status/body/timeout mapping — with no coverage at all. Both layers now
+    // exist on purpose (PR #192, deviation ④): the seam pins the wait
+    // arithmetic without IO, and these tests pin the HTTP shapes only the wire
+    // can produce.
+
+    fn probe_client(timeout: Duration) -> reqwest::Client {
+        malkuth::http_client_builder()
+            .timeout(timeout)
+            .build()
+            .expect("build probe client")
+    }
+
+    /// The real `probe_in_flight` over a real loopback socket: only a 2xx
+    /// response whose body carries a positive integer count reads busy. The
+    /// non-2xx case deliberately puts a busy-looking body behind a 500 so the
+    /// status gate — not the body — decides; a regression that returns busy
+    /// from the non-2xx branch turns this red.
+    #[tokio::test]
+    async fn probe_in_flight_over_tcp_maps_every_http_shape() {
+        use super::fake_pod;
+
+        let client = probe_client(Duration::from_secs(5));
+        let cases = [
+            (
+                "busy body",
+                fake_pod::reply(200, r#"{"in_flight_turns":3}"#),
+                ProbeOutcome::Busy(3),
+            ),
+            (
+                "idle body",
+                fake_pod::reply(200, r#"{"in_flight_turns":0}"#),
+                ProbeOutcome::Idle,
+            ),
+            (
+                "non-2xx with a busy body",
+                fake_pod::reply(500, r#"{"in_flight_turns":3}"#),
+                ProbeOutcome::Idle,
+            ),
+            (
+                "non-JSON body",
+                fake_pod::reply(200, "<html>502 Bad Gateway</html>"),
+                ProbeOutcome::Idle,
+            ),
+        ];
+        for (label, reply, expected) in cases {
+            let port = fake_pod::scripted(vec![reply]).await;
+            let got = probe_in_flight(&client, &format!("http://127.0.0.1:{port}/health")).await;
+            assert_eq!(got, expected, "{label}");
+        }
+    }
+
+    /// A 200 whose announced body never completes (the pod dies mid-response)
+    /// must fail open on the body read, not on the classifier.
+    #[tokio::test]
+    async fn probe_in_flight_unreadable_body_is_idle() {
+        use super::fake_pod;
+
+        let mut truncated =
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 64\r\n\
+              Connection: close\r\n\r\n"
+                .to_vec();
+        truncated.extend_from_slice(br#"{"in_flight_turns":3}"#);
+        let port = fake_pod::scripted(vec![truncated]).await;
+        let client = probe_client(Duration::from_secs(5));
+        let got = probe_in_flight(&client, &format!("http://127.0.0.1:{port}/health")).await;
+        assert_eq!(got, ProbeOutcome::Idle, "an incomplete body must fail open");
+    }
+
+    /// A pod that accepts the connection and never answers must not pin the
+    /// supervisor: reqwest surfaces the timeout as `Err`, read as idle.
+    #[tokio::test]
+    async fn probe_in_flight_times_out_to_idle() {
+        use tokio::{io::AsyncReadExt, net::TcpListener};
+
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind silent pod");
+        let port = listener.local_addr().expect("silent pod addr").port();
+        let silent = tokio::spawn(async move {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            // Read the request, then hold the socket open without replying.
+            let mut chunk = [0u8; 256];
+            let _ = stream.read(&mut chunk).await;
+            sleep(Duration::from_secs(30)).await;
+        });
+        let client = probe_client(Duration::from_millis(50));
+        let started = Instant::now();
+        let got = probe_in_flight(&client, &format!("http://127.0.0.1:{port}/health")).await;
+        assert_eq!(got, ProbeOutcome::Idle, "a timeout must fail open");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the probe must honor its own timeout, took {:?}",
+            started.elapsed()
+        );
+        silent.abort();
     }
 }
