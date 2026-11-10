@@ -12,10 +12,10 @@ importers:
   .:
     dependencies:
       '@xterm/xterm':
-        specifier: ^*
+        specifier: ^6
         version: 6.0.0
       vue:
-        specifier: ^*
+        specifier: ^3
         version: 3.5.40(typescript@6.0.3)
     devDependencies:
       '@vitejs/plugin-vue':
