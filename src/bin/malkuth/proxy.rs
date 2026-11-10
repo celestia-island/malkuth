@@ -357,7 +357,7 @@ mod tests {
     fn adding_backend_moves_few_keys() {
         let small = Ring::from_backends(vec![be("a", 1), be("b", 2)]);
         let big = Ring::from_backends(vec![be("a", 1), be("b", 2), be("c", 3)]);
-        let keys: Vec<String> = (0..500).map(|i| format!("10.0.0.{i}")).collect();
+        let keys: Vec<String> = (0..500).map(|i| format!("2001:db8::{i}")).collect();
         let mut moved = 0;
         for k in &keys {
             if small.route(k).map(|b| b.id.clone()) != big.route(k).map(|b| b.id.clone()) {
