@@ -755,7 +755,128 @@ fn is_upgrade_request(headers: &header::HeaderMap) -> bool {
 /// Audit malkuth-R1-6: cap the proxied request body at 1 MiB — a client can
 /// no longer OOM the supervisor with a giant request body. Shared by both
 /// proxy paths ([`proxy_upgrade`] and [`proxy_to_backend_parts`]).
-const MAX_PROXY_BODY_BYTES: usize = 1024 * 1024;
+///
+/// The cap is runtime-configurable because it is also a front-door BODY LIMIT:
+/// a face proxied through here silently truncates at 1 MiB whatever the backend
+/// allows (the demo face's 200 + landing HTML with the stream cut is that
+/// failure), so the operator must be able to align the two. Default unchanged —
+/// an instance that sets nothing keeps the R1-6 posture exactly.
+///
+/// Raising it costs MEMORY, not just bytes: the proxy buffers the whole request
+/// (`axum::body::to_bytes`) before re-writing it, so resident cost is
+/// `cap × concurrent proxied requests`, inside this process. Match the largest
+/// backend path you actually serve:
+///
+/// * chest's JSON-RPC /api face — 10 MiB request limit, so ≈12 MiB here;
+/// * chest document uploads — 50 MiB cap, so ≈52 MiB here;
+/// * chest model uploads — 512 MiB cap, so ≈514 MiB here, which at concurrency
+///   is a memory decision first and a limit decision second.
+pub const MAX_PROXY_BODY_BYTES_ENV: &str = "MALKUTH_PROXY_MAX_BODY_BYTES";
+
+/// The unchanged R1-6 default (1 MiB).
+pub const DEFAULT_MAX_PROXY_BODY_BYTES: usize = 1024 * 1024;
+
+/// The largest cap the doc above actually recommends (chest's 512 MiB model
+/// uploads, plus slack). A value above this is still HONOURED — refusing an
+/// operator's explicit number would be blunter than the problem — but it is
+/// warned about, because `usize` accepts values that quietly repeal R1-6's
+/// protection (a cap of `usize::MAX` is "no cap", at 1 byte of RAM per byte of
+/// body).
+pub const LARGEST_DOCUMENTED_CLASS_BYTES: usize = 514 * 1024 * 1024;
+
+/// Resolved once per process: the env is deployment shape, not per-request
+/// input, and a mid-flight change would make the cap depend on timing.
+static MAX_PROXY_BODY_BYTES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+/// Parse the override. Pure, so the rules are testable without mutating the
+/// process environment (which is process-global and racy under a threaded test
+/// runner).
+///
+/// `0` is refused: it would reject every proxied request with a body, turning a
+/// typo into a dead face. Unparsable values are refused the same way. Both fall
+/// back to the default LOUDLY — a silent fallback would look exactly like a
+/// working deployment until an upload dies at 1 MiB.
+pub(crate) fn resolve_max_proxy_body_bytes(raw: Option<&str>) -> usize {
+    let Some(raw) = raw else {
+        return DEFAULT_MAX_PROXY_BODY_BYTES;
+    };
+    match raw.trim().parse::<usize>() {
+        Ok(bytes) if bytes > 0 => {
+            if bytes > LARGEST_DOCUMENTED_CLASS_BYTES {
+                tracing::warn!(
+                    env = MAX_PROXY_BODY_BYTES_ENV,
+                    cap_bytes = bytes,
+                    documented_max = LARGEST_DOCUMENTED_CLASS_BYTES,
+                    "proxy body cap is above the largest documented backend class — honoured, but \
+                     the buffer cost is cap × concurrent proxied requests of resident memory, and \
+                     a very large value effectively repeals the R1-6 anti-OOM protection"
+                );
+            }
+            bytes
+        }
+        Ok(_) => {
+            tracing::warn!(
+                env = MAX_PROXY_BODY_BYTES_ENV,
+                value = %raw,
+                "proxy body cap of 0 is refused (it would reject every request with a body) — \
+                 keeping the 1 MiB default"
+            );
+            DEFAULT_MAX_PROXY_BODY_BYTES
+        }
+        Err(_) => {
+            tracing::warn!(
+                env = MAX_PROXY_BODY_BYTES_ENV,
+                value = %raw,
+                "proxy body cap is not a byte count (expected e.g. 12582912) — keeping the 1 MiB \
+                 default"
+            );
+            DEFAULT_MAX_PROXY_BODY_BYTES
+        }
+    }
+}
+
+/// The effective cap for this process.
+pub(crate) fn max_proxy_body_bytes() -> usize {
+    *MAX_PROXY_BODY_BYTES.get_or_init(|| {
+        resolve_max_proxy_body_bytes(std::env::var(MAX_PROXY_BODY_BYTES_ENV).ok().as_deref())
+    })
+}
+
+/// Buffer a proxied request body under the cap.
+///
+/// Both proxy paths call THIS, so the cap cannot be raised on one path and left
+/// behind on the other — the two used to share a constant, and a shared
+/// function is the version of that which a future edit cannot break.
+async fn read_proxied_body(body: axum::body::Body) -> Result<axum::body::Bytes, ()> {
+    read_proxied_body_with(body, max_proxy_body_bytes()).await
+}
+
+/// The cap application, with the cap passed in — the seam that makes "the knob
+/// is actually wired to the reader" testable without setting process env (which
+/// is global and racy under a threaded test runner) and without allocating a
+/// real cap-sized body (the doc above recommends up to ~514 MiB; a test must
+/// not need that much RAM to prove an 8-byte cap is enforced).
+async fn read_proxied_body_with(
+    body: axum::body::Body,
+    cap: usize,
+) -> Result<axum::body::Bytes, ()> {
+    axum::body::to_bytes(body, cap).await.map_err(|e| {
+        // A refusal here is NOT a transport failure, but the caller's fallback
+        // makes it look like one: the request lands on the landing page as a
+        // `200`, and nothing downstream ever learns why. Name the cap and the
+        // knob, or the operator's only symptom is "big uploads die silently" —
+        // which is the exact failure this setting exists to end.
+        tracing::warn!(
+            env = MAX_PROXY_BODY_BYTES_ENV,
+            cap_bytes = cap,
+            error = %e,
+            "refused a proxied request body that did not fit the cap — the client sees the \
+             landing page, so this log is the only place the reason appears; raise {} to accept \
+             larger bodies",
+            MAX_PROXY_BODY_BYTES_ENV
+        )
+    })
+}
 
 /// Extract the bare `host:port` of the `--serve` backend URL, dropping any
 /// scheme and path — plain HTTP only, mirroring [`probe_backend`].
@@ -806,9 +927,7 @@ async fn proxy_upgrade(req: Request, backend: &str, epoch: &str) -> Result<Respo
 
     // WS requests normally carry no body; if one does, read it fully so the
     // forwarded request is complete before the upgrade exchange starts.
-    let body_bytes = axum::body::to_bytes(body, MAX_PROXY_BODY_BYTES)
-        .await
-        .map_err(|_| ())?;
+    let body_bytes = read_proxied_body(body).await?;
 
     // Dial the backend (plain HTTP only, like the readiness probe). Any
     // connect failure is a transport error → landing page.
@@ -1194,9 +1313,7 @@ async fn proxy_to_backend_parts(
     let method = parts.method;
     let headers = parts.headers;
 
-    let body_bytes = axum::body::to_bytes(body, MAX_PROXY_BODY_BYTES)
-        .await
-        .map_err(|_| ())?;
+    let body_bytes = read_proxied_body(body).await?;
 
     let mut backend_req = match method.as_str() {
         "GET" => client.get(&url),
@@ -1849,6 +1966,134 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    // ── Proxy body cap (`MALKUTH_PROXY_MAX_BODY_BYTES`) ──────────────────
+
+    /// The R1-6 posture is the default and stays byte-for-byte what it was: an
+    /// instance that configures nothing must behave exactly as before the knob
+    /// existed.
+    #[test]
+    fn test_proxy_body_cap_default_is_unchanged() {
+        assert_eq!(DEFAULT_MAX_PROXY_BODY_BYTES, 1024 * 1024);
+        // Unset, empty and whitespace-only all mean "not configured".
+        for raw in [None, Some(""), Some("   ")] {
+            assert_eq!(
+                resolve_max_proxy_body_bytes(raw),
+                DEFAULT_MAX_PROXY_BODY_BYTES,
+                "raw={raw:?} must fall back to the R1-6 default"
+            );
+        }
+    }
+
+    /// The override is a plain byte count; surroundings are tolerated because
+    /// they arrive from systemd/env files, where a stray newline is normal.
+    #[test]
+    fn test_proxy_body_cap_override_parses_bytes() {
+        assert_eq!(
+            resolve_max_proxy_body_bytes(Some("12582912")),
+            12 * 1024 * 1024,
+            "the documented ≈12 MiB figure for chest's 10 MiB /api face"
+        );
+        assert_eq!(
+            resolve_max_proxy_body_bytes(Some(" 2097152 ")),
+            2 * 1024 * 1024
+        );
+        assert_eq!(resolve_max_proxy_body_bytes(Some("1")), 1);
+    }
+
+    /// Negative controls: a 0 cap would reject every request that carries a
+    /// body (a typo that takes the face down), and junk is not a byte count.
+    /// Both are refused — and refused by keeping the default, which is why the
+    /// resolution is loud in the log.
+    #[test]
+    fn test_proxy_body_cap_refuses_zero_and_junk() {
+        for bad in ["0", "00", "-1", "12m", "12MB", "1.5", "abc", "0x10"] {
+            assert_eq!(
+                resolve_max_proxy_body_bytes(Some(bad)),
+                DEFAULT_MAX_PROXY_BODY_BYTES,
+                "{bad:?} must be refused, not honoured"
+            );
+        }
+    }
+
+    /// The cap is enforced where it is APPLIED, tested through the seam with
+    /// small caps: exactly-at passes, one byte over is refused.
+    ///
+    /// Small caps on purpose — a test that used the resolved process cap would
+    /// have to allocate it (the doc recommends up to ~514 MiB for model
+    /// uploads), which is both slow and a denial-of-service on the test runner
+    /// when the suite happens to run with a large override.
+    #[tokio::test]
+    async fn test_proxied_body_over_the_cap_is_rejected() {
+        for cap in [8usize, 64 * 1024, DEFAULT_MAX_PROXY_BODY_BYTES] {
+            assert!(
+                read_proxied_body_with(axum::body::Body::from(vec![0u8; cap]), cap)
+                    .await
+                    .is_ok(),
+                "a body of exactly {cap} bytes is within the cap"
+            );
+            assert!(
+                read_proxied_body_with(axum::body::Body::from(vec![0u8; cap + 1]), cap)
+                    .await
+                    .is_err(),
+                "a body of {} bytes must be refused at cap {cap}",
+                cap + 1
+            );
+        }
+    }
+
+    /// …and the production reader is WIRED to the knob, not to the default
+    /// constant. Without this pin the knob can go dead in a refactor while every
+    /// other test stays green: the seam above would keep passing against a
+    /// literal, and the parse tests never touch the reader.
+    ///
+    /// Structural, because the alternative — setting the process environment
+    /// before the first resolve — is global and racy under a threaded runner.
+    #[test]
+    fn test_the_proxy_reader_uses_the_configured_cap() {
+        let source = include_str!("info_page.rs");
+        // Read only the production half: a pin that also scanned the tests
+        // would match its own literals and pass vacuously.
+        let production = &source[..source
+            .find("\n#[cfg(test)]\nmod tests")
+            .expect("the test module marker moved")];
+        let start = production
+            .find("async fn read_proxied_body(")
+            .expect("the reader must exist");
+        let body = &production[start..start + production[start..].find("\n}\n").expect("body")];
+        assert!(
+            body.contains("max_proxy_body_bytes()"),
+            "the production reader must resolve the cap at request time: {body}"
+        );
+    }
+
+    /// No upper bound is enforced (an explicit operator number is honoured),
+    /// but the documented class is a known ceiling rather than a silent one.
+    #[test]
+    fn test_proxy_body_cap_honours_large_values_and_knows_the_documented_class() {
+        // The documented ceiling is chest's 512 MiB model-upload class plus
+        // slack; a cap AT it is ordinary configuration and is honoured as-is.
+        assert_eq!(
+            resolve_max_proxy_body_bytes(Some(&LARGEST_DOCUMENTED_CLASS_BYTES.to_string())),
+            LARGEST_DOCUMENTED_CLASS_BYTES,
+            "the documented ceiling must be honoured exactly"
+        );
+        assert_eq!(
+            LARGEST_DOCUMENTED_CLASS_BYTES,
+            514 * 1024 * 1024,
+            "512 MiB model uploads plus slack"
+        );
+        // Above it: honoured (the warn is the guard rail, not a refusal), so an
+        // operator's explicit number is never silently replaced.
+        let huge = 4 * 1024 * 1024 * 1024usize;
+        assert_eq!(resolve_max_proxy_body_bytes(Some(&huge.to_string())), huge);
+        // And the pathological value `usize` accepts is still honoured — that
+        // is precisely why the warning exists.
+        assert_eq!(
+            resolve_max_proxy_body_bytes(Some("18446744073709551615")),
+            usize::MAX
+        );
     }
 
     #[test]
