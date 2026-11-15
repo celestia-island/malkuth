@@ -45,12 +45,26 @@ use tracing::{error, info, warn};
 
 const DEFAULT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Recursively snapshot file mtimes from all watched paths.
+/// Snapshot file mtimes from all watched paths.
 /// Returns a map of path → last-modified time.
+///
+/// A watch root is usually the *supervised binary itself* — a file, not a
+/// directory. Recursing with `read_dir` on a file always fails, which used to
+/// leave the snapshot empty, so `mtimes_changed` compared two empty maps and
+/// always answered "no change": the rolling restart was silently skipped.
+/// File roots are therefore recorded directly; directory roots get the DFS.
 fn snapshot_mtimes(paths: &[PathBuf]) -> HashMap<PathBuf, std::time::SystemTime> {
     let mut map = HashMap::new();
     for root in paths {
-        if !root.exists() {
+        let meta = match std::fs::metadata(root) {
+            Ok(meta) => meta,
+            // Missing root: nothing to watch yet (e.g. first deployment).
+            Err(_) => continue,
+        };
+        if !meta.is_dir() {
+            if let Ok(mtime) = meta.modified() {
+                map.insert(root.clone(), mtime);
+            }
             continue;
         }
         let mut stack = vec![root.clone()];
@@ -58,7 +72,12 @@ fn snapshot_mtimes(paths: &[PathBuf]) -> HashMap<PathBuf, std::time::SystemTime>
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.is_dir() {
+                    // `DirEntry::file_type` reports the entry itself instead of
+                    // following symlinks, so a symlinked child is recorded by
+                    // its own mtime rather than being recursed into (a symlink
+                    // cycle used to spin the DFS forever).
+                    let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                    if is_dir {
                         stack.push(path);
                     } else if let Ok(meta) = entry.metadata() {
                         if let Ok(mtime) = meta.modified() {
@@ -936,4 +955,112 @@ fn default_pid_file() -> String {
         .join("daemon.pid")
         .to_string_lossy()
         .into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, SystemTime};
+
+    /// Scratch directory unique to the test binary + test name.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("malkuth-mtimes-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Rewrite `file` until its mtime actually moves away from `before`: coarse
+    /// filesystem timestamp granularity can otherwise swallow a fast rewrite.
+    fn rewrite_until_mtime_moves(file: &Path, before: SystemTime) {
+        for _ in 0..50 {
+            std::fs::write(file, b"rewritten").unwrap();
+            if std::fs::metadata(file).unwrap().modified().unwrap() != before {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("mtime of {} never moved", file.display());
+    }
+
+    // Regression: a watched *file* root is the normal deployment shape (the
+    // supervised binary is a file, not a directory). `read_dir` on it always
+    // fails, so the snapshot stayed empty and every change looked like "no
+    // change" — the rolling restart was silently skipped.
+    #[test]
+    fn file_root_is_tracked_by_its_own_mtime() {
+        let scratch = Scratch::new("file-root");
+        let file = scratch.path().join("supervised-bin");
+        std::fs::write(&file, b"v1").unwrap();
+
+        let before = snapshot_mtimes(std::slice::from_ref(&file));
+        assert_eq!(before.len(), 1, "file root must be recorded: {before:?}");
+        let unchanged = snapshot_mtimes(std::slice::from_ref(&file));
+        assert!(!mtimes_changed(&before, &unchanged));
+
+        let mtime = *before.values().next().unwrap();
+        rewrite_until_mtime_moves(&file, mtime);
+        let after = snapshot_mtimes(std::slice::from_ref(&file));
+        assert!(mtimes_changed(&before, &after), "touch must be detected");
+    }
+
+    #[test]
+    fn directory_root_still_walks_children() {
+        let scratch = Scratch::new("dir-root");
+        std::fs::create_dir_all(scratch.path().join("nested")).unwrap();
+        std::fs::write(scratch.path().join("a.txt"), b"a").unwrap();
+        std::fs::write(scratch.path().join("nested/b.txt"), b"b").unwrap();
+
+        let paths = vec![scratch.path().to_path_buf()];
+        let base = snapshot_mtimes(&paths);
+        assert_eq!(base.len(), 2, "both files expected: {base:?}");
+        assert!(!mtimes_changed(&base, &snapshot_mtimes(&paths)));
+
+        // An added child changes the map size.
+        std::fs::write(scratch.path().join("nested/c.txt"), b"c").unwrap();
+        assert!(mtimes_changed(&base, &snapshot_mtimes(&paths)));
+        let added = snapshot_mtimes(&paths);
+
+        // A modified child changes only its own mtime.
+        let file = scratch.path().join("nested/b.txt");
+        rewrite_until_mtime_moves(&file, added[&file]);
+        assert!(mtimes_changed(&added, &snapshot_mtimes(&paths)));
+    }
+
+    #[test]
+    fn missing_root_is_skipped() {
+        let scratch = Scratch::new("missing-root");
+        let gone = scratch.path().join("not-deployed-yet");
+        assert!(snapshot_mtimes(std::slice::from_ref(&gone)).is_empty());
+    }
+
+    // A symlinked child must not be recursed into: before `DirEntry::file_type`
+    // was used, a symlink back to an ancestor spun the DFS forever.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_child_terminates_and_is_recorded() {
+        let scratch = Scratch::new("symlink");
+        std::fs::create_dir_all(scratch.path().join("sub")).unwrap();
+        std::fs::write(scratch.path().join("sub/x"), b"x").unwrap();
+        std::os::unix::fs::symlink(scratch.path(), scratch.path().join("sub/loop")).unwrap();
+
+        let snapshot = snapshot_mtimes(&[scratch.path().to_path_buf()]);
+        assert!(snapshot.contains_key(&scratch.path().join("sub/x")));
+        assert!(snapshot.contains_key(&scratch.path().join("sub/loop")));
+    }
 }
