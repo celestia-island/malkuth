@@ -17,7 +17,6 @@
     "@vitejs/plugin-vue-jsx": "^*",
     "typescript": "^*",
     "vite": "^*",
-    "vue-tsc": "^*",
     "sass": "^*"
   }
 }

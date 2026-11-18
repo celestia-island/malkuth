@@ -45,7 +45,7 @@ leader-follower = ["lease"]
 schema = ["dep:schemars"]
 
 # ── CLI binary ─────────────────────────────────────────────────
-cli = ["dep:clap", "dep:notify", "dep:tracing-subscriber", "dep:chrono", "dep:toml", "dep:axum", "dep:tera", "dep:reqwest", "dep:rustls", "dep:kou", "dep:hyper", "dep:hyper-util"]
+cli = ["dep:clap", "dep:notify", "dep:tracing-subscriber", "dep:chrono", "dep:toml", "dep:axum", "dep:tera", "dep:reqwest", "dep:rustls", "dep:hyper", "dep:hyper-util"]
 
 # ── MCP server ─────────────────────────────────────────────────
 # Standalone MCP (Model Context Protocol) server exposing supervision + probe
@@ -97,13 +97,9 @@ rmcp = { version = "^1", optional = true, features = ["server", "transport-io", 
 # pulling aws-lc-sys, which needs NASM/CMake and is banned by deny.toml.
 reqwest = { version = "^0.13", optional = true, default-features = false, features = ["rustls-no-provider"] }
 # The single crypto provider for every rustls user in the binary (reqwest,
-# kou, rustls-platform-verifier). One provider feature, so rustls resolves it
+# rustls-platform-verifier). One provider feature, so rustls resolves it
 # as the process default without an explicit install call.
 rustls = { version = "^0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
-kou = { version = "^0.1", optional = true }
-
-
-regex = { version = "^1", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "^0.2"
