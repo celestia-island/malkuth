@@ -3490,6 +3490,8 @@ mod tests {
             "offline renders no countdown (the stylesheet still names the class)"
         );
         assert!(
+            // Prefixed like the mk-countdown guard below: the stylesheet
+            // names both classes, so only the markup form can prove absence.
             !html.contains(r#"class="mk-retry""#),
             "offline renders no retry paragraph"
         );
@@ -3569,6 +3571,24 @@ mod tests {
             "a non-proxy door must not self-refresh"
         );
         assert!(html.contains("Refresh Now"), "manual action still offered");
+
+        // First paint (backend state still Unknown) still redirects, and a
+        // non-proxy landing door does not — the loop guard's other half.
+        let unknown = fallback_state(
+            InfoStatus::Ready,
+            Some("http://127.0.0.1:1"),
+            BackendState::Unknown,
+        );
+        let html = fallback_body("en", &unknown, true).await;
+        assert!(
+            html.contains("http-equiv=\"refresh\" content=\"3\""),
+            "Unknown first paint redirects at the 3s beat"
+        );
+        let html = fallback_body("en", &landing, false).await;
+        assert!(
+            !html.contains("http-equiv=\"refresh\""),
+            "a non-proxy landing door must not self-refresh either"
+        );
 
         // RTL + localisation flow through the same renderer.
         let arabic = fallback_body("ar", &ready, true).await;

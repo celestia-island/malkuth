@@ -87,7 +87,6 @@ const FALLBACK: Record<string, string> = {
   redirect_after: 'seconds',
   cancel_label: 'Cancel',
   refresh_label: 'Refresh Now',
-  copy_hint: 'Click to copy',
   copied_msg: 'Copied to clipboard',
 
   vtty_lines: 'lines',
