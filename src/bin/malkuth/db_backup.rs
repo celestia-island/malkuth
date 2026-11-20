@@ -283,31 +283,17 @@ fn sleep_until_next_run() -> Duration {
 /// wall clock is ambiguous (a DST gap where it does not exist, or a fold where
 /// it happens twice), take the `now + 24 h` fallback instead of guessing.
 ///
-/// This is deliberately not the pre-migration schedule on every transition day;
-/// the two differ only where the boundary classification below disagrees
-/// (measured 2026: America/New_York on both of its transition days, Europe/London
-/// on its fall-back day, Europe/Berlin / Australia/Sydney / Pacific/Auckland on
-/// their spring-forward days). chrono 0.4.45's
-/// `and_local_timezone(..).single()` classifies the *boundary* instants
-/// differently: it reports exactly 02:00 on a spring-forward day as
-/// `Single` (its transition instant) and on fold days whose repeated hour does
-/// not cover 02:00 as ambiguous, while interior gap instants come back `None`.
-/// Measured over 2026 in America/New_York, Europe/London, Europe/Berlin,
-/// Australia/Sydney and Pacific/Auckland, the two schedules therefore diverge on
-/// 1–2 days per year for a given `now` (an uninterrupted daily chain lands on
-/// the same instants everywhere except America/New_York, Europe/London and
-/// Australia/Lord_Howe). The divergence is intended: this code never resolves an
-/// ambiguous wall clock silently, so on a fold day whose repeated hour does not
-/// cover 02:00 it keeps aiming at 02:00 instead of stepping a fixed 24 h. Where
-/// 02:00 itself is repeated (Europe/Berlin, Australia/Sydney, Pacific/Auckland)
-/// it takes the `now + 24 h` fallback, as it does on a spring-forward day whose
-/// jump skips 02:00 — whether the jump skips it depends on the zone
-/// (US/Berlin-style 02:00→03:00 does, London's 01:00→02:00 does not).
+/// The pre-migration implementation used chrono 0.4.45's
+/// `and_local_timezone(..).single()`, whose classification of DST boundary wall
+/// clocks differs from jiff's, so the two schedules differ on 1–2 transition
+/// days per year for a given `now` (measured 2026: America/New_York 2 days;
+/// Europe/London, Europe/Berlin, Australia/Sydney and Pacific/Auckland 1 each).
+/// The difference is intended: this code never resolves an ambiguous wall clock
+/// silently.
 ///
 /// `to_zoned_datetime`/`TimeZone::to_zoned_datetime` (jiff's `Compatible`
 /// strategy) must not be used here: it answers every ambiguous wall clock
-/// silently — for the gap it returns the transition instant — which is exactly
-/// what the fallback above exists to avoid.
+/// silently instead of taking the fallback above.
 fn seconds_until_next_run(now: &jiff::ZonedDateTime) -> u64 {
     let next = now
         .time_zone()
@@ -496,10 +482,12 @@ mod tests {
 
     #[test]
     fn dump_stamp_formats_the_timestamp_in_utc() {
-        // Structural pin: a fixed instant, so the assertion cannot go green on a
-        // UTC host when the producer silently switches to local time (`rotate()`
-        // sorts by file name, so a local stamp can go non-monotonic across a DST
-        // fold and trim the fresh dump).
+        // Format half of the stamp contract: a fixed instant renders as the
+        // literal UTC stamp. A `Timestamp` carries no zone, so this pins the
+        // format — not the producer's clock choice (that is
+        // `dump_stamp_producer_stays_on_the_utc_clock`'s job: behaviour alone
+        // cannot tell UTC from local on a UTC host, and the canonical
+        // verification lane is UTC).
         let ts = jiff::Timestamp::from_second(1_795_166_296).expect("fixture instant");
         assert_eq!(dump_stamp_from(ts), "20261120-091816");
     }
