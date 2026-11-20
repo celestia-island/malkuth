@@ -1787,11 +1787,16 @@ async fn render_fallback_page(
     } else {
         let mut rows = String::new();
         for binary in &binaries {
+            // The identity stays contiguous in the rendered text: the
+            // integration test asserts the full `branch:hash7` string is
+            // present, and selection/copy should yield it as one value.
+            let identity_segments = [binary.hash_short.to_string()];
+            let identity = pair_tag("", &identity_segments);
             rows.push_str(&format!(
                 r#"<div class="hk-status-row hk-status-row--info"><span class="hk-status-row__chip"></span><div class="hk-status-row__body"><span class="hk-status-row__title">{name}</span><span class="hk-status-row__status">{time}</span></div><div class="hk-status-row__action"><span class="mk-binary-actions">{identity}</span></div></div>"#,
                 name = html_escape(&binary.name),
                 time = html_escape(&binary.compile_time),
-                identity = pair_tag("", &split_last(&binary.hash_short, ':')),
+                identity = identity,
             ));
         }
         format!(
