@@ -1,80 +1,34 @@
-import { defineConfig, type Plugin } from 'vite'
+import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vueJsx from '@vitejs/plugin-vue-jsx'
-import { resolve } from 'path'
-import { readFileSync, writeFileSync } from 'fs'
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-function inlinePlugin(): Plugin {
-  let outDir = ''
-  return {
-    name: 'inline-single-file',
-    apply: 'build',
-    configResolved(config) {
-      outDir = config.build.outDir
-    },
-    closeBundle() {
-      const htmlPath = resolve(outDir, 'index.html')
-      let html = readFileSync(htmlPath, 'utf-8')
+const root = fileURLToPath(new URL('.', import.meta.url))
 
-      // Inline JS bundles
-      html = html.replace(
-        /<script\b[^>]*\bsrc="([^"]+)"[^>]*>\s*<\/script>/gi,
-        (match, srcAttr) => {
-          const rel = srcAttr.replace(/^\//, '')
-          const jsPath = resolve(outDir, rel)
-          try {
-            const code = readFileSync(jsPath, 'utf-8')
-            return `<script type="module">${code}</script>`
-          } catch {
-            return match
-          }
-        }
-      )
-
-      // Inline CSS
-      html = html.replace(
-        /<link\b[^>]*\bhref="([^"]+\.css)"[^>]*\s*\/?>/gi,
-        (match, hrefAttr) => {
-          const rel = hrefAttr.replace(/^\//, '')
-          const cssPath = resolve(outDir, rel)
-          try {
-            const css = readFileSync(cssPath, 'utf-8')
-            return `<style>${css}</style>`
-          } catch {
-            return match
-          }
-        }
-      )
-
-      // Remove modulepreload links
-      html = html.replace(
-        /<link\b[^>]*\brel="modulepreload"[^>]*\s*\/?>/gi,
-        ''
-      )
-
-      writeFileSync(htmlPath, html)
-    },
-  }
-}
-
+// SPA pass. Writes ONLY into the staging directory: scripts/publish.mjs is
+// the single writer of the artifacts build.rs embeds, and it runs only after
+// every vite pass has exited 0. The previous in-tree `closeBundle` inlining
+// rewrote dist even on a failed build, which is exactly the trap this shape
+// removes.
 export default defineConfig({
-  plugins: [vue(), vueJsx(), inlinePlugin()],
+  plugins: [vue(), vueJsx()],
   base: '/',
-  resolve: {
-    alias: {
-      '@': resolve(import.meta.dirname, 'src'),
-    },
-  },
+  // hikari ships raw TSX sources (its exports point at src/*.tsx), so the
+  // dev-server pre-bundler must leave it alone — it cannot parse JSX.
+  optimizeDeps: { exclude: ['@celestia-island/hikari'] },
   build: {
-    outDir: resolve(import.meta.dirname, '../../target/landing_page'),
+    outDir: resolve(root, '../../target/landing_page/.stage/spa'),
     emptyOutDir: true,
+    target: 'es2020',
     cssCodeSplit: false,
     rollupOptions: {
       output: {
         manualChunks: undefined,
         codeSplitting: false,
-        assetFileNames: 'assets/[name].[ext]',
         entryFileNames: 'assets/index.js',
+        chunkFileNames: 'assets/[name].js',
+        assetFileNames: 'assets/[name].[ext]',
       },
     },
   },
