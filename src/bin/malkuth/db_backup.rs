@@ -418,7 +418,7 @@ mod tests {
         // separating '-' (it checks `stamp[8] == b'-'` at a fixed offset). If the
         // shape drifts, every dump looks like its own base name: the retention
         // window stops trimming and the backup directory grows without bound.
-        let stamp = jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S").to_string();
+        let stamp = dump_stamp();
         assert_eq!(stamp.len(), 15);
         assert_eq!(stamp.as_bytes()[8], b'-');
         assert!(stamp[..8].bytes().all(|b| b.is_ascii_digit()));
