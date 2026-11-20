@@ -285,9 +285,11 @@ fn sleep_until_next_run() -> Duration {
 ///
 /// The pre-migration implementation used chrono 0.4.45's
 /// `and_local_timezone(..).single()`, whose classification of DST boundary wall
-/// clocks differs from jiff's, so the two schedules differ on 1–2 transition
-/// days per year for a given `now` (measured 2026: America/New_York 2 days;
-/// Europe/London, Europe/Berlin, Australia/Sydney and Pacific/Auckland 1 each).
+/// clocks differs from jiff's, so the two schedules can differ on 1–2 transition
+/// days per year for a given `now`. Measured 2026: America/New_York 2 days;
+/// Europe/London, Europe/Berlin, Australia/Sydney and Pacific/Auckland 1 each;
+/// zones whose local 02:00 never lands on a transition boundary (Asia/Shanghai,
+/// America/Santiago, Pacific/Chatham) show no difference at all.
 /// The difference is intended: this code never resolves an ambiguous wall clock
 /// silently.
 ///
@@ -398,9 +400,10 @@ mod tests {
     #[test]
     fn next_run_rejects_a_folded_two_am() {
         // 2026-10-25 is Europe's fall-back day: local 02:00 happens twice.
-        // `.single()` returned None for the fold just like for the gap, so the
-        // schedule fell back to now + 24h instead of aiming at the first of the
-        // two occurrences (which `Compatible` would have picked, 1h away).
+        // chrono's `.single()` collapses that ambiguity to `None`, and jiff's
+        // `unambiguous()` rejects it too, so both shapes take the now + 24h
+        // fallback; `Compatible` would instead pick the first of the two
+        // occurrences (1h away), which is why it must not be used here.
         assert_eq!(
             seconds_until_next_run(&local("Europe/Berlin", 2026, 10, 25, 1, 0)),
             86_400
