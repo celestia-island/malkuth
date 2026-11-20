@@ -1906,8 +1906,13 @@ fn pair_tag(label: &str, segments: &[String]) -> String {
             format!(r#"<span class="{tone}">{}</span>"#, html_escape(segment))
         })
         .collect();
+    let group_label = if label.is_empty() {
+        String::new()
+    } else {
+        format!(r#" role="group" aria-label="{}""#, html_escape(label))
+    };
     format!(
-        r#"<span class="mk-pair">{label_block}<span class="mk-pair__value">{body}</span></span>"#
+        r#"<span class="mk-pair"{group_label}>{label_block}<span class="mk-pair__value">{body}</span></span>"#
     )
 }
 
@@ -1915,9 +1920,9 @@ fn pair_tag(label: &str, segments: &[String]) -> String {
 /// no separator on the left of the tail).
 fn split_last(value: &str, sep: char) -> Vec<String> {
     match value.rsplit_once(sep) {
-        // The separator stays with the head: the two halves are separate
-        // blocks, and selecting the rendered text must still yield the
-        // original value (the fallback page has no copy button).
+        // The separator stays with the head so the rendered text still reads
+        // as one value (`0.0.0.0:` + `3097`) instead of two adjacent tokens
+        // that run together when copied.
         Some((head, tail)) if !head.is_empty() && !tail.is_empty() => {
             vec![format!("{head}{sep}"), tail.to_string()]
         }

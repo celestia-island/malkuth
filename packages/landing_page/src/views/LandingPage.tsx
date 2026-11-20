@@ -449,9 +449,9 @@ export default defineComponent({
      */
     function splitLast(value: string, sep: string): string[] {
       const at = value.lastIndexOf(sep)
-      // The separator stays with the head, matching the fallback renderer: the
-      // two halves are separate blocks, so the glyph has to live in one of
-      // them for the rendered text to read as the original value.
+      // The separator stays with the head, matching the fallback renderer, so
+      // the rendered text still reads as one value (`0.0.0.0:` + `3097`)
+      // rather than two tokens that run together when copied.
       const tail = at > 0 ? value.slice(at + sep.length) : ''
       return at > 0 && tail ? [value.slice(0, at + sep.length), tail] : [value]
     }

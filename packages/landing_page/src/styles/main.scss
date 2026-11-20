@@ -97,11 +97,14 @@
   font-size: var(--text-2xs);
 }
 
+/* A block, not a flex row: flex blockifies every segment, and a selection
+   over blockified children copies newline-joined. Inline-block segments flow
+   and wrap, so a selection copies them contiguously. */
 .mk-pair__value {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-4);
+  display: block;
+  /* hikari's reset denies selection on chrome text; this value is data an
+     operator may want to copy, and the no-JS page has no copy button. */
+  user-select: text;
   min-width: 0;
   padding: var(--space-2) var(--space-8);
   border: 0;
@@ -110,6 +113,7 @@
   font: inherit;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: var(--text-xs);
+  line-height: 1.6;
   text-align: start;
 }
 
@@ -134,8 +138,14 @@ button.mk-pair__value:focus-visible {
    get their own block, so a port reads as a port rather than as a tail of
    plain text. */
 .mk-seg {
+  display: inline-block;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.mk-seg + .mk-seg,
+.mk-seg-arrow + .mk-seg {
+  margin-inline-start: var(--space-4);
 }
 
 .mk-seg + .mk-seg {
