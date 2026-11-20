@@ -137,7 +137,10 @@ export function extractSpinnerCss(css) {
   // Keyframes are at-rules with a block: the leaf walker descends into them
   // (`to{…}`), so they have to be lifted out verbatim.
   const keyframes = atRuleBlock(flat, '@keyframes hk-spinner-rotate')
-  if (keyframes) parts.push(keyframes)
+  if (!keyframes) {
+    throw new Error('no @keyframes hk-spinner-rotate in the compiled CSS — the 503 page would render a frozen arc')
+  }
+  parts.push(keyframes)
   if (!parts.length) throw new Error('no .hk-spinner rules found in the compiled CSS')
   return parts.join('')
 }

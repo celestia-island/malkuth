@@ -697,7 +697,7 @@ async fn build_spa_init(state: &InfoState, lang: &str, allowed: bool) -> serde_j
         "dir": dir,
         "title": i18n.get("title").cloned().unwrap_or_default(),
         "i18n": i18n,
-        "timing": { "countdown_s": 3, "retry_countdown_s": 10, "probe_interval_ms": 2000 },
+        "timing": { "countdown_s": 3, "probe_interval_ms": 2000 },
         "nonce": { "cookie": "__malkuth_nonce", "max_age_s": 604800, "path": "/" },
     })
 }

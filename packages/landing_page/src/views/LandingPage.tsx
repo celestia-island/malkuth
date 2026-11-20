@@ -27,7 +27,7 @@ import HkSpinner from '@celestia-island/hikari/components/HkSpinner.tsx'
 import { HkStatusRow } from '@celestia-island/hikari/components/HkStatusRow.tsx'
 import HkTerminal from '@celestia-island/hikari/components/HkTerminal.tsx'
 import HkToast from '@celestia-island/hikari/components/HkToast.tsx'
-import { useToast } from '@celestia-island/hikari/runtime'
+import { useClipboardWithToast, useToast } from '@celestia-island/hikari/runtime'
 
 // The payload these types describe is produced by `src/info_page.rs`
 // (`build_spa_init`) — that Rust builder is the single source of truth. This
@@ -61,7 +61,7 @@ export interface MalkuthInit {
   dir: 'ltr' | 'rtl'
   i18n: Record<string, string>
   /** Client beats; the server owns the numbers so both surfaces agree. */
-  timing?: { countdown_s?: number; retry_countdown_s?: number; probe_interval_ms?: number }
+  timing?: { countdown_s?: number; probe_interval_ms?: number }
   /** Build-token cookie contract (name + lifetime) as the server defines it. */
   nonce?: { cookie?: string; max_age_s?: number; path?: string }
 }
@@ -209,6 +209,14 @@ export default defineComponent({
 
     const logCache = new Map<string, string[]>()
     const toast = useToast()
+    // One copy path for the whole page: hikari's hook carries the
+    // `<textarea>`+execCommand fallback that non-secure (plain http) doors
+    // need, plus both toasts.
+    const clipboard = useClipboardWithToast(
+      toast,
+      () => t('copied_msg'),
+      () => t('copy_fail_msg'),
+    )
 
     const logoUrl = computed(() =>
       logoBase64.value ? `data:image/webp;base64,${logoBase64.value}` : '',
@@ -317,7 +325,7 @@ export default defineComponent({
         startPolling()
         return
       }
-      if (getCookie('__malkuth_nonce') === initEpoch) {
+      if (getCookie(cookieName) === initEpoch) {
         // The cookie already names the served build yet this page rendered:
         // a redirect was attempted (or cancelled) and the backend was not
         // reachable. Offer the manual action and let polling recover.
@@ -438,10 +446,7 @@ export default defineComponent({
     /** Copy the log lines the terminal was fed (HkTerminal exposes no buffer). */
     function copyLog() {
       if (!terminalLog.value.length) return
-      navigator.clipboard
-        ?.writeText(terminalLog.value.join('\n'))
-        .then(() => toast.success(t('copied_msg')))
-        .catch(() => toast.error(t('copy_fail_msg')))
+      void clipboard.copy(terminalLog.value.join('\n'))
     }
 
     function formatTime(ts: number): string {
