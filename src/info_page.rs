@@ -1449,6 +1449,32 @@ fn request_interceptable(req: &Request) -> bool {
 }
 
 /// JSON probe endpoint for polling landing page.
+/// The probe's `message`: the localized status sentence, falling back to the
+/// English one when the catalogue key is missing — the SPA announces this
+/// string through its aria-live region, so an empty value would be announced
+/// as nothing.
+fn probe_message(i18n: &HashMap<String, String>, probe_key: &str, message: &str) -> String {
+    const DEFAULTS: &[(&str, &str)] = &[
+        ("status_landing", "Redirecting shortly"),
+        ("status_starting", "The service is starting up"),
+        ("status_offline", "Service temporarily unavailable"),
+        ("status_ready", "All services running."),
+        ("status_building", "Building..."),
+    ];
+    if !message.is_empty() {
+        return message.to_string();
+    }
+    if let Some(localized) = i18n.get(probe_key) {
+        if !localized.is_empty() {
+            return localized.clone();
+        }
+    }
+    DEFAULTS
+        .iter()
+        .find(|(key, _)| *key == probe_key)
+        .map_or_else(String::new, |(_, english)| (*english).to_string())
+}
+
 async fn serve_probe(lang: &str, state: &InfoState, allowed: bool) -> Response {
     let backend_state = *state.backend_state.read().await;
     let backend_up = state.serve_backend.is_some() && backend_state == BackendState::Up;
@@ -1473,14 +1499,7 @@ async fn serve_probe(lang: &str, state: &InfoState, allowed: bool) -> Response {
         (state_name, "", key)
     };
 
-    let message = if msg.is_empty() {
-        let i18n = get_i18n(lang);
-        i18n.get(probe_key)
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| msg.to_string())
-    } else {
-        msg.to_string()
-    };
+    let message = probe_message(get_i18n(lang), probe_key, msg);
 
     let progress = state.build_progress.lock().ok().and_then(|g| g.clone());
     let runtime_log: Vec<String> = state
@@ -3600,6 +3619,20 @@ mod tests {
             "a non-proxy landing door must not self-refresh either"
         );
 
+        // The version line is not catalogue text: its two values (the crate
+        // version and the install method) are escaped at their own site, so
+        // the hostile fixture rides along via the state.
+        let mut hostile_state = fallback_state(InfoStatus::Ready, None, BackendState::Unknown);
+        hostile_state.version = "0.6.0<b>".to_string();
+        let html = fallback_body("en", &hostile_state, true).await;
+        assert!(
+            // `(Installed via` etc. is catalogue text the hostile fixture
+            // poisons; only the version segment itself is pinned here.
+            html.contains("v0.6.0&lt;b&gt; ("),
+            "the version must be escaped in the provenance line"
+        );
+        assert!(!html.contains("v0.6.0<b>"), "no raw tag may survive");
+
         // RTL + localisation flow through the same renderer.
         let arabic = fallback_body("ar", &ready, true).await;
         assert!(arabic.contains("lang=\"ar\"") && arabic.contains("dir=\"rtl\""));
@@ -3731,6 +3764,70 @@ mod tests {
             !html.contains("<script>alert(1)</script>"),
             "no executable markup may survive"
         );
+    }
+
+    /// The probe must agree with the documents: on supervisor doors a
+    /// rebuild reports `building` (not `ready` — the SPA would otherwise flip
+    /// the page to the green "all services running" badge mid-rebuild), and
+    /// the message keeps its English fallback when a catalogue key goes
+    /// missing. Serve doors keep the redirect-oriented shape.
+    #[tokio::test]
+    async fn test_probe_state_matches_the_documents() {
+        let probe = |state: InfoState| async move {
+            let response = serve_probe("en", &state, false).await;
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("probe body");
+            let json: serde_json::Value = serde_json::from_slice(&bytes).expect("probe json");
+            json
+        };
+
+        // Supervisor door mid-rebuild: `building`, never `ready`.
+        let json = probe(fallback_state(
+            InfoStatus::Working,
+            None,
+            BackendState::Unknown,
+        ))
+        .await;
+        assert_eq!(json["state"], "building");
+        assert_eq!(json["serve"], false);
+
+        // Supervisor door idle: `ready`, and reloading is pointless without a
+        // backend, which `serve:false` tells the SPA.
+        let json = probe(fallback_state(
+            InfoStatus::Ready,
+            None,
+            BackendState::Unknown,
+        ))
+        .await;
+        assert_eq!(json["state"], "ready");
+        assert_eq!(json["serve"], false);
+
+        // Serve door: backend health drives the state, Up stays `ready`.
+        let json = probe(fallback_state(
+            InfoStatus::Ready,
+            Some("http://127.0.0.1:1"),
+            BackendState::Up,
+        ))
+        .await;
+        assert_eq!(json["state"], "ready");
+    }
+
+    /// The probe message: catalogue value, else the English sentence (never
+    /// empty) — the SPA announces this string through its aria-live region.
+    #[test]
+    fn test_probe_message_falls_back_to_english() {
+        let mut i18n: HashMap<String, String> = get_i18n("en").clone();
+        assert_eq!(
+            probe_message(&i18n, "status_building", ""),
+            "The service is currently being rebuilt. Please wait a moment"
+        );
+        // Renamed key: English sentence, not an empty announcement.
+        i18n.remove("status_building");
+        assert_eq!(probe_message(&i18n, "status_building", ""), "Building...",);
+        // Localized value wins when present.
+        i18n.insert("status_building".to_string(), "重建中".to_string());
+        assert_eq!(probe_message(&i18n, "status_building", ""), "重建中");
     }
 
     /// The fallback page's state/badge mapping and the auto-refresh rule.
