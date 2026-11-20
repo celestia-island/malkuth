@@ -1725,9 +1725,9 @@ async fn render_fallback_page(
     let backend = *state.backend_state.read().await;
     let (page, status_key) = page_state(state, backend);
     // ONE escaping point for every catalogue string: `raw` is the catalogue
-    // value, `text` is its escaped HTML form. Helpers that escape their own
-    // argument (kv_row, the row builders) take `raw`; everything interpolated
-    // straight into the page takes `text`.
+    // value, `text` is its escaped HTML form. `pair_tag` takes the raw value
+    // and escapes it itself; everything interpolated straight into the page
+    // takes `text`.
     let raw = |key: &str| -> String { i18n.get(key).cloned().unwrap_or_default() };
     let text = |key: &str| -> String { html_escape(&raw(key)) };
     let dir = if lang == "ar" { "rtl" } else { "ltr" };
@@ -1875,12 +1875,12 @@ async fn render_fallback_page(
     fill(FALLBACK_PAGE_HTML, &refs)
 }
 
-/// One label/value row in the fallback page (`value` is already escaped HTML).
 /// One body, two blocks: a label block and a value block in a single frame.
 /// The first segment reads as the muted head (host / directory / branch) and
-/// the rest as accent blocks (port / name / hash). Every input is RAW and is
-/// escaped here — segments are interpolated verbatim, so callers must not
-/// pre-escape. The fallback page ships no JS, so the value is a plain span
+/// the rest as accent blocks (port / name / hash) — a single-segment value is
+/// content, so it takes the accent tone. Every input is RAW and is escaped
+/// here: segments are interpolated verbatim, so a caller that pre-escapes
+/// double-escapes. The fallback page ships no JS, so the value is a plain span
 /// rather than the SPA's copy button — a button here would be a dead control.
 fn pair_tag(label: &str, segments: &[String]) -> String {
     let label_block = if label.is_empty() {
@@ -1895,7 +1895,10 @@ fn pair_tag(label: &str, segments: &[String]) -> String {
         .iter()
         .enumerate()
         .map(|(i, segment)| {
-            let tone = if i == 0 {
+            if segment == "→" {
+                return r#"<span class="mk-seg-arrow" aria-hidden="true">→</span>"#.to_string();
+            }
+            let tone = if i == 0 && segments.len() > 1 {
                 "mk-seg mk-seg--muted"
             } else {
                 "mk-seg mk-seg--accent"
@@ -4315,6 +4318,12 @@ mod tests {
         let state = fallback_state(InfoStatus::Ready, None, BackendState::Unknown);
         let mut i18n: HashMap<String, String> = get_i18n("en").clone();
         let hostile = r#"a&b<c>"d'e<script>alert(1)</script>"#;
+        // The proxy endpoint and watch path travel through the split helpers
+        // into pair_tag, i.e. down the OTHER escaping path; give them hostile
+        // input too, or a pre-escaped call site there would stay invisible.
+        let mut state = state;
+        state.proxy_endpoint = Some(format!("{hostile}:3009 → 3000-3009"));
+        state.watch_paths = vec![format!("/srv/{hostile}/bin")];
         for key in [
             "heading",
             "tagline",
@@ -4340,6 +4349,12 @@ mod tests {
             "hostile catalogue values must be escaped"
         );
         assert!(!html.contains("<c>"), "no raw tag may survive");
+        // One escaping pass everywhere: a call site that pre-escaped would
+        // turn an `&` into `&amp;amp;` and be caught here.
+        assert!(
+            !html.contains("&amp;amp;"),
+            "a pre-escaped call site double-escapes"
+        );
         assert!(
             !html.contains("<script>alert(1)</script>"),
             "no executable markup may survive"

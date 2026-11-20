@@ -506,7 +506,7 @@ export default defineComponent({
 
     const staticTree = () => (
       <div class="mk-page">
-        <HkCard class="mk-card" padding="lg">
+        <HkCard class="mk-card">
           {head(MARKERS.heading, MARKERS.tagline, MARKERS.logo)}
           <div class="mk-status">{MARKERS.statusBadge}</div>
           <div class="mk-pairs">
@@ -531,16 +531,22 @@ export default defineComponent({
      * path, focus ring and an accessible name.
      */
     const pairTag = (label: string, segments: string[], copyValue?: string) => {
-      const body = segments.map((part, i) => (
-        <span
-          class={[
-            'mk-seg',
-            i === 0 ? 'mk-seg--muted' : 'mk-seg--accent',
-          ]}
-        >
-          {part}
-        </span>
-      ))
+      const body = segments.map((part, i) =>
+        part === '→' ? (
+          <span class="mk-seg-arrow" aria-hidden="true">
+            {part}
+          </span>
+        ) : (
+          <span
+            class={[
+              'mk-seg',
+              i === 0 && segments.length > 1 ? 'mk-seg--muted' : 'mk-seg--accent',
+            ]}
+          >
+            {part}
+          </span>
+        ),
+      )
       return (
         <span class="mk-pair">
           {label ? <span class="mk-pair__label">{label}</span> : null}
@@ -551,7 +557,7 @@ export default defineComponent({
               type="button"
               class="mk-pair__value"
               title={copyValue}
-              aria-label={`${label}: ${copyValue}`}
+              aria-label={label ? `${label}: ${copyValue}` : copyValue}
               onClick={() => void clipboard.copy(copyValue)}
             >
               {body}
@@ -660,7 +666,7 @@ export default defineComponent({
 
     const liveTree = () => (
       <div class="mk-page">
-        <HkCard class="mk-card" padding="lg">
+        <HkCard class="mk-card">
           {head('Malkuth', t('tagline'), logoUrl.value)}
           <div class="mk-status" aria-live="polite">
             <HkBadge variant={badgeVariant.value} dot pulse={state.value !== 'ready'}>
