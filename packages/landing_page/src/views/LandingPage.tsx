@@ -362,9 +362,6 @@ export default defineComponent({
         })
     }
 
-    // The popover mounts its content lazily and the probe reply can beat that
-    // mount, so feeding the terminal retries briefly instead of dropping the
-    // first batch of lines on the floor.
     /** Refit once the popover has settled: the initial fit can run against an
      *  unsettled container and size the canvas past the frame. */
     function refitSettled() {
@@ -375,6 +372,9 @@ export default defineComponent({
       })
     }
 
+    // The popover mounts its content lazily and the probe reply can beat that
+    // mount, so feeding the terminal retries briefly instead of dropping the
+    // first batch of lines on the floor.
     function feedTerminal(attempt = 0) {
       nextTick(() => {
         const term = terminalRef.value
@@ -416,7 +416,6 @@ export default defineComponent({
       terminalLog.value = logCache.get(name) ?? []
       terminalOpen.value = true
       feedTerminal()
-      refitSettled()
       fetchLog(name)
     }
 

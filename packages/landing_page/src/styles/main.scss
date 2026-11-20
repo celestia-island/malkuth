@@ -296,29 +296,35 @@ button.mk-pair__value:focus-visible {
 }
 
 /* The xterm viewport's native scrollbar is the fat classic bar; style it to
-   the hikari default look instead (6px rail, muted thumb, hover deepen).
-   Hover/scroll reveal — hikari's overlay behaviour — needs JS; a terminal is
-   read-mostly, so a subdued always-visible rail is the honest equivalent. */
-.mk-log .xterm-viewport {
-  scrollbar-width: thin;
-  scrollbar-color: rgb(var(--color-text-tertiary) / 45%) transparent;
-}
-
+   hikari's overlay-scrollbar look instead: 6px rail, 3px-radius thumb in
+   --hi-color-muted at 35%, hover 55% (hikari styles/theme/scrollbar.scss).
+   Two channels because Chromium and Firefox style scrollbars differently:
+   - Chromium styles the bar ONLY via the legacy ::-webkit-scrollbar rules
+     (the standard scrollbar-width/color properties would switch it onto the
+     standard path and ignore them);
+   - Firefox only honours the standard properties, so they live under an
+     @supports-not block. Never put both on the same element: the standard
+     properties win and the webkit rules are dropped (measured: Chromium
+     paints 10px with UA arrows on the combined form). */
 .mk-log .xterm-viewport::-webkit-scrollbar {
   width: 6px;
 }
 
-.mk-log .xterm-viewport::-webkit-scrollbar-track {
-  background: transparent;
-}
-
 .mk-log .xterm-viewport::-webkit-scrollbar-thumb {
   border-radius: 3px;
-  background: rgb(var(--color-text-tertiary) / 45%);
+  background: color-mix(in srgb, var(--hi-color-muted, rgb(154 164 178)) 35%, transparent);
 }
 
 .mk-log .xterm-viewport::-webkit-scrollbar-thumb:hover {
-  background: rgb(var(--color-text-tertiary) / 75%);
+  background: color-mix(in srgb, var(--hi-color-muted, rgb(154 164 178)) 55%, transparent);
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  .mk-log .xterm-viewport {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--hi-color-muted, rgb(154 164 178)) 55%, transparent)
+      transparent;
+  }
 }
 
 .mk-logbar {
