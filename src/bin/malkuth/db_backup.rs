@@ -269,14 +269,28 @@ fn sleep_until_next_run() -> Duration {
 
 /// Seconds until the next 02:00 local time, at least 60s from `now`.
 ///
-/// `unambiguous()` is the exact analogue of the pre-migration
-/// `and_local_timezone(..).single()`: it rejects BOTH shapes of an ambiguous
-/// local 02:00 — the DST gap where it never happens and the DST fold where it
-/// happens twice — and only then do we fall back to a plain `now + 24h`.
-/// `TimeZone::to_zoned_datetime`/`DateTime::to_zoned_datetime` must not be used
-/// here: they resolve both shapes silently (jiff's `Compatible` strategy), so on
-/// a transition day the schedule would move to the transition instant instead of
-/// keeping the pre-migration phase.
+/// `unambiguous()` rejects BOTH shapes of a local time that is not a single
+/// instant — the DST gap (02:00 does not exist) and the DST fold (02:00 happens
+/// twice) — and only then do we fall back to `now + 24h`.
+///
+/// This schedule is deliberately NOT identical to the pre-migration one on
+/// transition days. chrono 0.4.45's `and_local_timezone(..).single()` classified
+/// only *interior* gap instants as `None`; at the boundary instants (exactly
+/// 02:00) it returned `Single` on the gap day and `Ambiguous` on the fold days,
+/// so the two libraries disagree on 1–2 days per year:
+///
+/// * spring-forward: this code waits a full day (the fallback) where chrono woke
+///   at the transition instant — intended, because waking minutes after the
+///   transition produces a second dump too close to the first;
+/// * fall-back in zones whose repeated hour does not cover 02:00 (US, London):
+///   this code keeps the single 02:00 phase where chrono stepped a fixed 24h —
+///   intended, because the old shape produced a 24–25h gap followed by two dumps
+///   an hour apart.
+///
+/// `to_zoned_datetime`/`TimeZone::to_zoned_datetime` (jiff's `Compatible`
+/// strategy) must not be used here: it resolves every ambiguous local time
+/// silently, which is exactly how the gap side would move to the transition
+/// instant instead of taking the fallback.
 fn seconds_until_next_run(now: &jiff::ZonedDateTime) -> u64 {
     let next = now
         .time_zone()
@@ -358,12 +372,14 @@ mod tests {
     }
 
     #[test]
-    fn next_run_keeps_its_phase_across_a_dst_gap() {
-        // 2026-03-08 is the US spring-forward day: local 02:00 does not exist.
-        // The pre-migration `.single()` returned None here and the schedule
-        // fell back to now + 24h; jiff's `Compatible` resolution would instead
-        // answer 1h (the 03:00 transition instant), i.e. a second dump minutes
-        // later.
+    fn next_run_falls_back_a_full_day_across_a_dst_gap() {
+        // 2026-03-08 is the US spring-forward day: local 02:00 does not exist,
+        // so `unambiguous()` rejects it and the schedule takes the +24h
+        // fallback. This pins the NEW contract, not the old one: chrono 0.4.45
+        // returned `Single` for exactly 02:00 here (it only rejected interior
+        // gap instants), so the pre-migration schedule would have woken at the
+        // 03:00 transition instant — one hour later — which is the behaviour
+        // this migration intentionally replaces (no back-to-back dumps).
         assert_eq!(
             seconds_until_next_run(&local("America/New_York", 2026, 3, 8, 1, 0)),
             86_400
