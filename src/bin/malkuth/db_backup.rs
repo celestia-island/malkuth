@@ -103,7 +103,7 @@ pub fn run_backup(cfg: &DbBackupConfig, uri: &str) -> Result<PathBuf, String> {
 
     let host = sanitize_label(&hostname());
     let db = db_name_from_uri(uri);
-    let stamp = jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S");
+    let stamp = dump_stamp();
     let tmp = dir.join(format!(".{host}-{db}-{stamp}.tmp"));
     let final_path = if cfg.key.is_some() {
         dir.join(format!("{host}-{db}-{stamp}.dump.age"))
@@ -156,6 +156,15 @@ pub fn run_backup(cfg: &DbBackupConfig, uri: &str) -> Result<PathBuf, String> {
 
     info!(path = %final_path.display(), db, "database backup created");
     Ok(final_path)
+}
+
+/// The dump file stamp: `YYYYMMDD-HHMMSS` in UTC.
+///
+/// Single source of truth: `strip_stamp` below recognises this exact shape
+/// (fixed offsets, `stamp[8] == b'-'`), so the producer and the tests must
+/// share it rather than re-spelling the format string.
+fn dump_stamp() -> String {
+    jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S").to_string()
 }
 
 /// Strip the trailing `-<YYYYMMDD>-<HHMMSS>` stamp (as produced by
@@ -260,7 +269,7 @@ fn sleep_until_next_run() -> Duration {
 
 /// Seconds until the next 02:00 local time, at least 60s from `now`.
 ///
-/// `unambiguous()` is the exact analogue of chrono's
+/// `unambiguous()` is the exact analogue of the pre-migration
 /// `and_local_timezone(..).single()`: it rejects BOTH shapes of an ambiguous
 /// local 02:00 — the DST gap where it never happens and the DST fold where it
 /// happens twice — and only then do we fall back to a plain `now + 24h`.
@@ -335,7 +344,9 @@ mod tests {
             seconds_until_next_run(&local("America/New_York", 2026, 8, 4, 1, 0)),
             3600
         );
-        // At or after 02:00 local: a full absolute day to tomorrow's 02:00.
+        // At or after 02:00 local: an absolute 24h step. The phase resumes on
+        // the following days (see the transition tests); a transition inside
+        // those 24h moves the landing by the offset delta.
         assert_eq!(
             seconds_until_next_run(&local("America/New_York", 2026, 8, 4, 3, 0)),
             23 * 3600
@@ -349,9 +360,10 @@ mod tests {
     #[test]
     fn next_run_keeps_its_phase_across_a_dst_gap() {
         // 2026-03-08 is the US spring-forward day: local 02:00 does not exist.
-        // chrono's `.single()` returned None here and the schedule fell back to
-        // now + 24h; jiff's `Compatible` resolution would instead answer 1h
-        // (the 03:00 transition instant), i.e. a second dump minutes later.
+        // The pre-migration `.single()` returned None here and the schedule
+        // fell back to now + 24h; jiff's `Compatible` resolution would instead
+        // answer 1h (the 03:00 transition instant), i.e. a second dump minutes
+        // later.
         assert_eq!(
             seconds_until_next_run(&local("America/New_York", 2026, 3, 8, 1, 0)),
             86_400
@@ -372,6 +384,21 @@ mod tests {
         assert_eq!(
             seconds_until_next_run(&local("Europe/Berlin", 2026, 10, 25, 1, 0)),
             86_400
+        );
+    }
+
+    #[test]
+    fn next_run_steps_by_an_absolute_day_not_a_calendar_day() {
+        // 2026-10-31 is the Saturday before the US fall-back: today's 02:00 has
+        // already passed and a transition falls inside the next 24h, which is
+        // the only shape that tells the two steps apart.
+        //   absolute 24h  -> 2026-11-01 01:00 EST (75_600s away)
+        //   calendar day  -> 2026-11-01 02:00 EST (79_200s away)
+        // The pre-migration `Duration::days(1)` is an absolute 86_400s, so the
+        // first is the behaviour to keep.
+        assert_eq!(
+            seconds_until_next_run(&local("America/New_York", 2026, 10, 31, 5, 0)),
+            75_600
         );
     }
 
