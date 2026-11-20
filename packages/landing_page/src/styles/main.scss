@@ -143,8 +143,7 @@ button.mk-pair__value:focus-visible {
   overflow-wrap: anywhere;
 }
 
-.mk-seg + .mk-seg,
-.mk-seg-arrow + .mk-seg {
+.mk-seg + .mk-seg {
   margin-inline-start: var(--space-4);
 }
 
@@ -349,7 +348,6 @@ button.mk-pair__value:focus-visible {
 
   .mk-pairs .mk-pair__value {
     flex: 1 1 auto;
-    justify-content: flex-start;
   }
 
   /* HkStatusRow is a three-column flex row; on a phone the action column
