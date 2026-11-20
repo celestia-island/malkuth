@@ -27,6 +27,7 @@ import { HkStatusRow } from '@celestia-island/hikari/components/HkStatusRow.tsx'
 import HkTerminal from '@celestia-island/hikari/components/HkTerminal.tsx'
 import HkToast from '@celestia-island/hikari/components/HkToast.tsx'
 import { useClipboardWithToast, useToast } from '@celestia-island/hikari/runtime'
+import { attachOverlayScrollbars, type OverlayScrollbarHandle } from '@celestia-island/hikari/composables/useOverlayScrollbar.ts'
 
 // The payload these types describe is produced by `src/info_page.rs`
 // (`build_spa_init`) — that Rust builder is the single source of truth. This
@@ -208,6 +209,8 @@ export default defineComponent({
 
     const logCache = new Map<string, string[]>()
     const toast = useToast()
+    // Overlay scrollbar for the xterm viewport (hikari's thin rail)
+    const overlayHandle = ref<OverlayScrollbarHandle | null>(null)
     // One copy path for the whole page: hikari's hook carries the
     // `<textarea>`+execCommand fallback that non-secure (plain http) doors
     // need, plus both toasts.
@@ -500,6 +503,14 @@ export default defineComponent({
       if (open) {
         feedTerminal()
         refitSettled()
+        nextTick(() => {
+          requestAnimationFrame(() => {
+            const vp = document.querySelector('.mk-log .xterm-viewport') as HTMLElement | null
+            if (vp && !overlayHandle.value) {
+              overlayHandle.value = attachOverlayScrollbars(vp, { axis: 'vertical' })
+            }
+          })
+        })
       }
     })
 
@@ -512,6 +523,7 @@ export default defineComponent({
     })
 
     onBeforeUnmount(stopTimers)
+    onBeforeUnmount(() => overlayHandle.value?.detach())
 
     // ── Shared pieces ─────────────────────────────────────────────────
     const head = (heading: string, tagline: string, logo: string) => (
