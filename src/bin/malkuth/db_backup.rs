@@ -301,26 +301,49 @@ fn hostname() -> String {
 mod tests {
     use super::*;
 
-    /// Same zone chrono was asked for, but with an explicit handle so the
-    /// assertions do not depend on the machine's `/etc/localtime`.
-    fn new_york() -> jiff::tz::TimeZone {
-        jiff::tz::TimeZone::get("America/New_York").unwrap()
+    /// Explicit zone handles: the assertions must not depend on the machine's
+    /// `/etc/localtime`, and the two interesting transition shapes live in
+    /// different zones (US spring-forward skips 02:00, Europe fall-back repeats
+    /// it).
+    fn zone(name: &str) -> jiff::tz::TimeZone {
+        jiff::tz::TimeZone::get(name).unwrap()
     }
 
-    fn local(y: i16, m: i8, d: i8, hh: i8, mm: i8) -> jiff::ZonedDateTime {
+    fn local(zone_name: &str, y: i16, m: i8, d: i8, hh: i8, mm: i8) -> jiff::ZonedDateTime {
+        local_at(zone_name, y, m, d, hh, mm, 0)
+    }
+
+    fn local_at(
+        zone_name: &str,
+        y: i16,
+        m: i8,
+        d: i8,
+        hh: i8,
+        mm: i8,
+        ss: i8,
+    ) -> jiff::ZonedDateTime {
         jiff::civil::date(y, m, d)
-            .at(hh, mm, 0, 0)
-            .to_zoned_datetime(new_york())
+            .at(hh, mm, ss, 0)
+            .to_zoned_datetime(zone(zone_name))
             .unwrap()
     }
 
     #[test]
     fn next_run_is_the_upcoming_two_am() {
         // Before 02:00 local: the wait is the remaining distance to it.
-        assert_eq!(seconds_until_next_run(&local(2026, 8, 4, 1, 0)), 3600);
+        assert_eq!(
+            seconds_until_next_run(&local("America/New_York", 2026, 8, 4, 1, 0)),
+            3600
+        );
         // At or after 02:00 local: a full absolute day to tomorrow's 02:00.
-        assert_eq!(seconds_until_next_run(&local(2026, 8, 4, 3, 0)), 23 * 3600);
-        assert_eq!(seconds_until_next_run(&local(2026, 8, 4, 2, 0)), 86_400);
+        assert_eq!(
+            seconds_until_next_run(&local("America/New_York", 2026, 8, 4, 3, 0)),
+            23 * 3600
+        );
+        assert_eq!(
+            seconds_until_next_run(&local("America/New_York", 2026, 8, 4, 2, 0)),
+            86_400
+        );
     }
 
     #[test]
@@ -329,15 +352,56 @@ mod tests {
         // chrono's `.single()` returned None here and the schedule fell back to
         // now + 24h; jiff's `Compatible` resolution would instead answer 1h
         // (the 03:00 transition instant), i.e. a second dump minutes later.
-        assert_eq!(seconds_until_next_run(&local(2026, 3, 8, 1, 0)), 86_400);
+        assert_eq!(
+            seconds_until_next_run(&local("America/New_York", 2026, 3, 8, 1, 0)),
+            86_400
+        );
         // The day after, the phase is still 02:00 local.
-        assert_eq!(seconds_until_next_run(&local(2026, 3, 9, 1, 0)), 3600);
+        assert_eq!(
+            seconds_until_next_run(&local("America/New_York", 2026, 3, 9, 1, 0)),
+            3600
+        );
+    }
+
+    #[test]
+    fn next_run_rejects_a_folded_two_am() {
+        // 2026-10-25 is Europe's fall-back day: local 02:00 happens twice.
+        // `.single()` returned None for the fold just like for the gap, so the
+        // schedule fell back to now + 24h instead of aiming at the first of the
+        // two occurrences (which `Compatible` would have picked, 1h away).
+        assert_eq!(
+            seconds_until_next_run(&local("Europe/Berlin", 2026, 10, 25, 1, 0)),
+            86_400
+        );
     }
 
     #[test]
     fn next_run_never_returns_a_sub_minute_wait() {
-        // The 60s floor survives a now that sits inside the same minute.
-        assert_eq!(seconds_until_next_run(&local(2026, 8, 4, 1, 59)), 60);
+        // 01:59:30 is 30s out, so only the floor can produce 60; a `now` sitting
+        // exactly 60s out (01:59:00) would pass with the floor removed.
+        assert_eq!(
+            seconds_until_next_run(&local_at("America/New_York", 2026, 8, 4, 1, 59, 30)),
+            60
+        );
+    }
+
+    #[test]
+    fn dump_stamp_shape_matches_the_rotator() {
+        // `strip_stamp()` only recognises `<8 digits>-<6 digits>` followed by the
+        // separating '-' (it checks `stamp[8] == b'-'` at a fixed offset). If the
+        // shape drifts, every dump looks like its own base name: the retention
+        // window stops trimming and the backup directory grows without bound.
+        let stamp = jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S").to_string();
+        assert_eq!(stamp.len(), 15);
+        assert_eq!(stamp.as_bytes()[8], b'-');
+        assert!(stamp[..8].bytes().all(|b| b.is_ascii_digit()));
+        assert!(stamp[9..].bytes().all(|b| b.is_ascii_digit()));
+        assert_eq!(strip_stamp(&format!("host-db-{stamp}")), "host-db");
+        // And a stamp with no separator is NOT silently accepted as one.
+        assert_eq!(
+            strip_stamp(&format!("host-db-{}", stamp.replace('-', ""))),
+            format!("host-db-{}", stamp.replace('-', ""))
+        );
     }
 
     #[test]
