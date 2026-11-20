@@ -60,6 +60,10 @@ export interface MalkuthInit {
   lang: string
   dir: 'ltr' | 'rtl'
   i18n: Record<string, string>
+  /** Client beats; the server owns the numbers so both surfaces agree. */
+  timing?: { countdown_s?: number; retry_countdown_s?: number; probe_interval_ms?: number }
+  /** Build-token cookie contract (name + lifetime) as the server defines it. */
+  nonce?: { cookie?: string; max_age_s?: number; path?: string }
 }
 
 interface ProbeReply {
@@ -236,8 +240,14 @@ export default defineComponent({
         !redirectAttempted.value,
     )
 
+    const cookieName = init?.nonce?.cookie ?? '__malkuth_nonce'
+    const cookieMaxAge = init?.nonce?.max_age_s ?? 604800
+    const cookiePath = init?.nonce?.path ?? '/'
+    const countdownStart = init?.timing?.countdown_s ?? 3
+    const probeInterval = init?.timing?.probe_interval_ms ?? 2000
+
     function setNonceCookie() {
-      document.cookie = `__malkuth_nonce=${initEpoch}; max-age=604800; path=/`
+      document.cookie = `${cookieName}=${initEpoch}; max-age=${cookieMaxAge}; path=${cookiePath}`
     }
 
     function getCookie(name: string): string | null {
@@ -257,7 +267,7 @@ export default defineComponent({
     }
 
     function startCountdown() {
-      countdown.value = 3
+      countdown.value = countdownStart
       countdownTimer = setInterval(() => {
         countdown.value -= 1
         if (countdown.value <= 0) {
@@ -270,7 +280,7 @@ export default defineComponent({
 
     function startPolling() {
       if (pollTimer) return
-      pollTimer = setInterval(probe, 2000)
+      pollTimer = setInterval(probe, probeInterval)
     }
 
     function probe() {
@@ -552,7 +562,7 @@ export default defineComponent({
             </span>
             <HkIconButton
               size={24}
-              ariaLabel={t('vtty_copy')}
+              aria-label={t('vtty_copy')}
               onClick={(ev: MouseEvent) => {
                 ev.stopPropagation()
                 copyLog()
@@ -643,17 +653,21 @@ export default defineComponent({
                           >
                             {binary.hash_short}
                           </HkCopyBadge>
-                          <HkIconButton
-                            size={24}
-                            ariaLabel={t('vtty_open')}
-                            onClick={(ev: MouseEvent) =>
-                              openTerminal(binary.name, ev.currentTarget as HTMLElement)
-                            }
+                          <span
+                            class="mk-term-trigger"
                             onMouseenter={(ev: MouseEvent) => hoverOpen(binary.name, ev)}
                             onMouseleave={hoverLeave}
                           >
-                            {TERMINAL_ICON()}
-                          </HkIconButton>
+                            <HkIconButton
+                              size={24}
+                              aria-label={t('vtty_open')}
+                              onClick={(ev: MouseEvent) =>
+                                openTerminal(binary.name, ev.currentTarget as HTMLElement)
+                              }
+                            >
+                              {TERMINAL_ICON()}
+                            </HkIconButton>
+                          </span>
                         </div>
                       ),
                     }}

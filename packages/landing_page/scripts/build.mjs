@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url'
 
 const app = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const vite = resolve(app, 'node_modules/.bin/vite')
+const vueTsc = resolve(app, 'node_modules/.bin/vue-tsc')
 const outDir = resolve(app, '../../target/landing_page')
 
 function step(label, file, args) {
@@ -37,6 +38,15 @@ if (!existsSync(vite)) {
 // build must leave the previous good artifacts (and stamp) intact so the
 // Rust-side freshness guard sees a real error instead of a truncated dir.
 rmSync(resolve(outDir, '.stage'), { recursive: true, force: true })
+
+// Typecheck first: vite strips types without checking them, so a broken
+// component prop (e.g. an undeclared attribute) would otherwise ship and only
+// surface as a runtime DOM oddity.
+if (existsSync(vueTsc)) {
+  step('vue-tsc --noEmit', vueTsc, ['--noEmit', '-p', 'tsconfig.json'])
+} else {
+  console.warn('build: vue-tsc missing — skipping the type gate (run pnpm install)')
+}
 
 step('vite build (SPA)', vite, ['build'])
 step('vite build (SSR prerender)', vite, ['build', '--config', 'vite.ssr.config.ts'])

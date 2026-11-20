@@ -9,10 +9,36 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "esModuleInterop": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2020",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "skipLibCheck": true,
     "noEmit": true,
-    "paths": { "@/*": ["./src/*"] }
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ],
+      "@celestia-island/hikari/styles": [
+        "./node_modules/@celestia-island/hikari/src/styles/index.scss"
+      ],
+      "@celestia-island/hikari/theme/*": [
+        "./node_modules/@celestia-island/hikari/src/theme/*"
+      ],
+      "@celestia-island/hikari/components/*": [
+        "./node_modules/@celestia-island/hikari/src/components/*"
+      ],
+      "@celestia-island/hikari/runtime": [
+        "./node_modules/@celestia-island/hikari/src/runtime/index.ts"
+      ]
+    },
+    "allowImportingTsExtensions": true
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.d.ts", "src/**/*.vue"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "src/**/*.d.ts",
+    "src/**/*.vue"
+  ]
 }

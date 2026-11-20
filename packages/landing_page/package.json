@@ -8,7 +8,8 @@
     "build": "node scripts/build.mjs",
     "build:spa": "vite build",
     "build:ssr": "vite build --config vite.ssr.config.ts",
-    "gen-pages": "node scripts/build.mjs"
+    "gen-pages": "node scripts/build.mjs",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@celestia-island/hikari": "^0.55",
@@ -20,6 +21,7 @@
     "@vue/server-renderer": "^3",
     "sass": "^1",
     "typescript": "^6",
-    "vite": "^8"
+    "vite": "^8",
+    "vue-tsc": "^3"
   }
 }

@@ -108,6 +108,10 @@
   gap: var(--space-6);
 }
 
+.mk-term-trigger {
+  display: inline-flex;
+}
+
 .mk-binary-actions {
   display: flex;
   align-items: center;
