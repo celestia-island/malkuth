@@ -269,28 +269,26 @@ fn sleep_until_next_run() -> Duration {
 
 /// Seconds until the next 02:00 local time, at least 60s from `now`.
 ///
-/// `unambiguous()` rejects BOTH shapes of a local time that is not a single
-/// instant — the DST gap (02:00 does not exist) and the DST fold (02:00 happens
-/// twice) — and only then do we fall back to `now + 24h`.
+/// Contract: if local 02:00 on `now`'s date is a single instant strictly after
+/// `now`, aim at it; if it is already past, step a fixed 24 h from it; if the
+/// wall clock is ambiguous (a DST gap where it does not exist, or a fold where
+/// it happens twice), take the `now + 24 h` fallback instead of guessing.
 ///
-/// This schedule is deliberately NOT identical to the pre-migration one on
-/// transition days. chrono 0.4.45's `and_local_timezone(..).single()` classified
-/// only *interior* gap instants as `None`; at the boundary instants (exactly
-/// 02:00) it returned `Single` on the gap day and `Ambiguous` on the fold days,
-/// so the two libraries disagree on 1–2 days per year:
-///
-/// * spring-forward: this code waits a full day (the fallback) where chrono woke
-///   at the transition instant — intended, because waking minutes after the
-///   transition produces a second dump too close to the first;
-/// * fall-back in zones whose repeated hour does not cover 02:00 (US, London):
-///   this code keeps the single 02:00 phase where chrono stepped a fixed 24h —
-///   intended, because the old shape produced a 24–25h gap followed by two dumps
-///   an hour apart.
+/// This is deliberately not the pre-migration schedule on transition days.
+/// chrono 0.4.45's `and_local_timezone(..).single()` classifies the *boundary*
+/// instants differently: it reports exactly 02:00 on a spring-forward day as
+/// `Single` (its transition instant) and on fold days whose repeated hour does
+/// not cover 02:00 as ambiguous, while interior gap instants come back `None`.
+/// Measured over 2026 in America/New_York, Europe/London, Europe/Berlin,
+/// Australia/Sydney and Pacific/Auckland, the two schedules therefore diverge on
+/// 1–2 days per year. The divergence is intended: this code never resolves an
+/// ambiguous wall clock silently, so a restart on a transition day keeps aiming
+/// at 02:00 rather than drifting to the transition instant.
 ///
 /// `to_zoned_datetime`/`TimeZone::to_zoned_datetime` (jiff's `Compatible`
-/// strategy) must not be used here: it resolves every ambiguous local time
-/// silently, which is exactly how the gap side would move to the transition
-/// instant instead of taking the fallback.
+/// strategy) must not be used here: it answers every ambiguous wall clock
+/// silently — for the gap it returns the transition instant — which is exactly
+/// what the fallback above exists to avoid.
 fn seconds_until_next_run(now: &jiff::ZonedDateTime) -> u64 {
     let next = now
         .time_zone()
@@ -375,11 +373,12 @@ mod tests {
     fn next_run_falls_back_a_full_day_across_a_dst_gap() {
         // 2026-03-08 is the US spring-forward day: local 02:00 does not exist,
         // so `unambiguous()` rejects it and the schedule takes the +24h
-        // fallback. This pins the NEW contract, not the old one: chrono 0.4.45
-        // returned `Single` for exactly 02:00 here (it only rejected interior
-        // gap instants), so the pre-migration schedule would have woken at the
-        // 03:00 transition instant — one hour later — which is the behaviour
-        // this migration intentionally replaces (no back-to-back dumps).
+        // fallback. This pins the NEW contract: chrono 0.4.45 returned `Single`
+        // for exactly 02:00 here (it only rejected interior gap instants), so
+        // the pre-migration schedule woke at the 03:00 transition instant — one
+        // hour later. A restart before 02:00 on this day therefore waits for the
+        // next day in the new shape, and for the transition instant in the old
+        // one; both edits are intended.
         assert_eq!(
             seconds_until_next_run(&local("America/New_York", 2026, 3, 8, 1, 0)),
             86_400
