@@ -731,8 +731,53 @@ async fn serve_spa(state: &InfoState, lang: &str, allowed: bool) -> Response {
 /// [`probe_backend`], where 503 is the single not-ready verdict and every
 /// other HTTP status counts as up. All other statuses (404, 3xx, 500, ...)
 /// are live backend answers and pass through to the browser untouched.
+///
+/// API paths are exempt — see [`is_api_path`]: masking a backend 503 there
+/// is what turned chest's deliberate "SSE lane unavailable" answer into a
+/// `200 text/html` page that the browser's `EventSource` aborted on MIME
+/// grounds (2026-11-20 production report).
 fn should_fall_back(status: u16) -> bool {
     matches!(status, 502..=504)
+}
+
+/// Whether the request path belongs to the API surface (`/api/…`).
+///
+/// Machine callers (XHR, `EventSource`, JSON-RPC clients) read STATUSES and
+/// bodies, not pages: handing them the landing/SPA fallback in place of a
+/// backend error turns every backend problem into a `200 text/html`
+/// document — `EventSource` aborts on MIME, JSON parsers choke on markup.
+/// Documents keep the fallback; its whole purpose is steering a human who
+/// is reloading a stale build toward the fresh one.
+fn is_api_path(path: &str) -> bool {
+    path.starts_with("/api/")
+}
+
+/// Whether a header value carries nothing the backend would read: empty, or
+/// whitespace only. The origin guard trims before use and treats a blank
+/// value as absent, so this front door must not mistake one for a real
+/// forwarded host.
+fn is_blank_header_value(value: &header::HeaderValue) -> bool {
+    match value.to_str() {
+        Ok(text) => text.trim().is_empty(),
+        // Non-UTF-8 bytes are not a hostname; treat them as blank rather
+        // than forwarding something the guard will reject anyway.
+        Err(_) => true,
+    }
+}
+
+/// A bare gateway error for API paths when the backend itself could not be
+/// reached (transport failure — there is no backend status to pass
+/// through). Plain text, no HTML: the response a machine client can act on.
+fn api_gateway_error() -> Response {
+    let mut resp = Response::new(axum::body::Body::from(
+        "malkuth gateway: backend unavailable\n",
+    ));
+    *resp.status_mut() = StatusCode::BAD_GATEWAY;
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    resp
 }
 
 /// Whether the request asks for an HTTP/1.1 protocol upgrade. Both a
@@ -924,6 +969,18 @@ async fn proxy_upgrade(req: Request, backend: &str, epoch: &str) -> Result<Respo
         return Err(());
     };
     let path_and_query = parts.uri.path_and_query().map_or("/", |pq| pq.as_str());
+    // The PUBLIC origin context, captured before the header loop drops the
+    // inbound Host: the wire request's Host line is reset to the backend
+    // address, so an origin guard on the backend would compare the browser
+    // `Origin` against a loopback authority and refuse every handshake
+    // (chest's CSWSH check takes the first `X-Forwarded-Host` value when a
+    // proxy supplies one — with no such header every browser WebSocket
+    // through this front door was refused, 2026-11-20 production report).
+    let inbound_host = parts
+        .headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_owned());
 
     // WS requests normally carry no body; if one does, read it fully so the
     // forwarded request is complete before the upgrade exchange starts.
@@ -979,6 +1036,15 @@ async fn proxy_upgrade(req: Request, backend: &str, epoch: &str) -> Result<Respo
             wire.extend_from_slice(b"\r\n");
             continue;
         }
+        if lower == "x-forwarded-host" && is_blank_header_value(value) {
+            // An EMPTY (or whitespace-only) forwarded-host is not "already
+            // forwarded": the backend reads the FIRST value, trims it and
+            // treats a blank one as absent, so forwarding it verbatim would
+            // shadow the real value we are about to append and leave the
+            // handshake refused. Dropping every blank copy keeps ours
+            // first (R2/R5 catches on this PR).
+            continue;
+        }
         wire.extend_from_slice(name.as_str().as_bytes());
         wire.extend_from_slice(b": ");
         wire.extend_from_slice(value.as_bytes());
@@ -988,6 +1054,29 @@ async fn proxy_upgrade(req: Request, backend: &str, epoch: &str) -> Result<Respo
         wire.extend_from_slice(b"Content-Length: ");
         wire.extend_from_slice(body_bytes.len().to_string().as_bytes());
         wire.extend_from_slice(b"\r\n");
+    }
+    // Forward the public origin UNLESS the client (or an upstream proxy)
+    // already supplied one: chest compares its Origin against the FIRST
+    // X-Forwarded-Host value, and a proxy chain's own value is the trusted
+    // one. Browsers cannot set this header, so a client-supplied value is
+    // never a browser-forged bypass — and without the forwarding every
+    // browser handshake arrived with Host=127.0.0.1:<port> and was refused
+    // by the origin guard before the token was even read.
+    if let Some(public_host) = inbound_host {
+        // "Already forwarded" means a value the backend will actually READ:
+        // blank ones are dropped above, so only a non-blank one blocks ours
+        // (a whitespace-only header used to count and re-refused the
+        // handshake — R6 catch).
+        let already_forwarded = parts
+            .headers
+            .get_all("x-forwarded-host")
+            .iter()
+            .any(|v| !is_blank_header_value(v));
+        if !already_forwarded {
+            wire.extend_from_slice(b"X-Forwarded-Host: ");
+            wire.extend_from_slice(public_host.as_bytes());
+            wire.extend_from_slice(b"\r\n");
+        }
     }
     wire.extend_from_slice(b"Connection: Upgrade\r\n\r\n");
     // Bounded write so a backend that accepts but never reads cannot stall
@@ -1062,8 +1151,11 @@ async fn proxy_upgrade(req: Request, backend: &str, epoch: &str) -> Result<Respo
     // Non-101: the backend answered in HTTP. Forward the whole response
     // untouched — 404/426/400 and friends are live backend answers and must
     // not be masked (same rule as `proxy_to_backend`); only 502/503/504
-    // fall back to the landing page.
-    if should_fall_back(status) {
+    // fall back to the landing page — and, as there, API paths keep their
+    // status (an upgrade-bearing /api/* request is still a machine caller;
+    // masking it would repeat the 200-HTML defect this branch's sibling
+    // fixed, R2 catch on this PR).
+    if should_fall_back(status) && !is_api_path(parts.uri.path()) {
         return Err(());
     }
 
@@ -1355,7 +1447,10 @@ async fn proxy_to_backend_parts(
     // — 404, 3xx, even 500 — is a live backend answer and is passed through
     // to the browser untouched; masking it as "offline" is what trapped
     // users on the landing page when a backend 404'd on `/`.
-    if should_fall_back(status_code) {
+    // API paths never fall back: the backend's status and body reach the
+    // client verbatim (see `is_api_path` — the 200-HTML mask is what made
+    // `EventSource` abort on MIME instead of seeing chest's honest 503).
+    if should_fall_back(status_code) && !is_api_path(path) {
         return Err(());
     }
 
@@ -1698,13 +1793,21 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
             let epoch = state.epoch.read().await.clone();
             let nonce = read_nonce(&req);
             let seen_current_build = !nonce.is_empty() && nonce == epoch;
+            // Whether this is the machine-facing API surface. Captured
+            // BEFORE anything consumes `req`: an API path must never be
+            // answered with the landing/SPA page — not when the proxy
+            // failed (there is no backend status to pass through), and not
+            // by the build interstitial either (an XHR that happens to ask
+            // for `text/html` is still an XHR; R3 catch on this PR).
+            let api_request = is_api_path(req.uri().path());
             // Requests without a token for the current build still pass
             // through when they cannot render the interstitial: WebSocket
-            // upgrades, and non-document API/XHR traffic — a still-running
+            // upgrades, and every non-document request — a still-running
             // SPA from the previous build must keep functioning until its
             // next document navigation, which IS intercepted and funnels
             // the client through the landing page into the new build.
             let intercept = !seen_current_build
+                && !api_request
                 && !is_upgrade_request(req.headers())
                 && request_interceptable(&req);
             if !intercept {
@@ -1718,6 +1821,9 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
                 };
                 if let Ok(resp) = proxy_result {
                     return resp;
+                }
+                if api_request {
+                    return api_gateway_error();
                 }
             }
             if !LANDING_PAGE_HTML.starts_with("<html><body><h1>Malkuth</h1>") {
@@ -2790,6 +2896,414 @@ mod tests {
                 "status {status} must fall back to the landing page"
             );
         }
+    }
+
+    // ── API-path passthrough (2026-11-20 production report) ────────────
+    // chest answers `/api/rpc/events` with a deliberate 503 ("SSE lane
+    // unavailable; use another transport"). Masking it with the SPA page
+    // turned that into `200 text/html`, which the browser's EventSource
+    // aborts on MIME — the exact console error in the report.
+
+    #[test]
+    fn test_is_api_path() {
+        assert!(is_api_path("/api/rpc"));
+        assert!(is_api_path("/api/rpc/events?session=x"));
+        assert!(is_api_path("/api/health"));
+        assert!(!is_api_path("/api"));
+        assert!(!is_api_path("/apifoo"));
+        assert!(!is_api_path("/"));
+        assert!(!is_api_path("/backend"));
+        assert!(!is_api_path("/API/rpc"));
+    }
+
+    /// A backend 503 on an API path passes through VERBATIM — status,
+    /// content type and body — instead of being masked with the SPA page.
+    #[tokio::test]
+    async fn test_api_path_503_passes_through_verbatim() {
+        let body = "SSE notification lane is unavailable; clients must use another transport";
+        let backend = spawn_custom_backend(move |mut stream| {
+            use std::io::Write;
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .as_bytes(),
+            );
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let req = Request::builder()
+            .uri("/api/rpc/events?session=probe")
+            .header("accept", "text/event-stream")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = proxy_to_backend(req, &format!("http://{backend}"), "1")
+            .await
+            .expect("an API-path backend 503 must pass through, not fall back");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/plain; charset=utf-8"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        assert_eq!(bytes.as_ref(), body.as_bytes());
+    }
+
+    /// A DOCUMENT (browser navigation) with a gateway-style backend status
+    /// keeps the fallback — that is the feature that steers a stale build's
+    /// reload toward the fresh one. Guarded so the API exemption above can
+    /// never quietly swallow it.
+    #[tokio::test]
+    async fn test_document_503_still_falls_back() {
+        let backend =
+            spawn_stub_backend("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let req = Request::builder()
+            .uri("/some/page")
+            .header("accept", "text/html,application/xhtml+xml")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let result = proxy_to_backend(req, &format!("http://{backend}"), "1").await;
+        assert!(result.is_err(), "document 503 must fall back (Err → SPA)");
+    }
+
+    /// Transport failure on an API path has no backend status to pass
+    /// through; the handler must answer the plain gateway error instead of
+    /// an HTML page. Covered END-TO-END through `info_page` (R2 catch on
+    /// this PR: the helper's own test asserted nothing about the dispatch,
+    /// so deleting the call site stayed green).
+    #[tokio::test]
+    async fn test_info_page_api_transport_failure_answers_plain_502() {
+        // A port nobody listens on: the proxy fails before any status.
+        let state = test_state("http://127.0.0.1:1", "");
+        let req = Request::builder()
+            .uri("/api/rpc/events?session=probe")
+            .header("accept", "*/*")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = info_page(axum::extract::State(state), req).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_GATEWAY,
+            "an API path must never be answered with a document"
+        );
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/plain; charset=utf-8"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains("<html"),
+            "the API failure body must not be markup: {text}"
+        );
+    }
+
+    /// An API path is never intercepted by the build interstitial, even
+    /// when it asks for HTML: XHR callers get statuses, not pages. Without
+    /// `!api_request` in `intercept` this request is answered `200
+    /// text/html` — the very masking this PR exists to remove (R3 catch).
+    #[tokio::test]
+    async fn test_info_page_api_path_is_never_intercepted() {
+        let state = test_state("http://127.0.0.1:1", "epoch-1");
+        let req = Request::builder()
+            .uri("/api/rpc/events?session=probe")
+            .header("accept", "text/html,application/xhtml+xml")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = info_page(axum::extract::State(state), req).await;
+        assert_ne!(
+            resp.headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/html; charset=utf-8"),
+            "an API path must never be answered with the page"
+        );
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn test_proxy_upgrade_api_path_503_does_not_fall_back() {
+        let backend =
+            spawn_stub_backend("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut req = Request::builder()
+            .uri("/api/rpc?workspace=test")
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let on_upgrade = hyper::upgrade::on(&mut req);
+        req.extensions_mut().insert(on_upgrade);
+
+        let resp = proxy_upgrade(req, &format!("http://{backend}"), "1")
+            .await
+            .expect("an API-path 503 must not be masked with the page");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn test_proxy_upgrade_document_503_still_falls_back() {
+        let backend =
+            spawn_stub_backend("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut req = Request::builder()
+            .uri("/some/page")
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let on_upgrade = hyper::upgrade::on(&mut req);
+        req.extensions_mut().insert(on_upgrade);
+
+        let result = proxy_upgrade(req, &format!("http://{backend}"), "1").await;
+        assert!(
+            result.is_err(),
+            "a document upgrade 503 must still fall back"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_proxy_upgrade_replaces_empty_x_forwarded_host() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req_text = String::from_utf8_lossy(&buf[..n]);
+                let xfh: Vec<&str> = req_text
+                    .lines()
+                    .filter(|l| l.to_ascii_lowercase().starts_with("x-forwarded-host:"))
+                    .collect();
+                // Exactly one, and it carries the PUBLIC host — an empty
+                // first value would leave chest's guard with nothing.
+                let ok =
+                    xfh.len() == 1 && xfh[0].to_ascii_lowercase().contains("front.door.example");
+                if !ok {
+                    stream
+                        .write_all(b"HTTP/1.1 500 EmptyForwardedHost\r\nContent-Length: 0\r\n\r\n")
+                        .ok();
+                    return;
+                }
+                let key = req_text
+                    .lines()
+                    .find(|l| l.to_ascii_lowercase().starts_with("sec-websocket-key"))
+                    .and_then(|l| l.split_once(':').map(|(_, v)| v.trim().to_string()))
+                    .unwrap_or_default();
+                let accept = ws_accept_for_test(&key);
+                let resp = format!(
+                    "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+                );
+                stream.write_all(resp.as_bytes()).ok();
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut req = Request::builder()
+            .uri("/api/rpc?workspace=test")
+            .header("host", "front.door.example")
+            // Whitespace-only: the guard trims it to nothing and reads it as
+            // absent, so treating it as "already forwarded" re-refuses the
+            // handshake (R6 catch). The empty string is covered by the same
+            // predicate — `is_blank_header_value`.
+            .header("x-forwarded-host", "   ")
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .header("sec-websocket-version", "13")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let on_upgrade = hyper::upgrade::on(&mut req);
+        req.extensions_mut().insert(on_upgrade);
+
+        let resp = proxy_upgrade(req, &format!("http://127.0.0.1:{port}"), "1")
+            .await
+            .expect("an empty forwarded host must be replaced by ours");
+        assert_eq!(resp.status(), StatusCode::SWITCHING_PROTOCOLS);
+    }
+
+    // NOTE — why there is no handler-level DOCUMENT counterpart here.
+    // Both routes end at the same observable answer: an intercepted
+    // document is served the SPA directly, and a document whose proxy
+    // failed falls through to the same SPA. A handler-level test therefore
+    // passes either way and pins nothing (R3 proved the earlier version of
+    // exactly that; R4 then caught that the same amend had swept THREE
+    // real upgrade pins with it — all three are restored above and stay).
+    // The document side is covered where it CAN be discriminated:
+    // `test_document_503_still_falls_back` on the plain branch and
+    // `test_proxy_upgrade_document_503_still_falls_back` on the upgrade
+    // branch, both asserting the `Err` that produces the fallback.
+
+    /// Minimal `--serve` front door state for the handler-level tests:
+    /// everything empty except the backend URL, so `info_page` reaches the
+    /// proxy branch without any build/watch machinery.
+    fn test_state(backend: &str, epoch: &str) -> InfoState {
+        InfoState {
+            version: "test".into(),
+            status: InfoStatus::Ready,
+            watch_paths: Vec::new(),
+            proxy_endpoint: None,
+            binary_programs: Vec::new(),
+            serve_backend: Some(backend.to_string()),
+            serve_hosts: Vec::new(),
+            build_progress: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            build_log: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            runtime_log: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            backend_state: std::sync::Arc::new(tokio::sync::RwLock::new(BackendState::Up)),
+            epoch: std::sync::Arc::new(tokio::sync::RwLock::new(epoch.to_string())),
+        }
+    }
+
+    /// The helper's contract, asserted on the BODY (the previous version of
+    /// this test only re-checked the status and its name promised more —
+    /// R2 catch).
+    #[tokio::test]
+    async fn test_api_gateway_error_body_is_plain_text_not_markup() {
+        let resp = api_gateway_error();
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/plain; charset=utf-8"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!text.contains("<html"), "body must not be markup: {text}");
+        assert!(!text.is_empty(), "body must say something");
+    }
+
+    // ── WS upgrade origin forwarding (2026-11-20 production report) ────
+    // The tunnel resets Host to the backend address, so chest's CSWSH
+    // guard compared the browser Origin against a loopback authority and
+    // refused EVERY browser WebSocket through this front door. The tunnel
+    // must hand the backend the public origin (X-Forwarded-Host).
+
+    /// The tunnel forwards the inbound Host as X-Forwarded-Host: the stub
+    /// backend REFUSES the handshake without it, so deleting the
+    /// forwarding makes this test red (mutation-bite by construction).
+    #[tokio::test]
+    async fn test_proxy_upgrade_forwards_x_forwarded_host() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req_text = String::from_utf8_lossy(&buf[..n]);
+                // The guard header MUST be present exactly once and carry
+                // the public vhost — not the loopback backend address the
+                // Host line was reset to.
+                let xfh: Vec<&str> = req_text
+                    .lines()
+                    .filter(|l| l.to_ascii_lowercase().starts_with("x-forwarded-host:"))
+                    .collect();
+                if xfh.len() != 1 || !xfh[0].to_ascii_lowercase().contains("front.door.example") {
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 500 MissingForwardedHost\r\nContent-Length: 0\r\n\r\n",
+                        )
+                        .ok();
+                    return;
+                }
+                let key = req_text
+                    .lines()
+                    .find(|l| l.to_ascii_lowercase().starts_with("sec-websocket-key"))
+                    .and_then(|l| l.split_once(':').map(|(_, v)| v.trim().to_string()))
+                    .unwrap_or_default();
+                let accept = ws_accept_for_test(&key);
+                let resp = format!(
+                    "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+                );
+                stream.write_all(resp.as_bytes()).ok();
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut req = Request::builder()
+            .uri("/api/rpc?workspace=test")
+            .header("host", "front.door.example")
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .header("sec-websocket-version", "13")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let on_upgrade = hyper::upgrade::on(&mut req);
+        req.extensions_mut().insert(on_upgrade);
+
+        let resp = proxy_upgrade(req, &format!("http://127.0.0.1:{port}"), "1")
+            .await
+            .expect("101 must pass through with the forwarded host");
+        assert_eq!(resp.status(), StatusCode::SWITCHING_PROTOCOLS);
+    }
+
+    /// A client-supplied X-Forwarded-Host is preserved and NOT duplicated:
+    /// chest reads the FIRST value, and an upstream proxy's own value is
+    /// the trusted one.
+    #[tokio::test]
+    async fn test_proxy_upgrade_preserves_client_x_forwarded_host() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req_text = String::from_utf8_lossy(&buf[..n]);
+                let xfh: Vec<&str> = req_text
+                    .lines()
+                    .filter(|l| l.to_ascii_lowercase().starts_with("x-forwarded-host:"))
+                    .collect();
+                let first_ok = xfh
+                    .first()
+                    .is_some_and(|l| l.to_ascii_lowercase().contains("up.stream.example"));
+                if xfh.len() != 1 || !first_ok {
+                    stream
+                        .write_all(b"HTTP/1.1 500 BadForwardedHost\r\nContent-Length: 0\r\n\r\n")
+                        .ok();
+                    return;
+                }
+                let key = req_text
+                    .lines()
+                    .find(|l| l.to_ascii_lowercase().starts_with("sec-websocket-key"))
+                    .and_then(|l| l.split_once(':').map(|(_, v)| v.trim().to_string()))
+                    .unwrap_or_default();
+                let accept = ws_accept_for_test(&key);
+                let resp = format!(
+                    "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+                );
+                stream.write_all(resp.as_bytes()).ok();
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut req = Request::builder()
+            .uri("/api/rpc?workspace=test")
+            .header("host", "front.door.example")
+            .header("x-forwarded-host", "up.stream.example")
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .header("sec-websocket-version", "13")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let on_upgrade = hyper::upgrade::on(&mut req);
+        req.extensions_mut().insert(on_upgrade);
+
+        let resp = proxy_upgrade(req, &format!("http://127.0.0.1:{port}"), "1")
+            .await
+            .expect("101 must pass through with the client's forwarded host preserved");
+        assert_eq!(resp.status(), StatusCode::SWITCHING_PROTOCOLS);
     }
 
     /// Backend 4xx/5xx answers (other than 502/503/504) are live responses
