@@ -287,6 +287,40 @@ button.mk-pair__value:focus-visible {
   width: 100%;
 }
 
+/* The fit pass can size the canvas a row or two past the styled frame (it
+   runs before the popover settles), which pushed the viewport scrollbar off
+   the right edge and below the bottom. Clip the canvas to the frame so the
+   visible area and the scrollbar agree. */
+.mk-log .xterm {
+  overflow: hidden;
+}
+
+/* The xterm viewport's native scrollbar is the fat classic bar; style it to
+   the hikari default look instead (6px rail, muted thumb, hover deepen).
+   Hover/scroll reveal — hikari's overlay behaviour — needs JS; a terminal is
+   read-mostly, so a subdued always-visible rail is the honest equivalent. */
+.mk-log .xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--color-text-tertiary) / 45%) transparent;
+}
+
+.mk-log .xterm-viewport::-webkit-scrollbar {
+  width: 6px;
+}
+
+.mk-log .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.mk-log .xterm-viewport::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: rgb(var(--color-text-tertiary) / 45%);
+}
+
+.mk-log .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--color-text-tertiary) / 75%);
+}
+
 .mk-logbar {
   display: flex;
   align-items: center;
