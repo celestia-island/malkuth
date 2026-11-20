@@ -12,7 +12,7 @@
     "typecheck": "vue-tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@celestia-island/hikari": "^0.55.449",
+    "@celestia-island/hikari": "^0.55",
     "vue": "^3"
   },
   "devDependencies": {

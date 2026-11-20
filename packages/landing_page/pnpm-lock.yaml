@@ -12,7 +12,7 @@ importers:
   .:
     dependencies:
       '@celestia-island/hikari':
-        specifier: ^0.55.449
+        specifier: ^0.55
         version: 0.55.449(@types/three@0.185.4)(three@0.185.1)(vue@3.5.40(typescript@6.0.3))
       vue:
         specifier: ^3
