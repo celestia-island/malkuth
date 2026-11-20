@@ -27,6 +27,7 @@ import { HkStatusRow } from '@celestia-island/hikari/components/HkStatusRow.tsx'
 import HkTerminal from '@celestia-island/hikari/components/HkTerminal.tsx'
 import HkToast from '@celestia-island/hikari/components/HkToast.tsx'
 import { useClipboardWithToast, useToast } from '@celestia-island/hikari/runtime'
+import { attachOverlayScrollbars, type OverlayScrollbarHandle } from '@celestia-island/hikari/composables/useOverlayScrollbar.ts'
 
 // The payload these types describe is produced by `src/info_page.rs`
 // (`build_spa_init`) — that Rust builder is the single source of truth. This
@@ -208,6 +209,8 @@ export default defineComponent({
 
     const logCache = new Map<string, string[]>()
     const toast = useToast()
+    // Overlay scrollbar for the xterm viewport (hikari's thin rail)
+    const overlayHandle = ref<OverlayScrollbarHandle | null>(null)
     // One copy path for the whole page: hikari's hook carries the
     // `<textarea>`+execCommand fallback that non-secure (plain http) doors
     // need, plus both toasts.
@@ -497,10 +500,29 @@ export default defineComponent({
 
     watch(terminalLog, () => feedTerminal(), { flush: 'post' })
     watch(terminalOpen, (open) => {
-      if (open) {
-        feedTerminal()
-        refitSettled()
+      if (!open) {
+        // HkPopover destroys the panel on close, so the viewport DOM node the
+        // handle points at is gone — detach and clear so the next open
+        // attaches to the fresh node instead of silently keeping a stale one.
+        overlayHandle.value?.detach()
+        overlayHandle.value = null
+        return
       }
+      feedTerminal()
+      refitSettled()
+      nextTick(() => {
+        requestAnimationFrame(() => {
+          const vp = document.querySelector('.mk-log .xterm-viewport') as HTMLElement | null
+          if (!vp) return
+          // detach() is idempotent and reference-counts the parent-position
+          // promotion; re-attach unconditionally so the reversal case
+          // (close → reopen inside the popover's ~150 ms leave window, which
+          // reuses the same DOM node) can never stack a second handle on one
+          // viewport.
+          overlayHandle.value?.detach()
+          overlayHandle.value = attachOverlayScrollbars(vp, { axis: 'vertical' })
+        })
+      })
     })
 
     onMounted(() => {
@@ -512,6 +534,7 @@ export default defineComponent({
     })
 
     onBeforeUnmount(stopTimers)
+    onBeforeUnmount(() => overlayHandle.value?.detach())
 
     // ── Shared pieces ─────────────────────────────────────────────────
     const head = (heading: string, tagline: string, logo: string) => (

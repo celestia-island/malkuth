@@ -1,5 +1,8 @@
 allowBuilds:
   '@parcel/watcher': false
   esbuild: false
+minimumReleaseAge: 1440
+minimumReleaseAgeExclude:
+  - '@celestia-island/hikari@0.55.449'
 overrides:
   typescript: ~6.0
