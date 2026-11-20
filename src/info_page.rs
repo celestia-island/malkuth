@@ -1453,37 +1453,31 @@ async fn serve_probe(lang: &str, state: &InfoState, allowed: bool) -> Response {
     let backend_state = *state.backend_state.read().await;
     let backend_up = state.serve_backend.is_some() && backend_state == BackendState::Up;
 
-    let (probe_state, msg) = if state.serve_backend.is_none() || backend_up {
-        ("ready", "")
-    } else if backend_state == BackendState::Unknown {
-        ("landing", "")
-    } else if backend_state == BackendState::NotReady {
-        ("starting", "")
+    // Serve doors keep the probe's redirect-oriented shape (`ready` when the
+    // backend answers: the SPA turns that into a stamp+reload). Supervisor
+    // doors take the same state the document renders, so a rebuild reports
+    // "building" here instead of flipping the page to a green "ready" on the
+    // next poll.
+    let (probe_state, msg, probe_key) = if state.serve_backend.is_some() {
+        if backend_up {
+            ("ready", "", "status_ready")
+        } else if backend_state == BackendState::Unknown {
+            ("landing", "", "status_landing")
+        } else if backend_state == BackendState::NotReady {
+            ("starting", "", "status_starting")
+        } else {
+            ("offline", "", "status_offline")
+        }
     } else {
-        ("offline", "")
+        let (state_name, key) = page_state(state, backend_state);
+        (state_name, "", key)
     };
 
     let message = if msg.is_empty() {
         let i18n = get_i18n(lang);
-        match probe_state {
-            "landing" => i18n
-                .get("status_landing")
-                .map_or("Redirecting shortly", |v| v.as_str())
-                .to_string(),
-            "starting" => i18n
-                .get("status_starting")
-                .map_or("The service is starting up", |v| v.as_str())
-                .to_string(),
-            "offline" => i18n
-                .get("status_offline")
-                .map_or("Service temporarily unavailable", |v| v.as_str())
-                .to_string(),
-            "ready" => i18n
-                .get("status_ready")
-                .map_or("All services running.", |v| v.as_str())
-                .to_string(),
-            _ => msg.to_string(),
-        }
+        i18n.get(probe_key)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| msg.to_string())
     } else {
         msg.to_string()
     };
@@ -1601,9 +1595,12 @@ async fn serve_fallback(lang: &str, state: &InfoState, serve_allowed: bool) -> R
 }
 
 /// Core of the fallback renderer, with the catalogue injected so tests can
-/// feed hostile translations. Every catalogue value goes through `text()`
-/// (which escapes); only the structural blocks and the whitelisted `lang`/`dir`
-/// attributes are emitted raw.
+/// feed hostile translations.
+///
+/// Escaping invariant: every catalogue/state string goes through `text()` or
+/// `html_escape()` exactly once; the only raw slots are the structural blocks
+/// the renderer builds itself (badge/rows/retry/action/meta) and the
+/// whitelisted `lang`/`dir` values.
 async fn render_fallback_page(
     i18n: &HashMap<String, String>,
     lang: &str,
@@ -1732,13 +1729,13 @@ async fn render_fallback_page(
     // (`v0.6.0 (Installed via cargo)`); the SPA shows the bare version.
     let install_method = detect_install_method();
     let version_line = if install_method.is_empty() {
-        format!("v{}", state.version)
+        format!("v{}", html_escape(&state.version))
     } else {
         format!(
             "v{} ({} {})",
-            state.version,
+            html_escape(&state.version),
             text("install_label"),
-            install_method
+            html_escape(install_method)
         )
     };
 
