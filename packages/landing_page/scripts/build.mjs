@@ -12,8 +12,13 @@ import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const app = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const vite = resolve(app, 'node_modules/.bin/vite')
-const vueTsc = resolve(app, 'node_modules/.bin/vue-tsc')
+// Cross-platform entry resolution: spawn the packages' JS entries with the
+// current node instead of `node_modules/.bin/*` shims — pnpm installs
+// `.cmd`/`.bat` shims on Windows (which spawnSync cannot launch without a
+// shell) and bare POSIX names elsewhere. `process.execPath` is the same node
+// that is running this script, so it always exists.
+const vite = resolve(app, 'node_modules/vite/bin/vite.js')
+const vueTsc = resolve(app, 'node_modules/vue-tsc/bin/vue-tsc.js')
 const outDir = resolve(app, '../../target/landing_page')
 
 function step(label, file, args) {
@@ -29,8 +34,11 @@ function step(label, file, args) {
   }
 }
 
-if (!existsSync(vite)) {
-  console.error(`build: ${relative(app, vite)} missing — run \`pnpm install\` first`)
+const missing = [vite, vueTsc].filter((entry) => !existsSync(entry))
+if (missing.length) {
+  for (const entry of missing) {
+    console.error(`build: ${relative(app, entry)} missing — run \`pnpm install\` first`)
+  }
   process.exit(4)
 }
 
@@ -43,13 +51,13 @@ rmSync(resolve(outDir, '.stage'), { recursive: true, force: true })
 // component prop (e.g. an undeclared attribute) would otherwise ship and only
 // surface as a runtime DOM oddity.
 if (existsSync(vueTsc)) {
-  step('vue-tsc --noEmit', vueTsc, ['--noEmit', '-p', 'tsconfig.json'])
+  step('vue-tsc --noEmit', process.execPath, [vueTsc, '--noEmit', '-p', 'tsconfig.json'])
 } else {
   console.warn('build: vue-tsc missing — skipping the type gate (run pnpm install)')
 }
 
-step('vite build (SPA)', vite, ['build'])
-step('vite build (SSR prerender)', vite, ['build', '--config', 'vite.ssr.config.ts'])
+step('vite build (SPA)', process.execPath, [vite, 'build'])
+step('vite build (SSR prerender)', process.execPath, [vite, 'build', '--config', 'vite.ssr.config.ts'])
 step('publish (inline + prerender + tokens)', process.execPath, [
   resolve(app, 'scripts/publish.mjs'),
 ])

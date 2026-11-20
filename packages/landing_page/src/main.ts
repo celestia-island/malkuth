@@ -24,11 +24,9 @@ if (init?.lang) {
   // `setLocale` is only re-exported through hikari's barrel (which drags the
   // 3D/wasm surface), so steer the i18n context through the runtime facet
   // instead — the same context, without the barrel.
-  try {
-    writeHkRuntime('i18n', { type: 'setLocale', locale: init.lang })
-  } catch {
-    // A locale hikari does not ship simply stays on its English catalogue.
-  }
+  // Unknown locales make the facet report `false` and stay on the English
+  // catalogue — safe to ignore.
+  writeHkRuntime('i18n', { type: 'setLocale', locale: init.lang })
 }
 
 createApp(LandingPage).mount('#app')

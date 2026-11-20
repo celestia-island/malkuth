@@ -47,8 +47,8 @@ export const malkuthDark: ThemeSchemeTokens = {
 
 /**
  * Light scheme: the historical warm paper floor (#f5f5f0, the same value
- * hikari's own light preset uses), a darker orange that still clears 4.5:1
- * as page text, and hikari's light semantic slots.
+ * hikari's own light preset uses), a darker orange measured at 4.03:1
+ * on the paper floor (up from master's 1.76:1 countdown accent), and hikari's light semantic slots.
  */
 export const malkuthLight: ThemeSchemeTokens = {
   ...stockDefaultPreset.light,
