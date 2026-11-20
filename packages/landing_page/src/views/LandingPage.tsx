@@ -27,7 +27,14 @@ import HkSpinner from '@celestia-island/hikari/components/HkSpinner.tsx'
 import { HkStatusRow } from '@celestia-island/hikari/components/HkStatusRow.tsx'
 import HkTerminal from '@celestia-island/hikari/components/HkTerminal.tsx'
 import HkToast from '@celestia-island/hikari/components/HkToast.tsx'
+import { useToast } from '@celestia-island/hikari/runtime'
 
+// The payload these types describe is produced by `src/info_page.rs`
+// (`build_spa_init`) — that Rust builder is the single source of truth. This
+// crate has no ts-rs feature (the generated-bindings lane does not exist here
+// yet), so the declaration is the consumer side of one contract: change the
+// Rust builder and this interface together. `main.ts` imports these types
+// rather than re-declaring a narrower copy.
 /** Live state of the supervised backend, as the Rust side reports it. */
 export type PageState = 'landing' | 'building' | 'starting' | 'ready' | 'offline'
 
@@ -82,7 +89,7 @@ const FALLBACK: Record<string, string> = {
   refresh_label: 'Refresh Now',
   copy_hint: 'Click to copy',
   copied_msg: 'Copied to clipboard',
-  vtty_open: 'Show process output',
+
   vtty_lines: 'lines',
   vtty_first_output: 'First:',
   vtty_last_output: 'Last:',
@@ -199,6 +206,7 @@ export default defineComponent({
     const terminalRef = ref<{ write(d: string | Uint8Array): void; reset(): void } | null>(null)
 
     const logCache = new Map<string, string[]>()
+    const toast = useToast()
 
     const logoUrl = computed(() =>
       logoBase64.value ? `data:image/webp;base64,${logoBase64.value}` : '',
@@ -218,8 +226,16 @@ export default defineComponent({
           return t('status_landing')
       }
     })
+    // `ready` and `landing` both arm the 3s redirect (loadInit starts the same
+    // countdown), so both must offer the cancel affordance; only `landing`
+    // renders the numeric hint (master behaviour).
     const showCountdown = computed(
       () => state.value === 'landing' && !redirectAttempted.value,
+    )
+    const canCancelRedirect = computed(
+      () =>
+        (state.value === 'ready' || state.value === 'landing') &&
+        !redirectAttempted.value,
     )
 
     function setNonceCookie() {
@@ -411,6 +427,15 @@ export default defineComponent({
       }, 200)
     }
 
+    /** Copy the log lines the terminal was fed (HkTerminal exposes no buffer). */
+    function copyLog() {
+      if (!terminalLog.value.length) return
+      navigator.clipboard
+        ?.writeText(terminalLog.value.join('\n'))
+        .then(() => toast.success(t('copied_msg')))
+        .catch(() => toast.error(t('copy_fail_msg')))
+    }
+
     function formatTime(ts: number): string {
       return ts ? new Date(ts).toTimeString().slice(0, 8) : '--:--:--'
     }
@@ -492,7 +517,7 @@ export default defineComponent({
               autoFit
               enableImages={false}
               cursorBlink={false}
-              scrollback={5000}
+              scrollback={10000}
             />
             {terminalLog.value.length === 0 ? (
               <div class="mk-term-empty">
@@ -527,6 +552,30 @@ export default defineComponent({
               {formatTime(terminalFirstAt.value)} · {t('vtty_last_output')}{' '}
               {formatTime(terminalLastAt.value)}
             </span>
+            <HkIconButton
+              size={24}
+              ariaLabel={t('vtty_copy')}
+              onClick={(ev: MouseEvent) => {
+                ev.stopPropagation()
+                copyLog()
+              }}
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+            </HkIconButton>
           </div>
         </div>
       </HkPopover>
@@ -627,7 +676,7 @@ export default defineComponent({
           ) : null}
 
           <div class="mk-actions">
-            {showCountdown.value ? (
+            {canCancelRedirect.value ? (
               <HkButton variant="outline" size="sm" onClick={cancelRedirect}>
                 {t('cancel_label')}
               </HkButton>

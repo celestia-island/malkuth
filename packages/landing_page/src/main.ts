@@ -14,12 +14,12 @@ import { createApp } from 'vue'
 import { applyViewportPolicy, writeHkRuntime } from '@celestia-island/hikari/runtime'
 
 import { followSystemTheme } from './theme/malkuth'
-import LandingPage from './views/LandingPage'
+import LandingPage, { type MalkuthInit } from './views/LandingPage'
 
 applyViewportPolicy({ allowZoomOut: true })
 followSystemTheme()
 
-const init = (window as unknown as { __MALKUTH_INIT__?: { lang?: string } }).__MALKUTH_INIT__
+const init = (window as unknown as { __MALKUTH_INIT__?: MalkuthInit }).__MALKUTH_INIT__
 if (init?.lang) {
   // `setLocale` is only re-exported through hikari's barrel (which drags the
   // 3D/wasm surface), so steer the i18n context through the runtime facet

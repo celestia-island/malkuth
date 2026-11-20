@@ -1578,6 +1578,13 @@ fn badge_variant(page_state: &str) -> &'static str {
 /// otherwise reload itself forever while the service is down).
 const FALLBACK_RETRY_SECS: u32 = 10;
 
+/// Redirecting a visitor into a reachable backend is a 3s beat (master's
+/// landing countdown); waiting out a rebuild is the slower retry cadence.
+const FALLBACK_REDIRECT_SECS: u32 = 3;
+
+/// Does this state self-refresh at all? This is the STATE axis only — the
+/// capability axis (may a reload actually reach a backend?) is ANDed in by
+/// [`serve_fallback`], because a non-proxy door that reloads would loop.
 fn fallback_auto_refresh(page_state: &str) -> bool {
     page_state != "offline" && page_state != "starting"
 }
@@ -1589,7 +1596,7 @@ fn fallback_auto_refresh(page_state: &str) -> bool {
 /// surfaces cannot drift apart. This function only fills the per-request
 /// values — every substitution is escaped for the context it lands in — and
 /// drops the optional blocks.
-async fn serve_fallback(lang: &str, state: &InfoState, _serve_allowed: bool) -> Response {
+async fn serve_fallback(lang: &str, state: &InfoState, serve_allowed: bool) -> Response {
     let i18n = get_i18n(lang);
     let binaries = collect_binaries(&state.binary_programs).await;
     let backend = *state.backend_state.read().await;
@@ -1598,7 +1605,17 @@ async fn serve_fallback(lang: &str, state: &InfoState, _serve_allowed: bool) -> 
 
     let text = |key: &str| -> String { i18n.get(key).cloned().unwrap_or_default() };
     let dir = if lang == "ar" { "rtl" } else { "ltr" };
-    let auto_refresh = fallback_auto_refresh(page);
+    // Reloading can only carry the visitor into the backend when this origin
+    // may be proxied at all; the SPA applies the same guard through
+    // `init.serve`. Without it a --serve-host mismatch door would reload
+    // itself forever (the exact loop `build_spa_init` warns about).
+    let auto_refresh = serve_allowed && fallback_auto_refresh(page);
+    let redirecting = page == "landing" || page == "ready";
+    let refresh_secs = if redirecting {
+        FALLBACK_REDIRECT_SECS
+    } else {
+        FALLBACK_RETRY_SECS
+    };
 
     let status_badge = format!(
         r#"<span class="hk-badge hk-badge-{}" data-size="md" data-pill><span data-el="dot"></span>{}</span>"#,
@@ -1660,19 +1677,27 @@ async fn serve_fallback(lang: &str, state: &InfoState, _serve_allowed: bool) -> 
     };
 
     let retry_block = if auto_refresh {
-        let retry = text("retry");
-        let (before, after) = retry.split_once("{n}").unwrap_or((retry.as_str(), ""));
+        // Redirecting states keep the landing copy ("Redirecting in 3
+        // seconds"); waiting out a rebuild uses the retry copy ("Page will
+        // refresh automatically in 10 seconds"). `{n}` is the number slot.
+        let (before, after) = if redirecting {
+            (text("redirect_before"), text("redirect_after"))
+        } else {
+            let retry = text("retry");
+            let (before, after) = retry.split_once("{n}").unwrap_or((retry.as_str(), ""));
+            (before.to_string(), after.to_string())
+        };
         format!(
-            r#"<p class="mk-retry"><span>{}</span><strong class="mk-countdown">{FALLBACK_RETRY_SECS}</strong><span>{}</span></p>"#,
-            html_escape(before),
-            html_escape(after)
+            r#"<p class="mk-retry"><span>{}</span><strong class="mk-countdown">{refresh_secs}</strong><span>{}</span></p>"#,
+            html_escape(&before),
+            html_escape(&after)
         )
     } else {
         String::new()
     };
 
     let auto_refresh_meta = if auto_refresh {
-        format!(r#"<meta http-equiv="refresh" content="{FALLBACK_RETRY_SECS}">"#)
+        format!(r#"<meta http-equiv="refresh" content="{refresh_secs}">"#)
     } else {
         String::new()
     };
@@ -3402,6 +3427,111 @@ mod tests {
         );
     }
     // ── Prerendered fallback page ────────────────────────────────────────
+
+    /// Build an `InfoState` for the fallback renderer without spawning a door.
+    fn fallback_state(
+        status: InfoStatus,
+        serve_backend: Option<&str>,
+        backend: BackendState,
+    ) -> InfoState {
+        InfoState {
+            version: "0.6.0".to_string(),
+            status,
+            watch_paths: vec!["/srv/celestia/demo/chest".to_string()],
+            proxy_endpoint: Some("0.0.0.0:3097 → 3009-3009".to_string()),
+            binary_programs: Vec::new(),
+            serve_backend: serve_backend.map(str::to_string),
+            serve_hosts: Vec::new(),
+            build_progress: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            build_log: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            runtime_log: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            backend_state: std::sync::Arc::new(tokio::sync::RwLock::new(backend)),
+            epoch: std::sync::Arc::new(tokio::sync::RwLock::new("1".to_string())),
+        }
+    }
+
+    async fn fallback_body(lang: &str, state: &InfoState, allowed: bool) -> String {
+        let response = serve_fallback(lang, state, allowed).await;
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("fallback body");
+        String::from_utf8(bytes.to_vec()).expect("utf-8")
+    }
+
+    /// The fallback renderer, end to end: every placeholder is substituted and
+    /// the state/capability axis drives the badge, the action and the
+    /// self-refresh (the deleted Tera tests used to pin the last two).
+    #[tokio::test]
+    async fn test_fallback_page_renders_states_and_honours_serve_capability() {
+        // offline: error badge, no countdown, no auto-refresh, manual action.
+        let offline = fallback_state(
+            InfoStatus::Ready,
+            Some("http://127.0.0.1:1"),
+            BackendState::Down,
+        );
+        let html = fallback_body("en", &offline, true).await;
+        assert!(
+            !html.contains("{{MALKUTH_"),
+            "no marker may survive the render"
+        );
+        assert!(
+            !html.contains("http-equiv=\"refresh\""),
+            "offline must not self-refresh"
+        );
+        assert!(
+            !html.contains(r#"class="mk-countdown""#),
+            "offline renders no countdown (the stylesheet still names the class)"
+        );
+        assert!(
+            !html.contains(r#"class="mk-retry""#),
+            "offline renders no retry paragraph"
+        );
+        assert!(html.contains("hk-badge-error"), "offline badge");
+        assert!(
+            html.contains("Refresh Now"),
+            "manual action stays available"
+        );
+        assert!(
+            html.contains("/srv/celestia/demo/chest"),
+            "watch paths render"
+        );
+
+        // ready on a supervisor door: success badge, 3s redirect cadence.
+        let ready = fallback_state(InfoStatus::Ready, None, BackendState::Unknown);
+        let html = fallback_body("en", &ready, true).await;
+        assert!(html.contains("hk-badge-success"), "ready badge");
+        assert!(
+            html.contains("http-equiv=\"refresh\" content=\"3\""),
+            "3s redirect"
+        );
+
+        // a rebuild waits on the slower retry cadence.
+        let building = fallback_state(InfoStatus::Working, None, BackendState::Unknown);
+        let html = fallback_body("en", &building, true).await;
+        assert!(html.contains("hk-badge-warning"), "building badge");
+        assert!(
+            html.contains("http-equiv=\"refresh\" content=\"10\""),
+            "10s retry"
+        );
+
+        // S1-02 lock: a door that may NOT be proxied never self-refreshes,
+        // even while the backend is up — otherwise it reloads forever.
+        let non_proxy = fallback_state(
+            InfoStatus::Ready,
+            Some("http://127.0.0.1:1"),
+            BackendState::Up,
+        );
+        let html = fallback_body("en", &non_proxy, false).await;
+        assert!(
+            !html.contains("http-equiv=\"refresh\""),
+            "a non-proxy door must not self-refresh"
+        );
+        assert!(html.contains("Refresh Now"), "manual action still offered");
+
+        // RTL + localisation flow through the same renderer.
+        let arabic = fallback_body("ar", &ready, true).await;
+        assert!(arabic.contains("lang=\"ar\"") && arabic.contains("dir=\"rtl\""));
+    }
 
     /// `fill` is the only substitution pass: unknown markers survive (so a
     /// renamed marker is caught by the assertion below instead of silently

@@ -23,7 +23,7 @@ import {
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { extractSpinnerCss, rootBlock } from './css-rules.mjs'
+import { extractSpinnerCss, rootBlock, stripComments } from './css-rules.mjs'
 
 const app = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const outDir = resolve(app, '../../target/landing_page')
@@ -144,7 +144,9 @@ const tokensCss = [
   `@media (prefers-color-scheme: light){${rootBlock(tokens.light)}}`,
 ].join('')
 
-const fallbackHtml = fallbackShell(body, staged.css, tokensCss)
+// Vite leaves a bookkeeping comment (`/*$vite$:1*/`) at the top of the emitted
+// stylesheet; the served page does not need it.
+const fallbackHtml = fallbackShell(body, stripComments(staged.css), tokensCss)
 const spinnerCss = extractSpinnerCss(staged.css)
 
 const tokenSnapshot = {
