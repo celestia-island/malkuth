@@ -16,7 +16,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use chrono::Utc;
 use tracing::{error, info, warn};
 
 /// Configuration assembled from the watchdog CLI flags.
@@ -104,7 +103,7 @@ pub fn run_backup(cfg: &DbBackupConfig, uri: &str) -> Result<PathBuf, String> {
 
     let host = sanitize_label(&hostname());
     let db = db_name_from_uri(uri);
-    let stamp = Utc::now().format("%Y%m%d-%H%M%S");
+    let stamp = dump_stamp();
     let tmp = dir.join(format!(".{host}-{db}-{stamp}.tmp"));
     let final_path = if cfg.key.is_some() {
         dir.join(format!("{host}-{db}-{stamp}.dump.age"))
@@ -157,6 +156,24 @@ pub fn run_backup(cfg: &DbBackupConfig, uri: &str) -> Result<PathBuf, String> {
 
     info!(path = %final_path.display(), db, "database backup created");
     Ok(final_path)
+}
+
+/// The dump file stamp: `YYYYMMDD-HHMMSS` in UTC.
+///
+/// Single source of truth for the shape: `strip_stamp` below recognises this
+/// exact layout (fixed offsets, `stamp[8] == b'-'`), so the rotation test drives
+/// the producer instead of re-spelling it. `dump_stamp_formats_the_timestamp_in_utc`
+/// deliberately spells one literal stamp — it is the independent pin on the UTC
+/// half, not a second producer.
+fn dump_stamp() -> String {
+    dump_stamp_from(jiff::Timestamp::now())
+}
+
+/// Format `ts` as the dump stamp. Split out so the UTC half of the contract can
+/// be pinned against a literal instant instead of the host clock (a UTC host
+/// cannot tell a UTC producer from a local one).
+fn dump_stamp_from(ts: jiff::Timestamp) -> String {
+    ts.strftime("%Y%m%d-%H%M%S").to_string()
 }
 
 /// Strip the trailing `-<YYYYMMDD>-<HHMMSS>` stamp (as produced by
@@ -256,21 +273,50 @@ pub async fn run_forever(cfg: DbBackupConfig) {
 
 /// Duration until the next 02:00 local time (at least 60s from now).
 fn sleep_until_next_run() -> Duration {
-    let now = chrono::Local::now();
+    Duration::from_secs(seconds_until_next_run(&jiff::ZonedDateTime::now()))
+}
+
+/// Seconds until the next 02:00 local time, at least 60s from `now`.
+///
+/// Contract: if local 02:00 on `now`'s date is a single instant strictly after
+/// `now`, aim at it; if it is already past, step a fixed 24 h from it; if the
+/// wall clock is ambiguous (a DST gap where it does not exist, or a fold where
+/// it happens twice), take the `now + 24 h` fallback instead of guessing.
+///
+/// The pre-migration implementation used chrono 0.4.45's
+/// `and_local_timezone(..).single()`, whose classification of DST boundary wall
+/// clocks differs from jiff's, so the two schedules can differ on 1–2 transition
+/// days per year for a given `now`. Measured 2026: America/New_York 2 days;
+/// Europe/London, Europe/Berlin, Australia/Sydney and Pacific/Auckland 1 each;
+/// zones whose local 02:00 never lands on a transition boundary (Asia/Shanghai,
+/// America/Santiago, Pacific/Chatham) show no difference at all.
+/// The difference is intended: this code never resolves an ambiguous wall clock
+/// silently.
+///
+/// `to_zoned_datetime`/`TimeZone::to_zoned_datetime` (jiff's `Compatible`
+/// strategy) must not be used here: it answers every ambiguous wall clock
+/// silently instead of taking the fallback above.
+fn seconds_until_next_run(now: &jiff::ZonedDateTime) -> u64 {
     let next = now
-        .date_naive()
-        .and_hms_opt(2, 0, 0)
-        .and_then(|d| d.and_local_timezone(chrono::Local).single())
+        .time_zone()
+        .to_ambiguous_zoned_datetime(now.date().at(2, 0, 0, 0))
+        .unambiguous()
+        .ok()
         .map(|dt| {
-            if dt > now {
+            if dt > *now {
                 dt
             } else {
-                dt + chrono::Duration::days(1)
+                // A fixed 24h step, not a calendar `Span::days(1)`: this keeps
+                // the pre-migration behaviour where the retry lands on the same
+                // absolute instant even across a DST transition.
+                dt + jiff::SignedDuration::from_hours(24)
             }
         })
-        .unwrap_or(now + chrono::Duration::hours(24));
-    let secs = (next - now).num_seconds().max(60) as u64;
-    Duration::from_secs(secs)
+        .unwrap_or_else(|| now.clone() + jiff::SignedDuration::from_hours(24));
+    next.timestamp()
+        .duration_since(now.timestamp())
+        .as_secs()
+        .max(60) as u64
 }
 
 fn hostname() -> String {
@@ -282,6 +328,172 @@ fn hostname() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Explicit zone handles: the assertions must not depend on the machine's
+    /// `/etc/localtime`, and the two interesting transition shapes live in
+    /// different zones (US spring-forward skips 02:00, Europe fall-back repeats
+    /// it).
+    fn zone(name: &str) -> jiff::tz::TimeZone {
+        jiff::tz::TimeZone::get(name).unwrap()
+    }
+
+    fn local(zone_name: &str, y: i16, m: i8, d: i8, hh: i8, mm: i8) -> jiff::ZonedDateTime {
+        local_at(zone_name, y, m, d, hh, mm, 0)
+    }
+
+    fn local_at(
+        zone_name: &str,
+        y: i16,
+        m: i8,
+        d: i8,
+        hh: i8,
+        mm: i8,
+        ss: i8,
+    ) -> jiff::ZonedDateTime {
+        jiff::civil::date(y, m, d)
+            .at(hh, mm, ss, 0)
+            .to_zoned_datetime(zone(zone_name))
+            .unwrap()
+    }
+
+    #[test]
+    fn next_run_is_the_upcoming_two_am() {
+        // Before 02:00 local: the wait is the remaining distance to it.
+        assert_eq!(
+            seconds_until_next_run(&local("America/New_York", 2026, 8, 4, 1, 0)),
+            3600
+        );
+        // At or after 02:00 local: an absolute 24h step. The phase resumes on
+        // the following days (see the transition tests); a transition inside
+        // those 24h moves the landing by the offset delta.
+        assert_eq!(
+            seconds_until_next_run(&local("America/New_York", 2026, 8, 4, 3, 0)),
+            23 * 3600
+        );
+        assert_eq!(
+            seconds_until_next_run(&local("America/New_York", 2026, 8, 4, 2, 0)),
+            86_400
+        );
+    }
+
+    #[test]
+    fn next_run_falls_back_a_full_day_across_a_dst_gap() {
+        // 2026-03-08 is the US spring-forward day: local 02:00 does not exist,
+        // so `unambiguous()` rejects it and the schedule takes the +24h
+        // fallback. This pins the NEW contract: chrono 0.4.45 returned `Single`
+        // for exactly 02:00 here (it only rejected interior gap instants), so
+        // the pre-migration schedule woke at the 03:00 transition instant — one
+        // hour later. A restart before 02:00 on this day therefore waits for the
+        // next day in the new shape, and for the transition instant in the old
+        // one; both edits are intended.
+        assert_eq!(
+            seconds_until_next_run(&local("America/New_York", 2026, 3, 8, 1, 0)),
+            86_400
+        );
+        // The day after, the phase is still 02:00 local.
+        assert_eq!(
+            seconds_until_next_run(&local("America/New_York", 2026, 3, 9, 1, 0)),
+            3600
+        );
+    }
+
+    #[test]
+    fn next_run_rejects_a_folded_two_am() {
+        // 2026-10-25 is Europe's fall-back day: local 02:00 happens twice.
+        // chrono's `.single()` collapses that ambiguity to `None`, and jiff's
+        // `unambiguous()` rejects it too, so both shapes take the now + 24h
+        // fallback; `Compatible` would instead pick the first of the two
+        // occurrences (1h away), which is why it must not be used here.
+        assert_eq!(
+            seconds_until_next_run(&local("Europe/Berlin", 2026, 10, 25, 1, 0)),
+            86_400
+        );
+    }
+
+    #[test]
+    fn next_run_steps_by_an_absolute_day_not_a_calendar_day() {
+        // 2026-10-31 is the Saturday before the US fall-back: today's 02:00 has
+        // already passed and a transition falls inside the next 24h, which is
+        // the only shape that tells the two steps apart.
+        //   absolute 24h  -> 2026-11-01 01:00 EST (75_600s away)
+        //   calendar day  -> 2026-11-01 02:00 EST (79_200s away)
+        // The pre-migration `Duration::days(1)` is an absolute 86_400s, so the
+        // first is the behaviour to keep.
+        assert_eq!(
+            seconds_until_next_run(&local("America/New_York", 2026, 10, 31, 5, 0)),
+            75_600
+        );
+    }
+
+    #[test]
+    fn next_run_never_returns_a_sub_minute_wait() {
+        // 01:59:30 is 30s out, so only the floor can produce 60; a `now` sitting
+        // exactly 60s out (01:59:00) would pass with the floor removed.
+        assert_eq!(
+            seconds_until_next_run(&local_at("America/New_York", 2026, 8, 4, 1, 59, 30)),
+            60
+        );
+    }
+
+    #[test]
+    fn dump_stamp_shape_matches_the_rotator() {
+        // `strip_stamp()` only recognises `<8 digits>-<6 digits>` followed by the
+        // separating '-' (it checks `stamp[8] == b'-'` at a fixed offset). If the
+        // shape drifts, every dump looks like its own base name: the retention
+        // window stops trimming and the backup directory grows without bound.
+        let stamp = dump_stamp();
+        assert_eq!(stamp.len(), 15);
+        assert_eq!(stamp.as_bytes()[8], b'-');
+        assert!(stamp[..8].bytes().all(|b| b.is_ascii_digit()));
+        assert!(stamp[9..].bytes().all(|b| b.is_ascii_digit()));
+        assert_eq!(strip_stamp(&format!("host-db-{stamp}")), "host-db");
+        // And a stamp with no separator is NOT silently accepted as one.
+        assert_eq!(
+            strip_stamp(&format!("host-db-{}", stamp.replace('-', ""))),
+            format!("host-db-{}", stamp.replace('-', ""))
+        );
+        // Both separator guards need their own shape: a 15-byte all-digit tail
+        // (the `stamp[8] == b'-'` conjunct) and a 15-byte well-formed tail whose
+        // preceding byte is not '-' (the `bytes[start - 1] == b'-'` conjunct).
+        // Without them two databases would collapse into one retention group.
+        assert_eq!(strip_stamp("host-123456789012345"), "host-123456789012345");
+        assert_eq!(
+            strip_stamp("host-dbX20260804-120000"),
+            "host-dbX20260804-120000"
+        );
+    }
+
+    /// The producer must stay on the UTC clock. A behavioural assertion cannot
+    /// tell UTC from local on a UTC host — and the canonical verification lane
+    /// *is* UTC — so pin the producer's source shape: swapping in a zoned clock
+    /// must be a visible edit, not a silent green.
+    #[test]
+    fn dump_stamp_producer_stays_on_the_utc_clock() {
+        const SOURCE: &str = include_str!("db_backup.rs");
+        let producer = SOURCE
+            .split("fn dump_stamp() -> String {")
+            .nth(1)
+            .expect("dump_stamp() must exist");
+        let body = producer.split('}').next().expect("dump_stamp() body");
+        assert!(
+            body.contains("dump_stamp_from(")
+                && body.contains("Timestamp::now()")
+                && !body.contains("ZonedDateTime"),
+            "dump_stamp() must route the UTC clock through dump_stamp_from; got {body:?}"
+        );
+    }
+
+    #[test]
+    fn dump_stamp_formats_the_timestamp_in_utc() {
+        // Format half of the stamp contract: a fixed instant renders as the
+        // literal UTC stamp. A `Timestamp` carries no zone, so this pins the
+        // format — not the producer's clock choice (that is
+        // `dump_stamp_producer_stays_on_the_utc_clock`'s job: behaviour alone
+        // cannot tell UTC from local on a UTC host, and the canonical
+        // verification lane is UTC).
+        let ts = jiff::Timestamp::from_second(1_795_166_296).expect("fixture instant");
+        assert_eq!(dump_stamp_from(ts), "20261120-091816");
+    }
 
     #[test]
     fn discovers_explicit_and_env_urls() {

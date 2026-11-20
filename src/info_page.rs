@@ -144,9 +144,13 @@ pub fn collect_binary_info(program: &str) -> Option<BinaryInfo> {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .map(|d| {
-            use chrono::TimeZone;
-            let dt = chrono::Local.timestamp_opt(d.as_secs() as i64, 0).unwrap();
-            dt.format("%Y-%m-%d %H:%M:%S").to_string()
+            jiff::Timestamp::from_second(d.as_secs() as i64)
+                .map(|ts| {
+                    ts.to_zoned_datetime(jiff::tz::TimeZone::system())
+                        .strftime("%Y-%m-%d %H:%M:%S")
+                        .to_string()
+                })
+                .unwrap_or_else(|_| "unknown".to_string())
         })
         .unwrap_or_else(|| "unknown".to_string());
 
