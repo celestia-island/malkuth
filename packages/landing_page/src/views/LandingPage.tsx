@@ -513,9 +513,14 @@ export default defineComponent({
       nextTick(() => {
         requestAnimationFrame(() => {
           const vp = document.querySelector('.mk-log .xterm-viewport') as HTMLElement | null
-          if (vp && !overlayHandle.value) {
-            overlayHandle.value = attachOverlayScrollbars(vp, { axis: 'vertical' })
-          }
+          if (!vp) return
+          // detach() is idempotent and reference-counts the parent-position
+          // promotion; re-attach unconditionally so the reversal case
+          // (close → reopen inside the popover's ~150 ms leave window, which
+          // reuses the same DOM node) can never stack a second handle on one
+          // viewport.
+          overlayHandle.value?.detach()
+          overlayHandle.value = attachOverlayScrollbars(vp, { axis: 'vertical' })
         })
       })
     })
