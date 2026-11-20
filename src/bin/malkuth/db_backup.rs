@@ -255,14 +255,27 @@ pub async fn run_forever(cfg: DbBackupConfig) {
 
 /// Duration until the next 02:00 local time (at least 60s from now).
 fn sleep_until_next_run() -> Duration {
-    let now = jiff::ZonedDateTime::now();
+    Duration::from_secs(seconds_until_next_run(&jiff::ZonedDateTime::now()))
+}
+
+/// Seconds until the next 02:00 local time, at least 60s from `now`.
+///
+/// `unambiguous()` is the exact analogue of chrono's
+/// `and_local_timezone(..).single()`: it rejects BOTH shapes of an ambiguous
+/// local 02:00 — the DST gap where it never happens and the DST fold where it
+/// happens twice — and only then do we fall back to a plain `now + 24h`.
+/// `TimeZone::to_zoned_datetime`/`DateTime::to_zoned_datetime` must not be used
+/// here: they resolve both shapes silently (jiff's `Compatible` strategy), so on
+/// a transition day the schedule would move to the transition instant instead of
+/// keeping the pre-migration phase.
+fn seconds_until_next_run(now: &jiff::ZonedDateTime) -> u64 {
     let next = now
-        .date()
-        .at(2, 0, 0, 0)
-        .to_zoned_datetime(now.time_zone().clone())
+        .time_zone()
+        .to_ambiguous_zoned_datetime(now.date().at(2, 0, 0, 0))
+        .unambiguous()
         .ok()
         .map(|dt| {
-            if dt > now {
+            if dt > *now {
                 dt
             } else {
                 // A fixed 24h step, not a calendar `Span::days(1)`: this keeps
@@ -271,13 +284,11 @@ fn sleep_until_next_run() -> Duration {
                 dt + jiff::SignedDuration::from_hours(24)
             }
         })
-        .unwrap_or(now.clone() + jiff::SignedDuration::from_hours(24));
-    let secs = next
-        .timestamp()
+        .unwrap_or_else(|| now.clone() + jiff::SignedDuration::from_hours(24));
+    next.timestamp()
         .duration_since(now.timestamp())
         .as_secs()
-        .max(60) as u64;
-    Duration::from_secs(secs)
+        .max(60) as u64
 }
 
 fn hostname() -> String {
@@ -289,6 +300,45 @@ fn hostname() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Same zone chrono was asked for, but with an explicit handle so the
+    /// assertions do not depend on the machine's `/etc/localtime`.
+    fn new_york() -> jiff::tz::TimeZone {
+        jiff::tz::TimeZone::get("America/New_York").unwrap()
+    }
+
+    fn local(y: i16, m: i8, d: i8, hh: i8, mm: i8) -> jiff::ZonedDateTime {
+        jiff::civil::date(y, m, d)
+            .at(hh, mm, 0, 0)
+            .to_zoned_datetime(new_york())
+            .unwrap()
+    }
+
+    #[test]
+    fn next_run_is_the_upcoming_two_am() {
+        // Before 02:00 local: the wait is the remaining distance to it.
+        assert_eq!(seconds_until_next_run(&local(2026, 8, 4, 1, 0)), 3600);
+        // At or after 02:00 local: a full absolute day to tomorrow's 02:00.
+        assert_eq!(seconds_until_next_run(&local(2026, 8, 4, 3, 0)), 23 * 3600);
+        assert_eq!(seconds_until_next_run(&local(2026, 8, 4, 2, 0)), 86_400);
+    }
+
+    #[test]
+    fn next_run_keeps_its_phase_across_a_dst_gap() {
+        // 2026-03-08 is the US spring-forward day: local 02:00 does not exist.
+        // chrono's `.single()` returned None here and the schedule fell back to
+        // now + 24h; jiff's `Compatible` resolution would instead answer 1h
+        // (the 03:00 transition instant), i.e. a second dump minutes later.
+        assert_eq!(seconds_until_next_run(&local(2026, 3, 8, 1, 0)), 86_400);
+        // The day after, the phase is still 02:00 local.
+        assert_eq!(seconds_until_next_run(&local(2026, 3, 9, 1, 0)), 3600);
+    }
+
+    #[test]
+    fn next_run_never_returns_a_sub_minute_wait() {
+        // The 60s floor survives a now that sits inside the same minute.
+        assert_eq!(seconds_until_next_run(&local(2026, 8, 4, 1, 59)), 60);
+    }
 
     #[test]
     fn discovers_explicit_and_env_urls() {
