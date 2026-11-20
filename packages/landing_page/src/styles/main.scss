@@ -154,9 +154,18 @@ button.mk-pair__value:focus-visible {
 }
 
 /* The light-scheme brand orange sits at 4.40:1 on white — under AA for the
-   12px value text. Darkening it ~18% keeps the hue and clears the threshold. */
+   12px value text. Darkening it ~18% keeps the hue and clears the threshold.
+   Two selectors because the two surfaces pick their scheme differently: the
+   SPA stamps `data-mode` on <html> at runtime, while the prerendered fallback
+   page ships no script at all and follows the media query. */
 [data-mode='light'] .mk-seg--accent {
   color: color-mix(in srgb, rgb(var(--color-primary)) 82%, #000);
+}
+
+@media (prefers-color-scheme: light) {
+  .mk-seg--accent {
+    color: color-mix(in srgb, rgb(var(--color-primary)) 82%, #000);
+  }
 }
 
 /* The arrow between the public and backend sides is a glyph, not a value

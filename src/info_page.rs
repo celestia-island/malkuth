@@ -1915,8 +1915,11 @@ fn pair_tag(label: &str, segments: &[String]) -> String {
 /// no separator on the left of the tail).
 fn split_last(value: &str, sep: char) -> Vec<String> {
     match value.rsplit_once(sep) {
-        Some((head, tail)) if !head.is_empty() => {
-            vec![head.to_string(), tail.to_string()]
+        // The separator stays with the head: the two halves are separate
+        // blocks, and selecting the rendered text must still yield the
+        // original value (the fallback page has no copy button).
+        Some((head, tail)) if !head.is_empty() && !tail.is_empty() => {
+            vec![format!("{head}{sep}"), tail.to_string()]
         }
         _ => vec![value.to_string()],
     }
@@ -1925,7 +1928,7 @@ fn split_last(value: &str, sep: char) -> Vec<String> {
 /// A path → its directory prefix (kept with the trailing slash) and file name.
 fn split_path(value: &str) -> Vec<String> {
     match value.rsplit_once('/') {
-        Some((head, tail)) if !head.is_empty() => {
+        Some((head, tail)) if !head.is_empty() && !tail.is_empty() => {
             vec![format!("{head}/"), tail.to_string()]
         }
         _ => vec![value.to_string()],
@@ -4430,8 +4433,13 @@ mod tests {
     /// exactly once (a caller that pre-escaped would double-escape).
     #[test]
     fn test_pair_tag_segments_and_escaping() {
-        assert_eq!(split_last("0.0.0.0:3097", ':'), vec!["0.0.0.0", "3097"]);
-        assert_eq!(split_last("master:51d846e", ':'), vec!["master", "51d846e"]);
+        assert_eq!(split_last("0.0.0.0:3097", ':'), vec!["0.0.0.0:", "3097"]);
+        assert_eq!(
+            split_last("master:51d846e", ':'),
+            vec!["master:", "51d846e"]
+        );
+        assert_eq!(split_last("0.0.0.0:", ':'), vec!["0.0.0.0:"]);
+        assert_eq!(split_path("/srv/bin/"), vec!["/srv/bin/"]);
         assert_eq!(split_last("noseparator", ':'), vec!["noseparator"]);
         assert_eq!(
             split_path("/srv/celestia/chest-demo/chest-demo"),
@@ -4439,10 +4447,10 @@ mod tests {
         );
         assert_eq!(
             proxy_segments("0.0.0.0:3097 → 3009-3009"),
-            vec!["0.0.0.0", "3097", "→", "3009-3009"]
+            vec!["0.0.0.0:", "3097", "→", "3009-3009"]
         );
         // Without a backend side the arrow never appears.
-        assert_eq!(proxy_segments("0.0.0.0:3097"), vec!["0.0.0.0", "3097"]);
+        assert_eq!(proxy_segments("0.0.0.0:3097"), vec!["0.0.0.0:", "3097"]);
 
         // Hostile input is escaped once: one `&` in, one `&amp;` out.
         let html = pair_tag("a&b", &["x<c".to_string(), "y>d".to_string()]);

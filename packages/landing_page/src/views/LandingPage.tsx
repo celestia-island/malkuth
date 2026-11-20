@@ -449,13 +449,18 @@ export default defineComponent({
      */
     function splitLast(value: string, sep: string): string[] {
       const at = value.lastIndexOf(sep)
-      return at > 0 ? [value.slice(0, at), value.slice(at + 1)] : [value]
+      // The separator stays with the head, matching the fallback renderer: the
+      // two halves are separate blocks, so the glyph has to live in one of
+      // them for the rendered text to read as the original value.
+      const tail = at > 0 ? value.slice(at + sep.length) : ''
+      return at > 0 && tail ? [value.slice(0, at + sep.length), tail] : [value]
     }
 
     /** Split a path into its directory prefix and file name. */
     function splitPath(value: string): string[] {
       const at = value.lastIndexOf('/')
-      return at > 0 ? [value.slice(0, at + 1), value.slice(at + 1)] : [value]
+      const tail = value.slice(at + 1)
+      return at > 0 && tail ? [value.slice(0, at + 1), tail] : [value]
     }
 
     const PROXY_ARROW = /\s*(?:→|->)\s*/
