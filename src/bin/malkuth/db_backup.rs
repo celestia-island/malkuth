@@ -283,7 +283,9 @@ fn sleep_until_next_run() -> Duration {
 /// Australia/Sydney and Pacific/Auckland, the two schedules therefore diverge on
 /// 1–2 days per year. The divergence is intended: this code never resolves an
 /// ambiguous wall clock silently, so a restart on a transition day keeps aiming
-/// at 02:00 rather than drifting to the transition instant.
+/// at 02:00 rather than drifting to the transition instant; on a spring-forward
+/// day there is no 02:00 to aim at, so a restart before 02:00 waits for the next
+/// day instead.
 ///
 /// `to_zoned_datetime`/`TimeZone::to_zoned_datetime` (jiff's `Compatible`
 /// strategy) must not be used here: it answers every ambiguous wall clock
@@ -443,6 +445,30 @@ mod tests {
         assert_eq!(
             strip_stamp(&format!("host-db-{}", stamp.replace('-', ""))),
             format!("host-db-{}", stamp.replace('-', ""))
+        );
+        // Both separator guards need their own shape: a 15-byte all-digit tail
+        // (the `stamp[8] == b'-'` conjunct) and a 15-byte well-formed tail whose
+        // preceding byte is not '-' (the `bytes[start - 1] == b'-'` conjunct).
+        // Without them two databases would collapse into one retention group.
+        assert_eq!(strip_stamp("host-123456789012345"), "host-123456789012345");
+        assert_eq!(
+            strip_stamp("host-dbX20260804-120000"),
+            "host-dbX20260804-120000"
+        );
+    }
+
+    #[test]
+    fn dump_stamp_is_utc_not_local() {
+        // `rotate()` sorts by file name, so a local-time stamp would go
+        // non-monotonic across a DST fold (the fresh dump could be trimmed
+        // first). Window the assertion on both sides of the call so crossing a
+        // second boundary cannot flake it.
+        let before = jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S").to_string();
+        let stamp = dump_stamp();
+        let after = jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S").to_string();
+        assert!(
+            stamp == before || stamp == after,
+            "dump_stamp {stamp} is not the UTC stamp [{before}, {after}]"
         );
     }
 
