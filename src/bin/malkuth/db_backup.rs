@@ -16,7 +16,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use chrono::Utc;
 use tracing::{error, info, warn};
 
 /// Configuration assembled from the watchdog CLI flags.
@@ -104,7 +103,7 @@ pub fn run_backup(cfg: &DbBackupConfig, uri: &str) -> Result<PathBuf, String> {
 
     let host = sanitize_label(&hostname());
     let db = db_name_from_uri(uri);
-    let stamp = Utc::now().format("%Y%m%d-%H%M%S");
+    let stamp = jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S");
     let tmp = dir.join(format!(".{host}-{db}-{stamp}.tmp"));
     let final_path = if cfg.key.is_some() {
         dir.join(format!("{host}-{db}-{stamp}.dump.age"))
@@ -256,20 +255,28 @@ pub async fn run_forever(cfg: DbBackupConfig) {
 
 /// Duration until the next 02:00 local time (at least 60s from now).
 fn sleep_until_next_run() -> Duration {
-    let now = chrono::Local::now();
+    let now = jiff::ZonedDateTime::now();
     let next = now
-        .date_naive()
-        .and_hms_opt(2, 0, 0)
-        .and_then(|d| d.and_local_timezone(chrono::Local).single())
+        .date()
+        .at(2, 0, 0, 0)
+        .to_zoned_datetime(now.time_zone().clone())
+        .ok()
         .map(|dt| {
             if dt > now {
                 dt
             } else {
-                dt + chrono::Duration::days(1)
+                // A fixed 24h step, not a calendar `Span::days(1)`: this keeps
+                // the pre-migration behaviour where the retry lands on the same
+                // absolute instant even across a DST transition.
+                dt + jiff::SignedDuration::from_hours(24)
             }
         })
-        .unwrap_or(now + chrono::Duration::hours(24));
-    let secs = (next - now).num_seconds().max(60) as u64;
+        .unwrap_or(now.clone() + jiff::SignedDuration::from_hours(24));
+    let secs = next
+        .timestamp()
+        .duration_since(now.timestamp())
+        .as_secs()
+        .max(60) as u64;
     Duration::from_secs(secs)
 }
 

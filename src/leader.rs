@@ -123,7 +123,7 @@ impl LeaderElector for LeaseLeaderElector {
 ///
 /// - `acquired_at` is already published over the `Lifecycle.LeaderAnnounce`
 ///   wire, so switching to RFC 3339 would change the payload for every consumer;
-/// - `chrono` is only available behind the optional `cli` feature, so producing
+/// - `jiff` is only available behind the optional `cli` feature, so producing
 ///   a real ISO string here would either add a mandatory dependency or hand-roll
 ///   civil-date math.
 ///
