@@ -1585,7 +1585,7 @@ const FALLBACK_REDIRECT_SECS: u32 = 3;
 /// Does this state self-refresh at all? This is the STATE axis only — the
 /// capability axis (may a reload actually reach a backend?) is ANDed in by
 /// [`serve_fallback`], because a non-proxy door that reloads would loop.
-fn fallback_auto_refresh(page_state: &str) -> bool {
+fn state_wants_refresh(page_state: &str) -> bool {
     page_state != "offline" && page_state != "starting"
 }
 
@@ -1609,8 +1609,8 @@ async fn serve_fallback(lang: &str, state: &InfoState, serve_allowed: bool) -> R
     // may be proxied at all; the SPA applies the same guard through
     // `init.serve`. Without it a --serve-host mismatch door would reload
     // itself forever (the exact loop `build_spa_init` warns about).
-    let auto_refresh = serve_allowed && fallback_auto_refresh(page);
-    let redirecting = page == "landing" || page == "ready";
+    let auto_refresh = serve_allowed && state_wants_refresh(page);
+    let redirecting = page == "landing";
     let refresh_secs = if redirecting {
         FALLBACK_REDIRECT_SECS
     } else {
@@ -1683,9 +1683,16 @@ async fn serve_fallback(lang: &str, state: &InfoState, serve_allowed: bool) -> R
         let (before, after) = if redirecting {
             (text("redirect_before"), text("redirect_after"))
         } else {
+            // `retry` ends at `{n}` in several locales; the unit lives in its
+            // own key, so splice it when the sentence has no tail of its own.
             let retry = text("retry");
-            let (before, after) = retry.split_once("{n}").unwrap_or((retry.as_str(), ""));
-            (before.to_string(), after.to_string())
+            match retry.split_once("{n}") {
+                Some((before, after)) if after.trim().is_empty() => {
+                    (before.to_string(), format!(" {}", text("retry_unit")))
+                }
+                Some((before, after)) => (before.to_string(), after.to_string()),
+                None => (retry.clone(), String::new()),
+            }
         };
         format!(
             r#"<p class="mk-retry"><span>{}</span><strong class="mk-countdown">{refresh_secs}</strong><span>{}</span></p>"#,
@@ -3486,7 +3493,10 @@ mod tests {
             !html.contains(r#"class="mk-retry""#),
             "offline renders no retry paragraph"
         );
-        assert!(html.contains("hk-badge-error"), "offline badge");
+        assert!(
+            html.contains(r#"class="hk-badge hk-badge-error""#),
+            "offline badge"
+        );
         assert!(
             html.contains("Refresh Now"),
             "manual action stays available"
@@ -3496,19 +3506,51 @@ mod tests {
             "watch paths render"
         );
 
-        // ready on a supervisor door: success badge, 3s redirect cadence.
+        // ready on a supervisor door: success badge, retry copy at 10s with its
+        // unit spliced back in (nothing is being redirected there).
         let ready = fallback_state(InfoStatus::Ready, None, BackendState::Unknown);
         let html = fallback_body("en", &ready, true).await;
-        assert!(html.contains("hk-badge-success"), "ready badge");
+        assert!(
+            html.contains(r#"class="hk-badge hk-badge-success""#),
+            "ready badge"
+        );
+        assert!(
+            html.contains("http-equiv=\"refresh\" content=\"10\""),
+            "supervisor ready keeps the 10s retry cadence"
+        );
+        assert!(
+            html.contains("Page will refresh automatically in"),
+            "retry copy, not redirect copy"
+        );
+        assert!(
+            !html.contains("Redirecting in"),
+            "a supervisor door is not redirecting anywhere"
+        );
+        assert!(
+            html.contains("<strong class=\"mk-countdown\">10</strong><span> seconds</span>"),
+            "the retry sentence carries its unit"
+        );
+
+        // landing on a proxy door: redirect copy at the 3s beat.
+        let landing = fallback_state(
+            InfoStatus::Landing,
+            Some("http://127.0.0.1:1"),
+            BackendState::Up,
+        );
+        let html = fallback_body("en", &landing, true).await;
         assert!(
             html.contains("http-equiv=\"refresh\" content=\"3\""),
-            "3s redirect"
+            "landing keeps the 3s redirect cadence"
         );
+        assert!(html.contains("Redirecting in"), "redirect copy on landing");
 
         // a rebuild waits on the slower retry cadence.
         let building = fallback_state(InfoStatus::Working, None, BackendState::Unknown);
         let html = fallback_body("en", &building, true).await;
-        assert!(html.contains("hk-badge-warning"), "building badge");
+        assert!(
+            html.contains(r#"class="hk-badge hk-badge-warning""#),
+            "building badge"
+        );
         assert!(
             html.contains("http-equiv=\"refresh\" content=\"10\""),
             "10s retry"
@@ -3637,10 +3679,10 @@ mod tests {
                 "state {state} needs catalogue key {key}"
             );
         }
-        assert!(!fallback_auto_refresh("offline"));
-        assert!(!fallback_auto_refresh("starting"));
+        assert!(!state_wants_refresh("offline"));
+        assert!(!state_wants_refresh("starting"));
         for state in ["ready", "landing", "building"] {
-            assert!(fallback_auto_refresh(state), "{state} should self-retry");
+            assert!(state_wants_refresh(state), "{state} should self-retry");
         }
     }
 }

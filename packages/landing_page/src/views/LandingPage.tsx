@@ -96,7 +96,6 @@ const FALLBACK: Record<string, string> = {
   vtty_click_to_pin: 'Click to pin',
   vtty_pinned: 'Pinned',
   vtty_waiting: 'Connected, waiting for output',
-  copy_name: 'Copy name',
   footer: 'Powered by Malkuth — a composable service-supervision toolkit for Rust',
 }
 
