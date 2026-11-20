@@ -287,6 +287,55 @@ button.mk-pair__value:focus-visible {
   width: 100%;
 }
 
+/* The fit pass can size the canvas a row or two past the styled frame (it
+   runs before the popover settles), which pushed the viewport scrollbar off
+   the right edge and below the bottom. Clip the canvas to the frame so the
+   visible area and the scrollbar agree. */
+.mk-log .xterm {
+  overflow: hidden;
+}
+
+/* The xterm viewport's native scrollbar is the fat classic bar; style it to
+   hikari's overlay-scrollbar look instead: 6px rail, 3px-radius thumb in
+   --hi-color-muted at 35%, hover 55% (hikari styles/theme/scrollbar.scss).
+   Two channels because Chromium and Firefox style scrollbars differently:
+   - Chromium styles the bar ONLY via the legacy ::-webkit-scrollbar rules
+     (the standard scrollbar-width/color properties would switch it onto the
+     standard path and ignore them);
+   - Firefox only honours the standard properties, so they live under a
+     @supports (-moz-appearance: none) block — that test is true on every
+     Firefox and false on Chromium/Safari (unlike
+     `selector(::-webkit-scrollbar)`, which Fx 153–155 report as supported,
+     leaving the OS bar unstyled in that window). Never put both channels on
+     the same element: the standard properties win and the webkit rules are
+     dropped (measured: Chromium paints 10px with UA arrows on the combined
+     form). */
+.mk-log .xterm-viewport::-webkit-scrollbar {
+  width: 6px;
+}
+
+.mk-log .xterm-viewport::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--hi-color-muted, rgb(154 164 178)) 35%, transparent);
+}
+
+.mk-log .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--hi-color-muted, rgb(154 164 178)) 55%, transparent);
+}
+
+/* Firefox: `@supports not selector(::-webkit-scrollbar)` has a version
+   window — Fx 153–155 (incl. current ESR) report the selector as supported
+   (bug 2038877), which would skip the standard properties entirely and leave
+   the OS bar unstyled. `-moz-appearance: none` is true on every Firefox and
+   false on Chromium/Safari, with no version window. */
+@supports (-moz-appearance: none) {
+  .mk-log .xterm-viewport {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--hi-color-muted, rgb(154 164 178)) 55%, transparent)
+      transparent;
+  }
+}
+
 .mk-logbar {
   display: flex;
   align-items: center;

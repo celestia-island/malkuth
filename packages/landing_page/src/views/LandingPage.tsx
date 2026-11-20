@@ -204,7 +204,7 @@ export default defineComponent({
     const terminalAnchor = ref<HTMLElement | null>(null)
     const terminalFirstAt = ref(0)
     const terminalLastAt = ref(0)
-    const terminalRef = ref<{ write(d: string | Uint8Array): void; reset(): void } | null>(null)
+    const terminalRef = ref<{ write(d: string | Uint8Array): void; reset(): void; fit(): void } | null>(null)
 
     const logCache = new Map<string, string[]>()
     const toast = useToast()
@@ -362,6 +362,16 @@ export default defineComponent({
         })
     }
 
+    /** Refit once the popover has settled: the initial fit can run against an
+     *  unsettled container and size the canvas past the frame. */
+    function refitSettled() {
+      nextTick(() => {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => terminalRef.value?.fit())
+        })
+      })
+    }
+
     // The popover mounts its content lazily and the probe reply can beat that
     // mount, so feeding the terminal retries briefly instead of dropping the
     // first batch of lines on the floor.
@@ -487,7 +497,10 @@ export default defineComponent({
 
     watch(terminalLog, () => feedTerminal(), { flush: 'post' })
     watch(terminalOpen, (open) => {
-      if (open) feedTerminal()
+      if (open) {
+        feedTerminal()
+        refitSettled()
+      }
     })
 
     onMounted(() => {
