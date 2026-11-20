@@ -160,11 +160,20 @@ pub fn run_backup(cfg: &DbBackupConfig, uri: &str) -> Result<PathBuf, String> {
 
 /// The dump file stamp: `YYYYMMDD-HHMMSS` in UTC.
 ///
-/// Single source of truth: `strip_stamp` below recognises this exact shape
-/// (fixed offsets, `stamp[8] == b'-'`), so the producer and the tests must
-/// share it rather than re-spelling the format string.
+/// Single source of truth for the shape: `strip_stamp` below recognises this
+/// exact layout (fixed offsets, `stamp[8] == b'-'`), so the rotation test drives
+/// the producer instead of re-spelling it. `dump_stamp_formats_the_timestamp_in_utc`
+/// deliberately spells one literal stamp — it is the independent pin on the UTC
+/// half, not a second producer.
 fn dump_stamp() -> String {
-    jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S").to_string()
+    dump_stamp_from(jiff::Timestamp::now())
+}
+
+/// Format `ts` as the dump stamp. Split out so the UTC half of the contract can
+/// be pinned against a literal instant instead of the host clock (a UTC host
+/// cannot tell a UTC producer from a local one).
+fn dump_stamp_from(ts: jiff::Timestamp) -> String {
+    ts.strftime("%Y%m%d-%H%M%S").to_string()
 }
 
 /// Strip the trailing `-<YYYYMMDD>-<HHMMSS>` stamp (as produced by
@@ -283,9 +292,11 @@ fn sleep_until_next_run() -> Duration {
 /// Australia/Sydney and Pacific/Auckland, the two schedules therefore diverge on
 /// 1–2 days per year. The divergence is intended: this code never resolves an
 /// ambiguous wall clock silently, so a restart on a transition day keeps aiming
-/// at 02:00 rather than drifting to the transition instant; on a spring-forward
-/// day there is no 02:00 to aim at, so a restart before 02:00 waits for the next
-/// day instead.
+/// at 02:00 rather than drifting to the transition instant. The gap-day restart
+/// detail (waiting for the next day) is pinned by the test below rather than
+/// stated here, because whether 02:00 exists at all on a spring-forward day
+/// depends on the zone's jump (US/Berlin-style 02:00→03:00 skips it; London's
+/// 01:00→02:00 does not).
 ///
 /// `to_zoned_datetime`/`TimeZone::to_zoned_datetime` (jiff's `Compatible`
 /// strategy) must not be used here: it answers every ambiguous wall clock
@@ -458,18 +469,13 @@ mod tests {
     }
 
     #[test]
-    fn dump_stamp_is_utc_not_local() {
-        // `rotate()` sorts by file name, so a local-time stamp would go
-        // non-monotonic across a DST fold (the fresh dump could be trimmed
-        // first). Window the assertion on both sides of the call so crossing a
-        // second boundary cannot flake it.
-        let before = jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S").to_string();
-        let stamp = dump_stamp();
-        let after = jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S").to_string();
-        assert!(
-            stamp == before || stamp == after,
-            "dump_stamp {stamp} is not the UTC stamp [{before}, {after}]"
-        );
+    fn dump_stamp_formats_the_timestamp_in_utc() {
+        // Structural pin: a fixed instant, so the assertion cannot go green on a
+        // UTC host when the producer silently switches to local time (`rotate()`
+        // sorts by file name, so a local stamp can go non-monotonic across a DST
+        // fold and trim the fresh dump).
+        let ts = jiff::Timestamp::from_second(1_795_166_296).expect("fixture instant");
+        assert_eq!(dump_stamp_from(ts), "20261120-091816");
     }
 
     #[test]
