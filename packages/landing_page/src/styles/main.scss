@@ -302,10 +302,14 @@ button.mk-pair__value:focus-visible {
    - Chromium styles the bar ONLY via the legacy ::-webkit-scrollbar rules
      (the standard scrollbar-width/color properties would switch it onto the
      standard path and ignore them);
-   - Firefox only honours the standard properties, so they live under an
-     @supports-not block. Never put both on the same element: the standard
-     properties win and the webkit rules are dropped (measured: Chromium
-     paints 10px with UA arrows on the combined form). */
+   - Firefox only honours the standard properties, so they live under a
+     @supports (-moz-appearance: none) block — that test is true on every
+     Firefox and false on Chromium/Safari (unlike
+     `selector(::-webkit-scrollbar)`, which Fx 153–155 report as supported,
+     leaving the OS bar unstyled in that window). Never put both channels on
+     the same element: the standard properties win and the webkit rules are
+     dropped (measured: Chromium paints 10px with UA arrows on the combined
+     form). */
 .mk-log .xterm-viewport::-webkit-scrollbar {
   width: 6px;
 }
@@ -319,7 +323,12 @@ button.mk-pair__value:focus-visible {
   background: color-mix(in srgb, var(--hi-color-muted, rgb(154 164 178)) 55%, transparent);
 }
 
-@supports not selector(::-webkit-scrollbar) {
+/* Firefox: `@supports not selector(::-webkit-scrollbar)` has a version
+   window — Fx 153–155 (incl. current ESR) report the selector as supported
+   (bug 2038877), which would skip the standard properties entirely and leave
+   the OS bar unstyled. `-moz-appearance: none` is true on every Firefox and
+   false on Chromium/Safari, with no version window. */
+@supports (-moz-appearance: none) {
   .mk-log .xterm-viewport {
     scrollbar-width: thin;
     scrollbar-color: color-mix(in srgb, var(--hi-color-muted, rgb(154 164 178)) 55%, transparent)
