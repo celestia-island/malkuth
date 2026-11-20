@@ -18,7 +18,6 @@ import { computed, defineComponent, nextTick, onBeforeUnmount, onMounted, ref, w
 import HkBadge, { type BadgeVariant } from '@celestia-island/hikari/components/HkBadge.tsx'
 import HkButton from '@celestia-island/hikari/components/HkButton.tsx'
 import HkCard from '@celestia-island/hikari/components/HkCard.tsx'
-import HkCopyBadge from '@celestia-island/hikari/components/HkCopyBadge.tsx'
 import HkDivider from '@celestia-island/hikari/components/HkDivider.tsx'
 import HkIconButton from '@celestia-island/hikari/components/HkIconButton.tsx'
 import HkLogo from '@celestia-island/hikari/components/HkLogo.tsx'
@@ -443,6 +442,29 @@ export default defineComponent({
       }, 200)
     }
 
+    /**
+     * Split a `host:port` / `branch:hash` value at its LAST separator, so the
+     * caller can render the two halves as separate blocks. Returns a single
+     * segment when the value carries no separator.
+     */
+    function splitLast(value: string, sep: string): string[] {
+      const at = value.lastIndexOf(sep)
+      // The separator stays with the head, matching the fallback renderer, so
+      // the rendered text still reads as one value (`0.0.0.0:` + `3097`)
+      // rather than two tokens that run together when copied.
+      const tail = at > 0 ? value.slice(at + sep.length) : ''
+      return at > 0 && tail ? [value.slice(0, at + sep.length), tail] : [value]
+    }
+
+    /** Split a path into its directory prefix and file name. */
+    function splitPath(value: string): string[] {
+      const at = value.lastIndexOf('/')
+      const tail = value.slice(at + 1)
+      return at > 0 && tail ? [value.slice(0, at + 1), tail] : [value]
+    }
+
+    const PROXY_ARROW = /\s*(?:→|->)\s*/
+
     /** Copy the log lines the terminal was fed (HkTerminal exposes no buffer). */
     function copyLog() {
       if (!terminalLog.value.length) return
@@ -489,14 +511,14 @@ export default defineComponent({
 
     const staticTree = () => (
       <div class="mk-page">
-        <HkCard class="mk-card" padding="lg">
+        <HkCard class="mk-card">
           {head(MARKERS.heading, MARKERS.tagline, MARKERS.logo)}
           <div class="mk-status">{MARKERS.statusBadge}</div>
-          <dl class="mk-kv">
+          <div class="mk-pairs">
             {MARKERS.taskRow}
             {MARKERS.proxyRow}
             {MARKERS.watchRow}
-          </dl>
+          </div>
           {MARKERS.binariesBlock}
           {MARKERS.retryBlock}
           {MARKERS.actionBlock}
@@ -507,6 +529,59 @@ export default defineComponent({
         </HkCard>
       </div>
     )
+
+    /**
+     * One body, two blocks: a label block and a value block in a single frame.
+     * The copyable form is a real <button> so the affordance keeps a keyboard
+     * path, focus ring and an accessible name.
+     */
+    const pairTag = (label: string, segments: string[], copyValue?: string) => {
+      const body = segments.map((part, i) =>
+        part === '→' ? (
+          <span class="mk-seg-arrow" aria-hidden="true">
+            {part}
+          </span>
+        ) : (
+          <span
+            class={[
+              'mk-seg',
+              i === 0 && segments.length > 1 ? 'mk-seg--muted' : 'mk-seg--accent',
+            ]}
+          >
+            {part}
+          </span>
+        ),
+      )
+      return (
+        <span class="mk-pair">
+          {label ? <span class="mk-pair__label">{label}</span> : null}
+          {copyValue === undefined ? (
+            <span class="mk-pair__value">{body}</span>
+          ) : (
+            <button
+              type="button"
+              class="mk-pair__value"
+              title={copyValue}
+              aria-label={label ? `${label}: ${copyValue}` : copyValue}
+              onClick={() => void clipboard.copy(copyValue)}
+            >
+              {body}
+            </button>
+          )}
+        </span>
+      )
+    }
+
+    /** `0.0.0.0:3097 → 3009-3009` becomes [0.0.0.0][3097] → [3009-3009]. */
+    const proxySegments = (endpoint: string): string[] => {
+      const [public_side, backend_side] = endpoint.split(PROXY_ARROW)
+      const left = splitLast(public_side ?? '', ':')
+      const segments = [...left]
+      if (backend_side) {
+        segments.push('→', ...splitLast(backend_side, ':'))
+      }
+      return segments
+    }
 
     const terminalPopup = () => (
       <HkPopover
@@ -596,7 +671,7 @@ export default defineComponent({
 
     const liveTree = () => (
       <div class="mk-page">
-        <HkCard class="mk-card" padding="lg">
+        <HkCard class="mk-card">
           {head('Malkuth', t('tagline'), logoUrl.value)}
           <div class="mk-status" aria-live="polite">
             <HkBadge variant={badgeVariant.value} dot pulse={state.value !== 'ready'}>
@@ -607,33 +682,14 @@ export default defineComponent({
             )}
           </div>
 
-          <dl class="mk-kv">
-            {proxyEndpoint.value ? (
-              <div class="mk-kv-row">
-                <dt>{t('proxy_label')}</dt>
-                <dd class="mk-kv-value mk-selectable">{proxyEndpoint.value}</dd>
-              </div>
-            ) : null}
-            {watchPaths.value.length ? (
-              <div class="mk-kv-row">
-                <dt>{t('watch_label')}</dt>
-                <dd class="mk-chips">
-                  {watchPaths.value.map((path) => (
-                    <HkCopyBadge
-                      key={path}
-                      value={path}
-                      tooltip={path}
-                      size="sm"
-                      mono
-                      class="mk-chip"
-                    >
-                      {path}
-                    </HkCopyBadge>
-                  ))}
-                </dd>
-              </div>
-            ) : null}
-          </dl>
+          <div class="mk-pairs">
+            {proxyEndpoint.value
+              ? pairTag(t('proxy_label'), proxySegments(proxyEndpoint.value), proxyEndpoint.value)
+              : null}
+            {watchPaths.value.map((path) =>
+              pairTag(t('watch_label'), splitPath(path), path),
+            )}
+          </div>
 
           {binaries.value.length ? (
             <section class="mk-binaries">
@@ -650,14 +706,11 @@ export default defineComponent({
                       icon: () => BINARY_ICON(),
                       action: () => (
                         <div class="mk-binary-actions">
-                          <HkCopyBadge
-                            value={binary.hash}
-                            tooltip={binary.hash}
-                            size="sm"
-                            mono
-                          >
-                            {binary.hash_short}
-                          </HkCopyBadge>
+                          {pairTag(
+                            '',
+                            splitLast(binary.hash_short, ':'),
+                            binary.hash,
+                          )}
                           <span
                             class="mk-term-trigger"
                             onMouseenter={(ev: MouseEvent) => hoverOpen(binary.name, ev)}

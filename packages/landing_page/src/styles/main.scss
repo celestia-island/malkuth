@@ -5,7 +5,13 @@
 .mk-page {
   min-height: 100vh;
   display: grid;
-  place-items: center;
+  /* A single `auto` column sizes to the card's max-content (30rem) and lets it
+     overflow a narrow viewport — the card's `max-width:100%` then resolves
+     against that oversized track instead of the viewport. Pin the track to the
+     container so the card can actually shrink. */
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  align-content: center;
   padding: var(--space-24);
   background: rgb(var(--color-background));
   color: rgb(var(--color-text));
@@ -14,8 +20,13 @@
 }
 
 .mk-card {
-  width: 30rem;
-  max-width: 100%;
+  width: 100%;
+  max-width: 30rem;
+  min-width: 0;
+  /* HkCard reads its body inset from this token; owning it here (instead of
+     passing `padding` to the component, which writes the same token inline)
+     is what makes the narrow-screen override below able to shrink it. */
+  --hk-pad: var(--space-16);
 }
 
 .mk-head {
@@ -51,43 +62,128 @@
   margin-block: var(--space-20) var(--space-12);
 }
 
-.mk-kv {
+.mk-pairs {
   display: grid;
-  gap: var(--space-8);
+  gap: var(--space-6);
   margin: 0;
+  min-width: 0;
 }
 
-.mk-kv-row {
-  display: grid;
-  grid-template-columns: minmax(6rem, auto) 1fr;
-  align-items: start;
-  gap: var(--space-12);
-  font-size: var(--text-sm);
+/* Pair tag — one body, two blocks: a label block and a value block sharing a
+   single frame. Replaces the old two-column plain-text rows, which on a phone
+   spent a fixed 6rem on the label and pushed the value off-screen. */
+.mk-pair {
+  display: inline-flex;
+  align-items: stretch;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgb(var(--color-border) / 28%);
+  border-radius: var(--radius-sm);
+  background: rgb(var(--color-surface));
+  line-height: 1.5;
 }
 
-.mk-kv-row dt {
+.mk-pair__label {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: var(--space-2) var(--space-8);
+  background: rgb(var(--color-text) / 6%);
   color: rgb(var(--color-text-tertiary));
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  white-space: nowrap;
   font-size: var(--text-2xs);
 }
 
-.mk-kv-value {
-  margin: 0;
-  overflow-wrap: anywhere;
+/* A block, not a flex row: flex blockifies every segment, and a selection
+   over blockified children copies newline-joined. Inline-block segments flow
+   and wrap, so a selection copies them contiguously. */
+.mk-pair__value {
+  display: block;
+  /* hikari's reset denies selection on chrome text; this value is data an
+     operator may want to copy, and the no-JS page has no copy button. */
+  user-select: text;
+  min-width: 0;
+  padding: var(--space-2) var(--space-8);
+  border: 0;
+  background: none;
   color: rgb(var(--color-text-secondary));
+  font: inherit;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  text-align: start;
 }
 
-.mk-chips {
-  margin: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-6);
+button.mk-pair__value {
+  cursor: pointer;
 }
 
-.mk-chip {
-  max-width: 100%;
+span.mk-pair__value {
+  cursor: default;
+}
+
+button.mk-pair__value:hover {
+  background: rgb(var(--color-primary) / 8%);
+}
+
+button.mk-pair__value:focus-visible {
+  outline: 2px solid rgb(var(--color-primary));
+  outline-offset: -2px;
+}
+
+/* Value-internal segments: the host / port / branch / hash / path pieces each
+   get their own block, so a port reads as a port rather than as a tail of
+   plain text. */
+.mk-seg {
+  display: inline-block;
+  min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.mk-seg + .mk-seg {
+  margin-inline-start: var(--space-4);
+  padding-inline-start: var(--space-6);
+  border-inline-start: 1px solid rgb(var(--color-border) / 25%);
+}
+
+.mk-seg--muted {
+  color: rgb(var(--color-text-tertiary));
+}
+
+.mk-seg--accent {
+  color: rgb(var(--color-primary));
+  font-variant-numeric: tabular-nums;
+}
+
+/* The light-scheme brand orange sits at 4.40:1 on white — under AA for the
+   12px value text. Darkening it ~18% keeps the hue and clears the threshold.
+   Two selectors because the two surfaces pick their scheme differently: the
+   SPA stamps `data-mode` on <html> at runtime, while the prerendered fallback
+   page ships no script at all and follows the media query. */
+[data-mode='light'] .mk-seg--accent {
+  color: color-mix(in srgb, rgb(var(--color-primary)) 82%, #000);
+}
+
+@media (prefers-color-scheme: light) {
+  .mk-seg--accent {
+    color: color-mix(in srgb, rgb(var(--color-primary)) 82%, #000);
+  }
+}
+
+/* The arrow between the public and backend sides is a glyph, not a value
+   block: no divider on either side, and it follows the reading direction. */
+.mk-seg-arrow {
+  display: inline-flex;
+  align-items: center;
+  color: rgb(var(--color-text-tertiary));
+  margin-inline: var(--space-4);
+}
+
+[dir='rtl'] .mk-seg-arrow {
+  transform: scaleX(-1);
 }
 
 .mk-binaries {
@@ -237,10 +333,38 @@
 @media (max-width: 480px) {
   .mk-page {
     padding: var(--space-12);
+    align-content: start;
   }
 
-  .mk-kv-row {
-    grid-template-columns: 1fr;
-    gap: var(--space-2);
+  /* Half the card inset on a phone so the content keeps its breathing room
+     without eating a sixth of the screen. */
+  .mk-card {
+    --hk-pad: var(--space-12);
+  }
+
+  .mk-pairs .mk-pair__value {
+    flex: 1 1 auto;
+  }
+
+  /* HkStatusRow is a three-column flex row; on a phone the action column
+     squeezes the title into hyphenated fragments, so let it wrap onto its own
+     line and keep the name on one line. */
+  .mk-binary-list .hk-status-row {
+    flex-wrap: wrap;
+    row-gap: var(--space-6);
+  }
+
+  .mk-binary-list .hk-status-row__body {
+    min-width: 0;
+    flex: 1 1 60%;
+  }
+
+  .mk-binary-list .hk-status-row__action {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+  }
+
+  .mk-log {
+    width: min(100vw - 1.5rem, 100%);
   }
 }

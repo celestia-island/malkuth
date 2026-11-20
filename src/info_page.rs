@@ -1729,9 +1729,9 @@ async fn render_fallback_page(
     let backend = *state.backend_state.read().await;
     let (page, status_key) = page_state(state, backend);
     // ONE escaping point for every catalogue string: `raw` is the catalogue
-    // value, `text` is its escaped HTML form. Helpers that escape their own
-    // argument (kv_row, the row builders) take `raw`; everything interpolated
-    // straight into the page takes `text`.
+    // value, `text` is its escaped HTML form. `pair_tag` takes the raw value
+    // and escapes it itself; everything interpolated straight into the page
+    // takes `text`.
     let raw = |key: &str| -> String { i18n.get(key).cloned().unwrap_or_default() };
     let text = |key: &str| -> String { html_escape(&raw(key)) };
     let dir = if lang == "ar" { "rtl" } else { "ltr" };
@@ -1757,35 +1757,29 @@ async fn render_fallback_page(
     // have one (their "task" is the backend's own health).
     let task_row = if state.serve_backend.is_none() {
         let task = match state.status {
-            InfoStatus::Ready => text("task_idle"),
-            InfoStatus::Working => text("task_working"),
-            InfoStatus::Landing => text("task_landing"),
+            InfoStatus::Ready => raw("task_idle"),
+            InfoStatus::Working => raw("task_working"),
+            InfoStatus::Landing => raw("task_landing"),
         };
-        kv_row(&raw("task"), &task)
+        pair_tag(&raw("task"), &[task])
     } else {
         String::new()
     };
 
     let proxy_row = match state.proxy_endpoint.as_deref() {
-        Some(endpoint) => kv_row(&raw("proxy_label"), &html_escape(endpoint)),
+        Some(endpoint) => pair_tag(&raw("proxy_label"), &proxy_segments(endpoint)),
         None => String::new(),
     };
 
     let watch_row = if state.watch_paths.is_empty() {
         String::new()
     } else {
-        let mut chips = String::new();
-        for path in &state.watch_paths {
-            chips.push_str(&format!(
-                r#"<span class="hk-badge hk-badge-default mk-chip" data-size="sm" data-mono>{}</span>"#,
-                html_escape(path)
-            ));
-        }
-        format!(
-            r#"<div class="mk-kv-row"><dt>{}</dt><dd class="mk-chips">{}</dd></div>"#,
-            text("watch_label"),
-            chips
-        )
+        let label = raw("watch_label");
+        state
+            .watch_paths
+            .iter()
+            .map(|path| pair_tag(&label, &split_path(path)))
+            .collect::<String>()
     };
 
     let binaries_block = if binaries.is_empty() {
@@ -1794,10 +1788,10 @@ async fn render_fallback_page(
         let mut rows = String::new();
         for binary in &binaries {
             rows.push_str(&format!(
-                r#"<div class="hk-status-row hk-status-row--info"><span class="hk-status-row__chip"></span><div class="hk-status-row__body"><span class="hk-status-row__title">{name}</span><span class="hk-status-row__status">{time}</span></div><div class="hk-status-row__action"><span class="hk-badge hk-badge-default" data-size="sm" data-mono>{short}</span></div></div>"#,
+                r#"<div class="hk-status-row hk-status-row--info"><span class="hk-status-row__chip"></span><div class="hk-status-row__body"><span class="hk-status-row__title">{name}</span><span class="hk-status-row__status">{time}</span></div><div class="hk-status-row__action"><span class="mk-binary-actions">{identity}</span></div></div>"#,
                 name = html_escape(&binary.name),
                 time = html_escape(&binary.compile_time),
-                short = html_escape(&binary.hash_short),
+                identity = pair_tag("", &split_last(&binary.hash_short, ':')),
             ));
         }
         format!(
@@ -1885,13 +1879,88 @@ async fn render_fallback_page(
     fill(FALLBACK_PAGE_HTML, &refs)
 }
 
-/// One label/value row in the fallback page (`value` is already escaped HTML).
-fn kv_row(label: &str, value: &str) -> String {
+/// One body, two blocks: a label block and a value block in a single frame.
+/// The first segment reads as the muted head (host / directory / branch) and
+/// the rest as accent blocks (port / name / hash) — a single-segment value is
+/// content, so it takes the accent tone. Every input is RAW and is escaped
+/// here: segments are interpolated verbatim, so a caller that pre-escapes
+/// double-escapes. The fallback page ships no JS, so the value is a plain span
+/// rather than the SPA's copy button — a button here would be a dead control.
+fn pair_tag(label: &str, segments: &[String]) -> String {
+    let label_block = if label.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"<span class="mk-pair__label">{}</span>"#,
+            html_escape(label)
+        )
+    };
+    let body: String = segments
+        .iter()
+        .enumerate()
+        .map(|(i, segment)| {
+            if segment == "→" {
+                return r#"<span class="mk-seg-arrow" aria-hidden="true">→</span>"#.to_string();
+            }
+            let tone = if i == 0 && segments.len() > 1 {
+                "mk-seg mk-seg--muted"
+            } else {
+                "mk-seg mk-seg--accent"
+            };
+            format!(r#"<span class="{tone}">{}</span>"#, html_escape(segment))
+        })
+        .collect();
+    let group_label = if label.is_empty() {
+        String::new()
+    } else {
+        format!(r#" role="group" aria-label="{}""#, html_escape(label))
+    };
     format!(
-        r#"<div class="mk-kv-row"><dt>{}</dt><dd class="mk-kv-value">{}</dd></div>"#,
-        html_escape(label),
-        value
+        r#"<span class="mk-pair"{group_label}>{label_block}<span class="mk-pair__value">{body}</span></span>"#
     )
+}
+
+/// `host:port` / `branch:hash` → the two halves (single element when there is
+/// no separator on the left of the tail).
+fn split_last(value: &str, sep: char) -> Vec<String> {
+    match value.rsplit_once(sep) {
+        // The separator stays with the head so the rendered text still reads
+        // as one value (`0.0.0.0:` + `3097`) instead of two adjacent tokens
+        // that run together when copied.
+        Some((head, tail)) if !head.is_empty() && !tail.is_empty() => {
+            vec![format!("{head}{sep}"), tail.to_string()]
+        }
+        _ => vec![value.to_string()],
+    }
+}
+
+/// A path → its directory prefix (kept with the trailing slash) and file name.
+fn split_path(value: &str) -> Vec<String> {
+    match value.rsplit_once('/') {
+        Some((head, tail)) if !head.is_empty() && !tail.is_empty() => {
+            vec![format!("{head}/"), tail.to_string()]
+        }
+        _ => vec![value.to_string()],
+    }
+}
+
+/// `0.0.0.0:3097 → 3009-3009` → [0.0.0.0][3097] → [3009-3009].
+fn proxy_segments(endpoint: &str) -> Vec<String> {
+    let (public_side, backend_side) = match endpoint.split_once('→') {
+        Some((left, right)) => (left.trim(), Some(right.trim())),
+        None => match endpoint.split_once("->") {
+            Some((left, right)) => (left.trim(), Some(right.trim())),
+            None => (endpoint.trim(), None),
+        },
+    };
+    let mut segments = split_last(public_side, ':');
+    if let Some(backend) = backend_side {
+        if !backend.is_empty() {
+            segments.push("→".to_string());
+            segments.extend(split_last(backend, ':'));
+        }
+    }
+    segments
 }
 
 /// Single-pass `{{MALKUTH_*}}` substitution.
@@ -4050,9 +4119,17 @@ mod tests {
             html.contains("Refresh Now"),
             "manual action stays available"
         );
+        // Watch paths render as pair tags: the directory is the muted head and
+        // the file name the accent segment, so the path is no longer one
+        // contiguous string in the markup.
+        assert!(html.contains("mk-pair__label"), "watch row is a pair tag");
         assert!(
-            html.contains("/srv/celestia/demo/chest"),
-            "watch paths render"
+            html.contains("<span class=\"mk-seg mk-seg--muted\">/srv/celestia/demo/</span>"),
+            "watch path directory segment"
+        );
+        assert!(
+            html.contains("<span class=\"mk-seg mk-seg--accent\">chest</span>"),
+            "watch path file-name segment"
         );
 
         // ready on a supervisor door: success badge, retry copy at 10s with its
@@ -4253,6 +4330,12 @@ mod tests {
         let state = fallback_state(InfoStatus::Ready, None, BackendState::Unknown);
         let mut i18n: HashMap<String, String> = get_i18n("en").clone();
         let hostile = r#"a&b<c>"d'e<script>alert(1)</script>"#;
+        // The proxy endpoint and watch path travel through the split helpers
+        // into pair_tag, i.e. down the OTHER escaping path; give them hostile
+        // input too, or a pre-escaped call site there would stay invisible.
+        let mut state = state;
+        state.proxy_endpoint = Some(format!("{hostile}:3009 → 3000-3009"));
+        state.watch_paths = vec![format!("/srv/{hostile}/bin")];
         for key in [
             "heading",
             "tagline",
@@ -4278,6 +4361,12 @@ mod tests {
             "hostile catalogue values must be escaped"
         );
         assert!(!html.contains("<c>"), "no raw tag may survive");
+        // One escaping pass everywhere: a call site that pre-escaped would
+        // turn an `&` into `&amp;amp;` and be caught here.
+        assert!(
+            !html.contains("&amp;amp;"),
+            "a pre-escaped call site double-escapes"
+        );
         assert!(
             !html.contains("<script>alert(1)</script>"),
             "no executable markup may survive"
@@ -4346,6 +4435,39 @@ mod tests {
         // Localized value wins when present.
         i18n.insert("status_building".to_string(), "重建中".to_string());
         assert_eq!(probe_message(&i18n, "status_building", ""), "重建中");
+    }
+
+    /// Pair tags: one body, two blocks. The split helpers keep the head/tail
+    /// contract the SPA renders, and `pair_tag` escapes every raw input
+    /// exactly once (a caller that pre-escaped would double-escape).
+    #[test]
+    fn test_pair_tag_segments_and_escaping() {
+        assert_eq!(split_last("0.0.0.0:3097", ':'), vec!["0.0.0.0:", "3097"]);
+        assert_eq!(
+            split_last("master:51d846e", ':'),
+            vec!["master:", "51d846e"]
+        );
+        assert_eq!(split_last("0.0.0.0:", ':'), vec!["0.0.0.0:"]);
+        assert_eq!(split_path("/srv/bin/"), vec!["/srv/bin/"]);
+        assert_eq!(split_last("noseparator", ':'), vec!["noseparator"]);
+        assert_eq!(
+            split_path("/srv/celestia/chest-demo/chest-demo"),
+            vec!["/srv/celestia/chest-demo/", "chest-demo"]
+        );
+        assert_eq!(
+            proxy_segments("0.0.0.0:3097 → 3009-3009"),
+            vec!["0.0.0.0:", "3097", "→", "3009-3009"]
+        );
+        // Without a backend side the arrow never appears.
+        assert_eq!(proxy_segments("0.0.0.0:3097"), vec!["0.0.0.0:", "3097"]);
+
+        // Hostile input is escaped once: one `&` in, one `&amp;` out.
+        let html = pair_tag("a&b", &["x<c".to_string(), "y>d".to_string()]);
+        assert!(html.contains("a&amp;b"), "label escaped");
+        assert!(html.contains("x&lt;c"), "head segment escaped");
+        assert!(html.contains("y&gt;d"), "tail segment escaped");
+        assert!(!html.contains("&amp;amp;"), "no double escaping");
+        assert!(!html.contains("<c"), "no raw tag survives");
     }
 
     /// The fallback page's state/badge mapping and the auto-refresh rule.
