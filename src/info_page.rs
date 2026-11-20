@@ -1597,13 +1597,28 @@ fn state_wants_refresh(page_state: &str) -> bool {
 /// values — every substitution is escaped for the context it lands in — and
 /// drops the optional blocks.
 async fn serve_fallback(lang: &str, state: &InfoState, serve_allowed: bool) -> Response {
-    let i18n = get_i18n(lang);
+    Html(render_fallback_page(get_i18n(lang), lang, state, serve_allowed).await).into_response()
+}
+
+/// Core of the fallback renderer, with the catalogue injected so tests can
+/// feed hostile translations. Every catalogue value goes through `text()`
+/// (which escapes); only the structural blocks and the whitelisted `lang`/`dir`
+/// attributes are emitted raw.
+async fn render_fallback_page(
+    i18n: &HashMap<String, String>,
+    lang: &str,
+    state: &InfoState,
+    serve_allowed: bool,
+) -> String {
     let binaries = collect_binaries(&state.binary_programs).await;
     let backend = *state.backend_state.read().await;
     let (page, status_key) = page_state(state, backend);
-    let status_text = i18n.get(status_key).map_or("", |v| v.as_str());
-
-    let text = |key: &str| -> String { i18n.get(key).cloned().unwrap_or_default() };
+    // ONE escaping point for every catalogue string: `raw` is the catalogue
+    // value, `text` is its escaped HTML form. Helpers that escape their own
+    // argument (kv_row, the row builders) take `raw`; everything interpolated
+    // straight into the page takes `text`.
+    let raw = |key: &str| -> String { i18n.get(key).cloned().unwrap_or_default() };
+    let text = |key: &str| -> String { html_escape(&raw(key)) };
     let dir = if lang == "ar" { "rtl" } else { "ltr" };
     // Reloading can only carry the visitor into the backend when this origin
     // may be proxied at all; the SPA applies the same guard through
@@ -1620,7 +1635,7 @@ async fn serve_fallback(lang: &str, state: &InfoState, serve_allowed: bool) -> R
     let status_badge = format!(
         r#"<span class="hk-badge hk-badge-{}" data-size="md" data-pill><span data-el="dot"></span>{}</span>"#,
         badge_variant(page),
-        html_escape(status_text)
+        text(status_key)
     );
 
     // Supervisor doors also list their current task; service doors do not
@@ -1631,13 +1646,13 @@ async fn serve_fallback(lang: &str, state: &InfoState, serve_allowed: bool) -> R
             InfoStatus::Working => text("task_working"),
             InfoStatus::Landing => text("task_landing"),
         };
-        kv_row(&text("task"), &html_escape(&task))
+        kv_row(&raw("task"), &task)
     } else {
         String::new()
     };
 
     let proxy_row = match state.proxy_endpoint.as_deref() {
-        Some(endpoint) => kv_row(&text("proxy_label"), &html_escape(endpoint)),
+        Some(endpoint) => kv_row(&raw("proxy_label"), &html_escape(endpoint)),
         None => String::new(),
     };
 
@@ -1653,7 +1668,7 @@ async fn serve_fallback(lang: &str, state: &InfoState, serve_allowed: bool) -> R
         }
         format!(
             r#"<div class="mk-kv-row"><dt>{}</dt><dd class="mk-chips">{}</dd></div>"#,
-            html_escape(&text("watch_label")),
+            text("watch_label"),
             chips
         )
     };
@@ -1672,7 +1687,7 @@ async fn serve_fallback(lang: &str, state: &InfoState, serve_allowed: bool) -> R
         }
         format!(
             r#"<section class="mk-binaries"><h2 class="mk-section-title">{title}</h2><div class="mk-binary-list">{rows}</div></section>"#,
-            title = html_escape(&text("binaries_title")),
+            title = text("binaries_title"),
         )
     };
 
@@ -1696,8 +1711,7 @@ async fn serve_fallback(lang: &str, state: &InfoState, serve_allowed: bool) -> R
         };
         format!(
             r#"<p class="mk-retry"><span>{}</span><strong class="mk-countdown">{refresh_secs}</strong><span>{}</span></p>"#,
-            html_escape(&before),
-            html_escape(&after)
+            before, after
         )
     } else {
         String::new()
@@ -1711,7 +1725,7 @@ async fn serve_fallback(lang: &str, state: &InfoState, serve_allowed: bool) -> R
 
     let action_block = format!(
         r#"<div class="mk-actions"><a class="hk-btn hk-btn-primary hk-btn-sm" href=""><span class="hk-btn-label">{}</span></a></div>"#,
-        html_escape(&text("refresh_label"))
+        text("refresh_label")
     );
 
     // Keep the install-provenance line the hand-written page used to show
@@ -1727,7 +1741,6 @@ async fn serve_fallback(lang: &str, state: &InfoState, serve_allowed: bool) -> R
             install_method
         )
     };
-    let footer = text("footer");
 
     let slots: [(&str, String); 16] = [
         ("{{MALKUTH_LANG}}", lang.to_string()),
@@ -1747,14 +1760,14 @@ async fn serve_fallback(lang: &str, state: &InfoState, serve_allowed: bool) -> R
         ("{{MALKUTH_BINARIES_BLOCK}}", binaries_block),
         ("{{MALKUTH_RETRY_BLOCK}}", retry_block),
         ("{{MALKUTH_ACTION_BLOCK}}", action_block),
-        ("{{MALKUTH_FOOTER}}", html_escape(&footer)),
-        ("{{MALKUTH_VERSION_LINE}}", html_escape(&version_line)),
+        ("{{MALKUTH_FOOTER}}", text("footer")),
+        ("{{MALKUTH_VERSION_LINE}}", version_line),
     ];
     let refs: Vec<(&str, &str)> = slots
         .iter()
         .map(|(name, value)| (*name, value.as_str()))
         .collect();
-    Html(fill(FALLBACK_PAGE_HTML, &refs)).into_response()
+    fill(FALLBACK_PAGE_HTML, &refs)
 }
 
 /// One label/value row in the fallback page (`value` is already escaped HTML).
@@ -3679,6 +3692,47 @@ mod tests {
         assert!(
             !filled.contains("{{MALKUTH_"),
             "no marker may survive substitution"
+        );
+    }
+
+    /// Every catalogue value reaches the page escaped, including the slots
+    /// that are interpolated directly into element text. The hostile value
+    /// exercises `<`, `&`, quotes and the apostrophe, so a slot that forgets
+    /// `text()` fails here instead of shipping malformed markup when a
+    /// translator later writes `&` or a quote.
+    #[tokio::test]
+    async fn test_fallback_page_escapes_hostile_catalogue_values() {
+        let state = fallback_state(InfoStatus::Ready, None, BackendState::Unknown);
+        let mut i18n: HashMap<String, String> = get_i18n("en").clone();
+        let hostile = r#"a&b<c>"d'e<script>alert(1)</script>"#;
+        for key in [
+            "heading",
+            "tagline",
+            "footer",
+            "title",
+            "watch_label",
+            "task",
+            "task_idle",
+            "binaries_title",
+            "refresh_label",
+            "retry",
+            "retry_unit",
+            "redirect_before",
+            "redirect_after",
+            "install_label",
+            "proxy_label",
+        ] {
+            i18n.insert(key.to_string(), hostile.to_string());
+        }
+        let html = render_fallback_page(&i18n, "en", &state, true).await;
+        assert!(
+            html.contains("a&amp;b&lt;c&gt;&quot;d&#39;e"),
+            "hostile catalogue values must be escaped"
+        );
+        assert!(!html.contains("<c>"), "no raw tag may survive");
+        assert!(
+            !html.contains("<script>alert(1)</script>"),
+            "no executable markup may survive"
         );
     }
 
