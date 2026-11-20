@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "package": "@celestia-island/hikari",
-  "hikari_version": "0.55.424",
+  "hikari_version": "0.55.449",
   "dark": {
     "--color-primary": "255 140 66",
     "--color-on-primary": "255 255 255",

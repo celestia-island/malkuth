@@ -500,18 +500,24 @@ export default defineComponent({
 
     watch(terminalLog, () => feedTerminal(), { flush: 'post' })
     watch(terminalOpen, (open) => {
-      if (open) {
-        feedTerminal()
-        refitSettled()
-        nextTick(() => {
-          requestAnimationFrame(() => {
-            const vp = document.querySelector('.mk-log .xterm-viewport') as HTMLElement | null
-            if (vp && !overlayHandle.value) {
-              overlayHandle.value = attachOverlayScrollbars(vp, { axis: 'vertical' })
-            }
-          })
-        })
+      if (!open) {
+        // HkPopover destroys the panel on close, so the viewport DOM node the
+        // handle points at is gone — detach and clear so the next open
+        // attaches to the fresh node instead of silently keeping a stale one.
+        overlayHandle.value?.detach()
+        overlayHandle.value = null
+        return
       }
+      feedTerminal()
+      refitSettled()
+      nextTick(() => {
+        requestAnimationFrame(() => {
+          const vp = document.querySelector('.mk-log .xterm-viewport') as HTMLElement | null
+          if (vp && !overlayHandle.value) {
+            overlayHandle.value = attachOverlayScrollbars(vp, { axis: 'vertical' })
+          }
+        })
+      })
     })
 
     onMounted(() => {
