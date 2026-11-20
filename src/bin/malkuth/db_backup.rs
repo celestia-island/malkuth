@@ -283,20 +283,26 @@ fn sleep_until_next_run() -> Duration {
 /// wall clock is ambiguous (a DST gap where it does not exist, or a fold where
 /// it happens twice), take the `now + 24 h` fallback instead of guessing.
 ///
-/// This is deliberately not the pre-migration schedule on transition days.
-/// chrono 0.4.45's `and_local_timezone(..).single()` classifies the *boundary*
-/// instants differently: it reports exactly 02:00 on a spring-forward day as
+/// This is deliberately not the pre-migration schedule on every transition day;
+/// the two differ only where the boundary classification below disagrees
+/// (measured 2026: America/New_York on both of its transition days, Europe/London
+/// on its fall-back day, Europe/Berlin / Australia/Sydney / Pacific/Auckland on
+/// their spring-forward days). chrono 0.4.45's
+/// `and_local_timezone(..).single()` classifies the *boundary* instants
+/// differently: it reports exactly 02:00 on a spring-forward day as
 /// `Single` (its transition instant) and on fold days whose repeated hour does
 /// not cover 02:00 as ambiguous, while interior gap instants come back `None`.
 /// Measured over 2026 in America/New_York, Europe/London, Europe/Berlin,
 /// Australia/Sydney and Pacific/Auckland, the two schedules therefore diverge on
-/// 1–2 days per year. The divergence is intended: this code never resolves an
-/// ambiguous wall clock silently, so a restart on a transition day keeps aiming
-/// at 02:00 rather than drifting to the transition instant. The gap-day restart
-/// detail (waiting for the next day) is pinned by the test below rather than
-/// stated here, because whether 02:00 exists at all on a spring-forward day
-/// depends on the zone's jump (US/Berlin-style 02:00→03:00 skips it; London's
-/// 01:00→02:00 does not).
+/// 1–2 days per year for a given `now` (an uninterrupted daily chain lands on
+/// the same instants everywhere except America/New_York, Europe/London and
+/// Australia/Lord_Howe). The divergence is intended: this code never resolves an
+/// ambiguous wall clock silently, so on a fold day whose repeated hour does not
+/// cover 02:00 it keeps aiming at 02:00 instead of stepping a fixed 24 h. Where
+/// 02:00 itself is repeated (Europe/Berlin, Australia/Sydney, Pacific/Auckland)
+/// it takes the `now + 24 h` fallback, as it does on a spring-forward day whose
+/// jump skips 02:00 — whether the jump skips it depends on the zone
+/// (US/Berlin-style 02:00→03:00 does, London's 01:00→02:00 does not).
 ///
 /// `to_zoned_datetime`/`TimeZone::to_zoned_datetime` (jiff's `Compatible`
 /// strategy) must not be used here: it answers every ambiguous wall clock
@@ -465,6 +471,26 @@ mod tests {
         assert_eq!(
             strip_stamp("host-dbX20260804-120000"),
             "host-dbX20260804-120000"
+        );
+    }
+
+    /// The producer must stay on the UTC clock. A behavioural assertion cannot
+    /// tell UTC from local on a UTC host — and the canonical verification lane
+    /// *is* UTC — so pin the producer's source shape: swapping in a zoned clock
+    /// must be a visible edit, not a silent green.
+    #[test]
+    fn dump_stamp_producer_stays_on_the_utc_clock() {
+        const SOURCE: &str = include_str!("db_backup.rs");
+        let producer = SOURCE
+            .split("fn dump_stamp() -> String {")
+            .nth(1)
+            .expect("dump_stamp() must exist");
+        let body = producer.split('}').next().expect("dump_stamp() body");
+        assert!(
+            body.contains("dump_stamp_from(")
+                && body.contains("Timestamp::now()")
+                && !body.contains("ZonedDateTime"),
+            "dump_stamp() must route the UTC clock through dump_stamp_from; got {body:?}"
         );
     }
 
