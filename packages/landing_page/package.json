@@ -5,18 +5,23 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "serve": "python3 -m http.server 5173 -d ../../target/landing_page"
+    "build": "node scripts/build.mjs",
+    "build:spa": "vite build",
+    "build:ssr": "vite build --config vite.ssr.config.ts",
+    "gen-pages": "node scripts/build.mjs",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "vue": "^3",
-    "@xterm/xterm": "^6"
+    "@celestia-island/hikari": "^0.55",
+    "vue": "^3"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^*",
-    "@vitejs/plugin-vue-jsx": "^*",
-    "typescript": "^*",
-    "vite": "^*",
-    "sass": "^*"
+    "@vitejs/plugin-vue": "^6",
+    "@vitejs/plugin-vue-jsx": "^5",
+    "@vue/server-renderer": "^3",
+    "sass": "^1",
+    "typescript": "^6",
+    "vite": "^8",
+    "vue-tsc": "^3"
   }
 }

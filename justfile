@@ -73,3 +73,21 @@ ci:
 #   just npm-dist-local 0.1.0 path/to/malkuth x86_64-pc-windows-msvc
 npm-dist-local version='' binary='' target='':
     just npm-dist malkuth {{version}} {{binary}} {{target}}
+
+# ── Landing page artifacts (committed so node-less builds still work) ──────
+#
+# The landing page is a build-time product: the SPA is inlined into one HTML
+# file, the same hikari component tree is server-rendered into the no-JS
+# fallback page, and the theme snapshot feeds the 503 restart page. build.rs
+# reads target/landing_page/ when pnpm ran; otherwise it reads the committed
+# copies under src/info_page/ — regenerate those here.
+gen-pages:
+    cd packages/landing_page; pnpm build
+    cp target/landing_page/fallback.html src/info_page/fallback_page.html
+    cp target/landing_page/hikari-tokens.json src/info_page/design_tokens.json
+
+# NOTE: the emitted CSS is not byte-reproducible (the minifier may order
+# equal-length declarations differently between runs), so this is a
+# regenerate-and-review step, not a git-diff gate. build.rs always prefers
+# target/landing_page/ when pnpm ran; the committed copies only matter for
+# node-less builds (CI). Re-run this after touching packages/landing_page.

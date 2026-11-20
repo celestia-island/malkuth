@@ -1,10 +1,32 @@
-import { createApp } from 'vue'
-import LandingPage from './views/LandingPage'
-import { applyViewportPolicy } from './mobileViewport'
+// SPA bootstrap.
+//
+// Order matters:
+//   1. hikari's style entry first — it seeds the token sheets, reset and
+//      selection policy; page styles then layer on top.
+//   2. the mobile viewport policy before first paint (hikari contract).
+//   3. the malkuth theme vars (dark/light) — hikari components read colours
+//      from CSS custom properties, so this is the whole theme bridge.
+//   4. hikari's own component strings follow the page locale.
+import '@celestia-island/hikari/styles'
+import './styles/main.scss'
 
-// Mobile UX contract (hikari #325 sibling): normalize the viewport meta
-// before first paint so phones never refuse pinch zoom. The tap-highlight
-// reset ships via styles/main.scss.
+import { createApp } from 'vue'
+import { applyViewportPolicy, writeHkRuntime } from '@celestia-island/hikari/runtime'
+
+import { followSystemTheme } from './theme/malkuth'
+import LandingPage, { type MalkuthInit } from './views/LandingPage'
+
 applyViewportPolicy({ allowZoomOut: true })
+followSystemTheme()
+
+const init = (window as unknown as { __MALKUTH_INIT__?: MalkuthInit }).__MALKUTH_INIT__
+if (init?.lang) {
+  // `setLocale` is only re-exported through hikari's barrel (which drags the
+  // 3D/wasm surface), so steer the i18n context through the runtime facet
+  // instead — the same context, without the barrel.
+  // Unknown locales make the facet report `false` and stay on the English
+  // catalogue — safe to ignore.
+  writeHkRuntime('i18n', { type: 'setLocale', locale: init.lang })
+}
 
 createApp(LandingPage).mount('#app')

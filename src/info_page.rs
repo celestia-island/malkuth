@@ -17,6 +17,15 @@ include!(concat!(env!("OUT_DIR"), "/landing_page_html.rs"));
 
 const LOGO_BYTES: &[u8] = include_bytes!("info_page/logo.webp");
 
+/// The exact prefix `build.rs` emits when the SPA bundle was never built on
+/// this host. Any other content means a real single-file SPA is embedded.
+const SPA_SENTINEL: &str = "<html><body><h1>Malkuth</h1>";
+
+/// Is a real SPA bundle embedded (vs. the build.rs sentinel page)?
+fn spa_available() -> bool {
+    !LANDING_PAGE_HTML.starts_with(SPA_SENTINEL)
+}
+
 fn base64_encode(bytes: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -47,7 +56,7 @@ static I18N_DATA: LazyLock<HashMap<String, HashMap<String, String>>> = LazyLock:
     raw
 });
 
-const TEMPLATE: &str = include_str!("info_page/template.html");
+include!(concat!(env!("OUT_DIR"), "/fallback_page_html.rs"));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendState {
@@ -661,46 +670,12 @@ fn read_http_status_code(stream: &mut std::net::TcpStream, budget: Duration) -> 
 async fn build_spa_init(state: &InfoState, lang: &str, allowed: bool) -> serde_json::Value {
     let i18n = get_i18n(lang);
     let binaries = collect_binaries(&state.binary_programs).await;
-    let (spa_state, message) = if state.serve_backend.is_some() {
-        // Serve mode: reflect the real-time backend health so the landing
-        // page never promises a redirect while the service is unreachable.
-        match *state.backend_state.read().await {
-            BackendState::Up | BackendState::Unknown => (
-                "landing",
-                i18n.get("status_landing")
-                    .map_or("Redirecting shortly", |v| v.as_str()),
-            ),
-            BackendState::NotReady => (
-                "starting",
-                i18n.get("status_starting")
-                    .map_or("The service is starting up", |v| v.as_str()),
-            ),
-            BackendState::Down => (
-                "offline",
-                i18n.get("status_offline")
-                    .map_or("Service temporarily unavailable", |v| v.as_str()),
-            ),
-        }
-    } else {
-        match state.status {
-            InfoStatus::Ready => (
-                "ready",
-                i18n.get("status_ready")
-                    .map_or("All services running.", |v| v.as_str()),
-            ),
-            InfoStatus::Working => (
-                "building",
-                i18n.get("status_building")
-                    .map_or("Building...", |v| v.as_str()),
-            ),
-            InfoStatus::Landing => (
-                "landing",
-                i18n.get("status_landing")
-                    .map_or("Redirecting shortly", |v| v.as_str()),
-            ),
-        }
-    };
+    let backend = *state.backend_state.read().await;
+    let (spa_state, status_key) = page_state(state, backend);
+    let message = i18n.get(status_key).map_or("", |v| v.as_str());
+    let dir = if lang == "ar" { "rtl" } else { "ltr" };
     serde_json::json!({
+        // ── v1 keys (kept verbatim; the SPA reads all of them) ────────────
         "state": spa_state,
         "message": message,
         "binaries": binaries,
@@ -710,17 +685,29 @@ async fn build_spa_init(state: &InfoState, lang: &str, allowed: bool) -> serde_j
         "epoch": state.epoch.read().await.clone(),
         "logo_base64": base64_encode(LOGO_BYTES),
         // Whether a reload of this origin can actually be proxied into the
-        // backend (see `info_page`'s `serve_allowed`). The landing page uses
-        // it to skip its poll-driven ready-reload on doors that can only
-        // re-render themselves, where reloading is a no-op loop.
+        // backend (see `serve_allowed`). The landing page uses it to skip its
+        // poll-driven ready-reload on doors that can only re-render
+        // themselves, where reloading is a no-op loop.
         "serve": state.serve_backend.is_some() && allowed,
+        // ── v2 keys: locale + the full localized catalogue ────────────────
+        // The SPA used to carry its own en/zh copy table; it now renders the
+        // same 11-locale catalogue the server-side pages use, so a new key
+        // (or a new language) is added in exactly one place: all.json.
+        "lang": lang,
+        "dir": dir,
+        "title": i18n.get("title").cloned().unwrap_or_default(),
+        "i18n": i18n,
+        "timing": { "countdown_s": 3, "probe_interval_ms": 2000 },
+        "nonce": { "cookie": "__malkuth_nonce", "max_age_s": 604800, "path": "/" },
     })
 }
 
 async fn serve_spa(state: &InfoState, lang: &str, allowed: bool) -> Response {
     let init_data = build_spa_init(state, lang, allowed).await;
-    let init_json = serde_json::to_string(&init_data).unwrap_or_default();
-    let init_script = format!("<script>window.__MALKUTH_INIT__ = {};</script>", init_json);
+    let init_script = format!(
+        "<script>window.__MALKUTH_INIT__ = {};</script>",
+        init_json_script(&init_data)
+    );
     let result = LANDING_PAGE_HTML.replacen("</head>", &format!("{init_script}</head>"), 1);
     Html(result).into_response()
 }
@@ -1462,44 +1449,57 @@ fn request_interceptable(req: &Request) -> bool {
 }
 
 /// JSON probe endpoint for polling landing page.
+/// The probe's `message`: the localized status sentence, falling back to the
+/// English one when the catalogue key is missing — the SPA announces this
+/// string through its aria-live region, so an empty value would be announced
+/// as nothing.
+fn probe_message(i18n: &HashMap<String, String>, probe_key: &str, message: &str) -> String {
+    const DEFAULTS: &[(&str, &str)] = &[
+        ("status_landing", "Redirecting shortly"),
+        ("status_starting", "The service is starting up"),
+        ("status_offline", "Service temporarily unavailable"),
+        ("status_ready", "All services running."),
+        ("status_building", "Building..."),
+    ];
+    if !message.is_empty() {
+        return message.to_string();
+    }
+    if let Some(localized) = i18n.get(probe_key) {
+        if !localized.is_empty() {
+            return localized.clone();
+        }
+    }
+    DEFAULTS
+        .iter()
+        .find(|(key, _)| *key == probe_key)
+        .map_or_else(String::new, |(_, english)| (*english).to_string())
+}
+
 async fn serve_probe(lang: &str, state: &InfoState, allowed: bool) -> Response {
     let backend_state = *state.backend_state.read().await;
     let backend_up = state.serve_backend.is_some() && backend_state == BackendState::Up;
 
-    let (probe_state, msg) = if state.serve_backend.is_none() || backend_up {
-        ("ready", "")
-    } else if backend_state == BackendState::Unknown {
-        ("landing", "")
-    } else if backend_state == BackendState::NotReady {
-        ("starting", "")
-    } else {
-        ("offline", "")
-    };
-
-    let message = if msg.is_empty() {
-        let i18n = get_i18n(lang);
-        match probe_state {
-            "landing" => i18n
-                .get("status_landing")
-                .map_or("Redirecting shortly", |v| v.as_str())
-                .to_string(),
-            "starting" => i18n
-                .get("status_starting")
-                .map_or("The service is starting up", |v| v.as_str())
-                .to_string(),
-            "offline" => i18n
-                .get("status_offline")
-                .map_or("Service temporarily unavailable", |v| v.as_str())
-                .to_string(),
-            "ready" => i18n
-                .get("status_ready")
-                .map_or("All services running.", |v| v.as_str())
-                .to_string(),
-            _ => msg.to_string(),
+    // Serve doors keep the probe's redirect-oriented shape (`ready` when the
+    // backend answers: the SPA turns that into a stamp+reload). Supervisor
+    // doors take the same state the document renders, so a rebuild reports
+    // "building" here instead of flipping the page to a green "ready" on the
+    // next poll.
+    let (probe_state, msg, probe_key) = if state.serve_backend.is_some() {
+        if backend_up {
+            ("ready", "", "status_ready")
+        } else if backend_state == BackendState::Unknown {
+            ("landing", "", "status_landing")
+        } else if backend_state == BackendState::NotReady {
+            ("starting", "", "status_starting")
+        } else {
+            ("offline", "", "status_offline")
         }
     } else {
-        msg.to_string()
+        let (state_name, key) = page_state(state, backend_state);
+        (state_name, "", key)
     };
+
+    let message = probe_message(get_i18n(lang), probe_key, msg);
 
     let progress = state.build_progress.lock().ok().and_then(|g| g.clone());
     let runtime_log: Vec<String> = state
@@ -1558,116 +1558,297 @@ async fn serve_probe(lang: &str, state: &InfoState, allowed: bool) -> Response {
     resp
 }
 
-/// Serve the landing page with real-time backend status from the health checker.
-async fn serve_landing(lang: &str, state: &InfoState) -> Response {
-    let i18n = get_i18n(lang);
+/// One page state, shared by the SPA init payload and the fallback renderer.
+///
+/// `serve_backend` doors report the BACKEND's health (the supervised service is
+/// what the visitor came for); supervisor doors report their own task status.
+fn page_state(state: &InfoState, backend: BackendState) -> (&'static str, &'static str) {
+    if state.serve_backend.is_some() {
+        return match backend {
+            BackendState::Up | BackendState::Unknown => ("landing", "status_landing"),
+            BackendState::NotReady => ("starting", "status_starting"),
+            BackendState::Down => ("offline", "status_offline"),
+        };
+    }
+    match state.status {
+        InfoStatus::Ready => ("ready", "status_ready"),
+        InfoStatus::Working => ("building", "status_building"),
+        InfoStatus::Landing => ("landing", "status_landing"),
+    }
+}
+
+/// hikari badge variant for a page state (success / warning / error).
+fn badge_variant(page_state: &str) -> &'static str {
+    match page_state {
+        "ready" => "success",
+        "offline" => "error",
+        _ => "warning",
+    }
+}
+
+/// Auto-refresh delay for the no-JS fallback page, and whether it applies:
+/// an offline/starting backend gets the manual action only (the page would
+/// otherwise reload itself forever while the service is down).
+const FALLBACK_RETRY_SECS: u32 = 10;
+
+/// Redirecting a visitor into a reachable backend is a 3s beat (master's
+/// landing countdown); waiting out a rebuild is the slower retry cadence.
+const FALLBACK_REDIRECT_SECS: u32 = 3;
+
+/// Does this state self-refresh at all? This is the STATE axis only — the
+/// capability axis (may a reload actually reach a backend?) is ANDed in by
+/// [`serve_fallback`], because a non-proxy door that reloads would loop.
+fn state_wants_refresh(page_state: &str) -> bool {
+    page_state != "offline" && page_state != "starting"
+}
+
+/// Render the prerendered, no-JS fallback page.
+///
+/// The markup is the build-time SSR of the SAME hikari component tree the SPA
+/// renders (see packages/landing_page/src/ssr/prerender.ts), so the two
+/// surfaces cannot drift apart. This function only fills the per-request
+/// values — every substitution is escaped for the context it lands in — and
+/// drops the optional blocks.
+async fn serve_fallback(lang: &str, state: &InfoState, serve_allowed: bool) -> Response {
+    Html(render_fallback_page(get_i18n(lang), lang, state, serve_allowed).await).into_response()
+}
+
+/// Core of the fallback renderer, with the catalogue injected so tests can
+/// feed hostile translations.
+///
+/// Escaping invariant: every catalogue/state string goes through `text()` or
+/// `html_escape()` exactly once; the only raw slots are the structural blocks
+/// the renderer builds itself (badge/rows/retry/action/meta) and the
+/// whitelisted `lang`/`dir` values.
+async fn render_fallback_page(
+    i18n: &HashMap<String, String>,
+    lang: &str,
+    state: &InfoState,
+    serve_allowed: bool,
+) -> String {
     let binaries = collect_binaries(&state.binary_programs).await;
-    let backend_state = *state.backend_state.read().await;
-    let backend_up = state.serve_backend.is_some() && backend_state == BackendState::Up;
-
-    let init_state: &str = if state.serve_backend.is_none() || backend_up {
-        "ready"
-    } else if backend_state == BackendState::Unknown {
-        "landing"
-    } else if backend_state == BackendState::NotReady {
-        "starting"
+    let backend = *state.backend_state.read().await;
+    let (page, status_key) = page_state(state, backend);
+    // ONE escaping point for every catalogue string: `raw` is the catalogue
+    // value, `text` is its escaped HTML form. Helpers that escape their own
+    // argument (kv_row, the row builders) take `raw`; everything interpolated
+    // straight into the page takes `text`.
+    let raw = |key: &str| -> String { i18n.get(key).cloned().unwrap_or_default() };
+    let text = |key: &str| -> String { html_escape(&raw(key)) };
+    let dir = if lang == "ar" { "rtl" } else { "ltr" };
+    // Reloading can only carry the visitor into the backend when this origin
+    // may be proxied at all; the SPA applies the same guard through
+    // `init.serve`. Without it a --serve-host mismatch door would reload
+    // itself forever (the exact loop `build_spa_init` warns about).
+    let auto_refresh = serve_allowed && state_wants_refresh(page);
+    let redirecting = page == "landing";
+    let refresh_secs = if redirecting {
+        FALLBACK_REDIRECT_SECS
     } else {
-        "offline"
-    };
-    let init_msg = match init_state {
-        "ready" => i18n
-            .get("status_landing")
-            .map_or("Redirecting shortly", |v| v.as_str()),
-        "offline" => i18n
-            .get("status_offline")
-            .map_or("Service temporarily unavailable", |v| v.as_str()),
-        _ => i18n
-            .get("status_starting")
-            .map_or("The service is starting up", |v| v.as_str()),
+        FALLBACK_RETRY_SECS
     };
 
-    let mut ctx = tera::Context::new();
-    ctx.insert("lang", lang);
-    ctx.insert("dir", if lang == "ar" { "rtl" } else { "ltr" });
-    ctx.insert("title", i18n.get("title").map_or("Malkuth", |v| v.as_str()));
-    ctx.insert(
-        "heading",
-        i18n.get("heading").map_or("Malkuth", |v| v.as_str()),
-    );
-    ctx.insert("tagline", i18n.get("tagline").map_or("", |v| v.as_str()));
-    ctx.insert("ready", &backend_up);
-    ctx.insert(
-        "landing",
-        &(init_state == "ready" || init_state == "landing"),
-    );
-    ctx.insert(
-        "task",
-        i18n.get("task_landing").map_or("Landing", |v| v.as_str()),
-    );
-    ctx.insert("version", &state.version);
-    ctx.insert("status_text", init_msg);
-    ctx.insert("initial_state", init_state);
-    ctx.insert("malkuth_epoch", &*state.epoch.read().await);
-    ctx.insert("task_label", "");
-    ctx.insert(
-        "redirect_before",
-        i18n.get("redirect_before")
-            .map_or("Redirecting in", |v| v.as_str()),
-    );
-    ctx.insert(
-        "redirect_after",
-        i18n.get("redirect_after").map_or("seconds", |v| v.as_str()),
-    );
-    ctx.insert(
-        "cancel_label",
-        i18n.get("cancel_label").map_or("Cancel", |v| v.as_str()),
-    );
-    ctx.insert(
-        "refresh_label",
-        i18n.get("refresh_label")
-            .map_or("Refresh Now", |v| v.as_str()),
-    );
-    ctx.insert("retry_before", "");
-    ctx.insert("retry_after", "");
-    ctx.insert("retry_unit", "");
-    ctx.insert("retry_manual", "");
-    ctx.insert("footer", "");
-    ctx.insert("footer_prefix", "");
-    ctx.insert("footer_suffix", "");
-    ctx.insert("version_label", "");
-    ctx.insert(
-        "binaries_title",
-        i18n.get("binaries_title")
-            .map_or("Supervised Binaries", |v| v.as_str()),
-    );
-    ctx.insert("binaries", &binaries);
-    ctx.insert(
-        "proxy_endpoint",
-        state.proxy_endpoint.as_deref().unwrap_or(""),
-    );
-    ctx.insert(
-        "proxy_label",
-        i18n.get("proxy_label").unwrap_or(&"Proxy".to_string()),
-    );
-    ctx.insert(
-        "watch_label",
-        i18n.get("watch_label").unwrap_or(&"Watching".to_string()),
+    let status_badge = format!(
+        r#"<span class="hk-badge hk-badge-{}" data-size="md" data-pill><span data-el="dot"></span>{}</span>"#,
+        badge_variant(page),
+        text(status_key)
     );
 
-    if !state.watch_paths.is_empty() {
-        ctx.insert("watch_paths", &state.watch_paths);
-    }
-    ctx.insert("install_label", "");
-    ctx.insert("install_method", "");
-    ctx.insert("copy_hint", "");
-    ctx.insert("copied_msg", "");
-    ctx.insert("copy_fail_msg", "");
-    ctx.insert("logo_base64", &base64_encode(LOGO_BYTES));
+    // Supervisor doors also list their current task; service doors do not
+    // have one (their "task" is the backend's own health).
+    let task_row = if state.serve_backend.is_none() {
+        let task = match state.status {
+            InfoStatus::Ready => text("task_idle"),
+            InfoStatus::Working => text("task_working"),
+            InfoStatus::Landing => text("task_landing"),
+        };
+        kv_row(&raw("task"), &task)
+    } else {
+        String::new()
+    };
 
-    match tera::Tera::one_off(TEMPLATE, &ctx, false) {
-        Ok(html) => Html(html).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed: {e}")).into_response(),
+    let proxy_row = match state.proxy_endpoint.as_deref() {
+        Some(endpoint) => kv_row(&raw("proxy_label"), &html_escape(endpoint)),
+        None => String::new(),
+    };
+
+    let watch_row = if state.watch_paths.is_empty() {
+        String::new()
+    } else {
+        let mut chips = String::new();
+        for path in &state.watch_paths {
+            chips.push_str(&format!(
+                r#"<span class="hk-badge hk-badge-default mk-chip" data-size="sm" data-mono>{}</span>"#,
+                html_escape(path)
+            ));
+        }
+        format!(
+            r#"<div class="mk-kv-row"><dt>{}</dt><dd class="mk-chips">{}</dd></div>"#,
+            text("watch_label"),
+            chips
+        )
+    };
+
+    let binaries_block = if binaries.is_empty() {
+        String::new()
+    } else {
+        let mut rows = String::new();
+        for binary in &binaries {
+            rows.push_str(&format!(
+                r#"<div class="hk-status-row hk-status-row--info"><span class="hk-status-row__chip"></span><div class="hk-status-row__body"><span class="hk-status-row__title">{name}</span><span class="hk-status-row__status">{time}</span></div><div class="hk-status-row__action"><span class="hk-badge hk-badge-default" data-size="sm" data-mono>{short}</span></div></div>"#,
+                name = html_escape(&binary.name),
+                time = html_escape(&binary.compile_time),
+                short = html_escape(&binary.hash_short),
+            ));
+        }
+        format!(
+            r#"<section class="mk-binaries"><h2 class="mk-section-title">{title}</h2><div class="mk-binary-list">{rows}</div></section>"#,
+            title = text("binaries_title"),
+        )
+    };
+
+    let retry_block = if auto_refresh {
+        // Redirecting states keep the landing copy ("Redirecting in 3
+        // seconds"); waiting out a rebuild uses the retry copy ("Page will
+        // refresh automatically in 10 seconds"). `{n}` is the number slot.
+        let (before, after) = if redirecting {
+            (text("redirect_before"), text("redirect_after"))
+        } else {
+            // `retry` ends at `{n}` in several locales; the unit lives in its
+            // own key, so splice it when the sentence has no tail of its own.
+            let retry = text("retry");
+            match retry.split_once("{n}") {
+                Some((before, after)) if after.trim().is_empty() => {
+                    (before.to_string(), format!(" {}", text("retry_unit")))
+                }
+                Some((before, after)) => (before.to_string(), after.to_string()),
+                None => (retry.clone(), String::new()),
+            }
+        };
+        format!(
+            r#"<p class="mk-retry"><span>{}</span><strong class="mk-countdown">{refresh_secs}</strong><span>{}</span></p>"#,
+            before, after
+        )
+    } else {
+        String::new()
+    };
+
+    let auto_refresh_meta = if auto_refresh {
+        format!(r#"<meta http-equiv="refresh" content="{refresh_secs}">"#)
+    } else {
+        String::new()
+    };
+
+    let action_block = format!(
+        r#"<div class="mk-actions"><a class="hk-btn hk-btn-primary hk-btn-sm" href=""><span class="hk-btn-label">{}</span></a></div>"#,
+        text("refresh_label")
+    );
+
+    // Keep the install-provenance line the hand-written page used to show
+    // (`v0.6.0 (Installed via cargo)`); the SPA shows the bare version.
+    let install_method = detect_install_method();
+    let version_line = if install_method.is_empty() {
+        format!("v{}", html_escape(&state.version))
+    } else {
+        format!(
+            "v{} ({} {})",
+            html_escape(&state.version),
+            text("install_label"),
+            html_escape(install_method)
+        )
+    };
+
+    let slots: [(&str, String); 16] = [
+        ("{{MALKUTH_LANG}}", lang.to_string()),
+        ("{{MALKUTH_DIR}}", dir.to_string()),
+        ("{{MALKUTH_TITLE}}", text("title")),
+        ("{{MALKUTH_AUTO_REFRESH}}", auto_refresh_meta),
+        (
+            "{{MALKUTH_LOGO_SRC}}",
+            format!("data:image/webp;base64,{}", base64_encode(LOGO_BYTES)),
+        ),
+        ("{{MALKUTH_HEADING}}", text("heading")),
+        ("{{MALKUTH_TAGLINE}}", text("tagline")),
+        ("{{MALKUTH_STATUS_BADGE}}", status_badge),
+        ("{{MALKUTH_TASK_ROW}}", task_row),
+        ("{{MALKUTH_PROXY_ROW}}", proxy_row),
+        ("{{MALKUTH_WATCH_ROW}}", watch_row),
+        ("{{MALKUTH_BINARIES_BLOCK}}", binaries_block),
+        ("{{MALKUTH_RETRY_BLOCK}}", retry_block),
+        ("{{MALKUTH_ACTION_BLOCK}}", action_block),
+        ("{{MALKUTH_FOOTER}}", text("footer")),
+        ("{{MALKUTH_VERSION_LINE}}", version_line),
+    ];
+    let refs: Vec<(&str, &str)> = slots
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
+    fill(FALLBACK_PAGE_HTML, &refs)
+}
+
+/// One label/value row in the fallback page (`value` is already escaped HTML).
+fn kv_row(label: &str, value: &str) -> String {
+    format!(
+        r#"<div class="mk-kv-row"><dt>{}</dt><dd class="mk-kv-value">{}</dd></div>"#,
+        html_escape(label),
+        value
+    )
+}
+
+/// Single-pass `{{MALKUTH_*}}` substitution.
+///
+/// One pass only: substituted values are never re-scanned, so a value that
+/// happens to contain a marker cannot rewrite it. Unknown markers are left
+/// verbatim (build.rs already pins the marker set; the test below asserts the
+/// rendered page contains none).
+fn fill(template: &str, slots: &[(&str, &str)]) -> String {
+    let mut out = String::with_capacity(template.len() + 512);
+    let mut rest = template;
+    while let Some(idx) = rest.find("{{MALKUTH_") {
+        out.push_str(&rest[..idx]);
+        let after = &rest[idx..];
+        match after.find("}}") {
+            Some(end) => {
+                let marker = &after[..end + 2];
+                match slots.iter().find(|(name, _)| *name == marker) {
+                    Some((_, value)) => out.push_str(value),
+                    None => out.push_str(marker),
+                }
+                rest = &after[end + 2..];
+            }
+            None => {
+                out.push_str(after);
+                rest = "";
+            }
+        }
     }
+    out.push_str(rest);
+    out
+}
+
+/// HTML text/attribute escaping (`& < > " '`).
+fn html_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// JSON safe to embed inside a `<script>` element: `<`, `>`, `&` are escaped
+/// to their `\uXXXX` forms, so no payload value can close the element early.
+fn init_json_script(value: &serde_json::Value) -> String {
+    let raw = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
+    raw.replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026")
 }
 
 async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Response {
@@ -1720,169 +1901,21 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
                     return resp;
                 }
             }
-            if !LANDING_PAGE_HTML.starts_with("<html><body><h1>Malkuth</h1>") {
-                return serve_spa(&state, &lang, allowed).await;
-            }
-            return serve_landing(&lang, &state).await;
+            return serve_document(&lang, &state, allowed).await;
         }
     }
 
-    if !LANDING_PAGE_HTML.starts_with("<html><body><h1>Malkuth</h1>") {
-        return serve_spa(&state, &lang, serve_allowed).await;
-    }
+    serve_document(&lang, &state, serve_allowed).await
+}
 
-    // Normal (non-serve) rendering below
-    let i18n = get_i18n(&lang);
-    // Only the info-template render needs the binaries — collected here,
-    // AFTER the probe and proxy branches returned, so polled probes and
-    // proxied requests never pay even the memo's stat (R1 catch).
-    let binaries = collect_binaries(&state.binary_programs).await;
-
-    let ready = state.status == InfoStatus::Ready;
-    let landing = state.status == InfoStatus::Landing;
-    let task = match state.status {
-        InfoStatus::Ready => i18n.get("task_idle").map_or("Idle", |v| v.as_str()),
-        InfoStatus::Working => i18n
-            .get("task_working")
-            .map_or("Starting / Restarting", |v| v.as_str()),
-        InfoStatus::Landing => i18n.get("task_landing").map_or("Landing", |v| v.as_str()),
-    };
-
-    let mut context = tera::Context::new();
-    context.insert("lang", &lang);
-    context.insert("dir", if lang == "ar" { "rtl" } else { "ltr" });
-    context.insert("title", i18n.get("title").map_or("Malkuth", |v| v.as_str()));
-    context.insert(
-        "heading",
-        i18n.get("heading").map_or("Malkuth", |v| v.as_str()),
-    );
-    context.insert("tagline", i18n.get("tagline").map_or("", |v| v.as_str()));
-    context.insert(
-        "version_label",
-        i18n.get("version").map_or("Version", |v| v.as_str()),
-    );
-    context.insert(
-        "task_label",
-        i18n.get("task").map_or("Current Task", |v| v.as_str()),
-    );
-    let retry_full = i18n.get("retry").map_or("", |v| v.as_str());
-    let (retry_before, retry_after) = retry_full.split_once("{n}").unwrap_or((retry_full, ""));
-    context.insert("retry_before", retry_before);
-    context.insert("retry_after", retry_after);
-    context.insert("footer", i18n.get("footer").map_or("", |v| v.as_str()));
-    context.insert(
-        "status_text",
-        if landing {
-            i18n.get("status_landing")
-                .map_or("Redirecting shortly", |v| v.as_str())
-        } else if ready {
-            i18n.get("status_ready")
-                .map_or("All services running.", |v| v.as_str())
-        } else {
-            i18n.get("status_starting")
-                .map_or("Starting...", |v| v.as_str())
-        },
-    );
-    context.insert("ready", &ready);
-    context.insert("landing", &landing);
-    context.insert("initial_state", "");
-    context.insert("task", task);
-    context.insert("version", &state.version);
-    // No --serve backend on this path: the cookie token stays at its
-    // legacy constant so the template renders a valid cookie write.
-    context.insert("malkuth_epoch", "1");
-
-    let install_method = detect_install_method();
-    context.insert(
-        "install_label",
-        i18n.get("install_label")
-            .map_or("Installed via", |v| v.as_str()),
-    );
-    context.insert("install_method", install_method);
-    context.insert("binaries", &binaries);
-
-    context.insert(
-        "binaries_title",
-        i18n.get("binaries_title")
-            .map_or("Supervised Binaries", |v| v.as_str()),
-    );
-    let redirect_full = i18n.get("redirect_before").map_or("", |v| v.as_str());
-    let (redirect_before, redirect_after) = (
-        redirect_full,
-        i18n.get("redirect_after")
-            .map_or("seconds...", |v| v.as_str()),
-    );
-    context.insert("redirect_before", redirect_before);
-    context.insert("redirect_after", redirect_after);
-    context.insert(
-        "cancel_label",
-        i18n.get("cancel_label").map_or("Cancel", |v| v.as_str()),
-    );
-    context.insert(
-        "refresh_label",
-        i18n.get("refresh_label")
-            .map_or("Refresh Now", |v| v.as_str()),
-    );
-    context.insert(
-        "retry_unit",
-        i18n.get("retry_unit").map_or("seconds", |v| v.as_str()),
-    );
-    context.insert(
-        "retry_manual",
-        i18n.get("retry_manual")
-            .map_or("You can also refresh manually.", |v| v.as_str()),
-    );
-    context.insert(
-        "copy_hint",
-        i18n.get("copy_hint")
-            .map_or("Click to copy", |v| v.as_str()),
-    );
-    context.insert(
-        "copied_msg",
-        i18n.get("copied_msg")
-            .map_or("Copied to clipboard", |v| v.as_str()),
-    );
-    context.insert(
-        "copy_fail_msg",
-        i18n.get("copy_fail_msg")
-            .map_or("Copy failed", |v| v.as_str()),
-    );
-    let footer_full = i18n.get("footer").map_or("", |v| v.as_str());
-    if let Some((before, after)) = footer_full.split_once("Malkuth") {
-        context.insert("footer_prefix", before);
-        context.insert("footer_suffix", after);
+/// The document a browser gets: the embedded SPA when one was built, the
+/// prerendered fallback page otherwise. `allowed` says whether this origin may
+/// be proxied into a --serve backend (the SPA's poll-driven reload honours it).
+async fn serve_document(lang: &str, state: &InfoState, allowed: bool) -> Response {
+    if spa_available() {
+        serve_spa(state, lang, allowed).await
     } else {
-        context.insert("footer_prefix", footer_full);
-        context.insert("footer_suffix", "");
-    }
-
-    context.insert("logo_base64", &base64_encode(LOGO_BYTES));
-
-    context.insert(
-        "proxy_label",
-        i18n.get("proxy_label").unwrap_or(&"Proxy".to_string()),
-    );
-    context.insert(
-        "watch_label",
-        i18n.get("watch_label").unwrap_or(&"Watching".to_string()),
-    );
-    if let Some(ref ep) = state.proxy_endpoint {
-        context.insert("proxy_endpoint", ep);
-    }
-    if !state.watch_paths.is_empty() {
-        context.insert("watch_paths", &state.watch_paths);
-    }
-
-    match tera::Tera::one_off(TEMPLATE, &context, false) {
-        Ok(html) => Html(html).into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to render info page template");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Template error: {e}"),
-            )
-                .into_response()
-        }
+        serve_fallback(lang, state, allowed).await
     }
 }
 
@@ -2231,155 +2264,6 @@ mod tests {
         format!("http://{door}")
     }
 
-    /// The two-line wrap contract (2026-10-17 user direction): a binary
-    /// row that cannot fit on one line (phones) flips to TWO right-aligned
-    /// lines — separator hidden, both lines' boxes stretched onto one left
-    /// and one right edge. Pinned at the source level for BOTH rendering
-    /// surfaces: the server-side template and the embedded SPA build.
-    /// Strip `/* … */` comments so contract assertions match DECLARATIONS,
-    /// not the comment prose that describes them (R1' mutation catch:
-    /// deleting `min-width: 0;` stayed green because the rule's own
-    /// comment still spelled the words).
-    fn strip_css_comments(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        let mut rest = s;
-        while let Some(i) = rest.find("/*") {
-            out.push_str(&rest[..i]);
-            match rest[i..].find("*/") {
-                Some(j) => rest = &rest[i + j + 2..],
-                None => rest = "",
-            }
-        }
-        out.push_str(rest);
-        out
-    }
-
-    #[test]
-    fn test_binary_detail_two_line_wrap_contract() {
-        let t = include_str!("info_page/template.html");
-        let css = strip_css_comments(t);
-        // Extract ONLY the .binary-detail rule (up to its closing brace)
-        // — asserting against the file tail let later rules satisfy the
-        // assertions (same R1' catch).
-        let start = css.find(".binary-detail {").expect("detail rule exists");
-        let block_end = css[start..]
-            .find("\n  }")
-            .map(|i| start + i)
-            .expect("detail rule closes");
-        let detail = &css[start..block_end];
-        // The wrapped-state rule gets its OWN slice — unscoped `contains`
-        // were satisfied by `.watch-list`'s identical declarations (R2'
-        // mutation catch).
-        let wstart = css
-            .find(".binary-detail.is-wrapped {")
-            .expect("wrapped rule exists");
-        let wrapped = &css[wstart
-            ..css[wstart..]
-                .find("\n  }")
-                .map(|i| wstart + i)
-                .expect("wrapped rule closes")];
-        // One-line state: a no-wrap flex row — never wraps mid-separator,
-        // with unsplrinkable children (flex: none) and a shrinkable track
-        // contribution (min-width: 0) so the probe compares the NATURAL
-        // one-line width against the REAL available width. The end-edge
-        // alignment and the gap ride along in the same rule.
-        assert!(
-            detail.contains("display: flex") && detail.contains("flex-wrap: nowrap"),
-            "template one-line state is a no-wrap flex row"
-        );
-        assert!(
-            detail.contains("min-width: 0;"),
-            "template detail lets the 1fr track shrink to the real width"
-        );
-        assert!(
-            detail.contains("text-align: end;"),
-            "template detail aligns its lines to the end edge"
-        );
-        assert!(
-            detail.contains("column-gap: 0.6ch;"),
-            "template detail gap feeds the probe's one-line width"
-        );
-        assert!(
-            css.contains(".binary-detail > span"),
-            "template children selector present"
-        );
-        assert!(
-            css.split(".binary-detail > span")
-                .nth(1)
-                .unwrap_or("")
-                .starts_with(" {")
-                && css.contains("flex: none;"),
-            "template children are unsplrinkable one-line atoms"
-        );
-        // Two-line state: column, stretched boxes (both edges aligned),
-        // separator hidden.
-        assert!(
-            css.contains(".binary-detail.is-wrapped"),
-            "wrapped state class"
-        );
-        assert!(
-            wrapped.contains("flex-direction: column") && wrapped.contains("align-items: stretch"),
-            "wrapped state is a stretched column"
-        );
-        assert!(
-            css.contains(".binary-detail.is-wrapped .binary-sep"),
-            "separator hides in the wrapped state"
-        );
-        // The separator is its own element (no dangling literal " · " text
-        // between the spans) and the measured flip probe ships with it.
-        assert!(
-            t.contains("class=\"binary-sep\""),
-            "separator is a dedicated element"
-        );
-        assert!(
-            !t.contains("</span> · <span class=\"binary-hash\""),
-            "no literal separator text can dangle on wrap"
-        );
-        assert!(t.contains("probeDetailWrap"), "wrap probe script present");
-
-        // The SPA carries the SAME contract in its embedded build (skip on
-        // the pnpm-less fallback build — nothing embedded to pin there).
-        // The inlined CSS is minified and the minifier reorders
-        // declarations, so the pins read the RULE SLICES: the `.binary-detail`
-        // block up to its closing brace for the one-line state, and the
-        // exact full wrapped/sep-hide rules (R2' mutation catches: bare
-        // markers were satisfied by unrelated rules carrying the same
-        // declarations).
-        if LANDING_PAGE_HTML.starts_with("<html><body><h1>Malkuth</h1>") {
-            return;
-        }
-        let spa_start = LANDING_PAGE_HTML
-            .find(".binary-detail{")
-            .expect("SPA detail rule exists");
-        let spa_detail = &LANDING_PAGE_HTML[spa_start
-            ..LANDING_PAGE_HTML[spa_start..]
-                .find('}')
-                .map(|i| spa_start + i)
-                .expect("SPA detail rule closes")];
-        for marker in [
-            "flex-wrap:nowrap",
-            "min-width:0",
-            "text-align:end",
-            "column-gap:.6ch",
-        ] {
-            assert!(
-                spa_detail.contains(marker),
-                "embedded SPA `.binary-detail` rule must carry `{marker}`"
-            );
-        }
-        for marker in [
-            "__wrapProbe",
-            "flex:none",
-            ".binary-detail.is-wrapped{flex-direction:column;align-items:stretch;row-gap:2px}",
-            ".binary-detail.is-wrapped .binary-row__sep{display:none}",
-        ] {
-            assert!(
-                LANDING_PAGE_HTML.contains(marker),
-                "embedded SPA build must carry `{marker}` (minified CSS or probe)"
-            );
-        }
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_landing_page_states_the_binary_identity_per_render() {
         let path = temp_binary("e2e");
@@ -2574,171 +2458,33 @@ mod tests {
 
     #[test]
     fn test_all_langs_have_data() {
+        // The SPA renders this catalogue verbatim (it carries no copy table of
+        // its own any more), so a key present in only some languages would
+        // surface as an English fragment inside a translated page.
+        let english: Vec<&String> = {
+            let mut keys: Vec<&String> = get_i18n("en").keys().collect();
+            keys.sort();
+            keys
+        };
+        assert!(
+            !english.is_empty(),
+            "the English catalogue must not be empty"
+        );
         for lang in SUPPORTED {
             let i18n = get_i18n(lang);
-            assert!(
-                i18n.contains_key("title"),
-                "Missing 'title' for language: {lang}"
+            let mut keys: Vec<&String> = i18n.keys().collect();
+            keys.sort();
+            assert_eq!(
+                keys, english,
+                "{lang} must carry exactly the English key set (missing or extra keys)"
             );
-            assert!(
-                i18n.contains_key("heading"),
-                "Missing 'heading' for language: {lang}"
-            );
+            for required in ["title", "heading", "tagline", "footer", "binaries_title"] {
+                assert!(
+                    i18n.contains_key(required),
+                    "Missing '{required}' for language: {lang}"
+                );
+            }
         }
-    }
-
-    #[test]
-    fn test_template_renders() {
-        let mut ctx = tera::Context::new();
-        ctx.insert("lang", "en");
-        ctx.insert("dir", "ltr");
-        ctx.insert("title", "Malkuth");
-        ctx.insert("heading", "Malkuth");
-        ctx.insert("tagline", "Supervisor");
-        ctx.insert("version_label", "Version");
-        ctx.insert("task_label", "Task");
-        ctx.insert("retry_before", "Auto-refresh in ");
-        ctx.insert("retry_after", " seconds...");
-        ctx.insert("footer", "GitHub");
-        ctx.insert("status_text", "Starting...");
-        ctx.insert("ready", &false);
-        ctx.insert("landing", &false);
-        ctx.insert("initial_state", "");
-        ctx.insert("task", "Startup");
-        ctx.insert("logo_base64", "dGVzdA==");
-        ctx.insert("malkuth_epoch", "1");
-        ctx.insert("proxy_label", "Proxy");
-        ctx.insert("watch_label", "Watching");
-        ctx.insert("version", "0.2.0");
-        ctx.insert("binaries", &Vec::<serde_json::Value>::new());
-        ctx.insert("binaries_title", "Supervised Binaries");
-        ctx.insert("redirect_before", "Redirecting in");
-        ctx.insert("redirect_after", "seconds...");
-        ctx.insert("cancel_label", "Cancel");
-        ctx.insert("refresh_label", "Refresh Now");
-        ctx.insert("retry_unit", "seconds");
-        ctx.insert("retry_manual", "You can also refresh manually.");
-        ctx.insert("copy_hint", "Click to copy");
-        ctx.insert("copied_msg", "Copied to clipboard");
-        ctx.insert("copy_fail_msg", "Copy failed");
-        ctx.insert("footer_prefix", "Powered by ");
-        ctx.insert(
-            "footer_suffix",
-            " — a composable service-supervision toolkit for Rust",
-        );
-
-        match tera::Tera::one_off(TEMPLATE, &ctx, false) {
-            Ok(html) => println!("OK: {} bytes", html.len()),
-            Err(e) => panic!("Template error: {:#?}", e),
-        }
-    }
-
-    /// When the backend is unreachable the serve-mode landing page must not
-    /// render a redirect countdown; it shows the refresh action instead.
-    #[test]
-    fn test_template_renders_offline_without_countdown() {
-        let mut ctx = tera::Context::new();
-        ctx.insert("lang", "zh-Hans");
-        ctx.insert("dir", "ltr");
-        ctx.insert("title", "Malkuth");
-        ctx.insert("heading", "Malkuth");
-        ctx.insert("tagline", "Supervisor");
-        ctx.insert("version_label", "Version");
-        ctx.insert("task_label", "");
-        ctx.insert("retry_before", "");
-        ctx.insert("retry_after", "");
-        ctx.insert("retry_unit", "");
-        ctx.insert("retry_manual", "");
-        ctx.insert("footer", "");
-        ctx.insert("status_text", "当前服务暂不可达");
-        ctx.insert("ready", &false);
-        ctx.insert("landing", &false);
-        ctx.insert("initial_state", "offline");
-        ctx.insert("task", "Landing");
-        ctx.insert("logo_base64", "dGVzdA==");
-        ctx.insert("malkuth_epoch", "1");
-        ctx.insert("proxy_label", "Proxy");
-        ctx.insert("watch_label", "Watching");
-        ctx.insert("version", "0.2.8");
-        ctx.insert("binaries", &Vec::<serde_json::Value>::new());
-        ctx.insert("binaries_title", "Supervised Binaries");
-        ctx.insert("redirect_before", "将在");
-        ctx.insert("redirect_after", "秒后跳转");
-        ctx.insert("cancel_label", "取消跳转");
-        ctx.insert("refresh_label", "立即刷新");
-        ctx.insert("copy_hint", "Click to copy");
-        ctx.insert("copied_msg", "Copied");
-        ctx.insert("copy_fail_msg", "Copy failed");
-        ctx.insert("footer_prefix", "");
-        ctx.insert("footer_suffix", "");
-
-        let html = tera::Tera::one_off(TEMPLATE, &ctx, false).expect("Template error");
-        assert!(
-            !html.contains("id=\"retryHint\""),
-            "offline page must not render the countdown hint"
-        );
-        assert!(
-            html.contains(">立即刷新</button>"),
-            "offline page must offer the refresh action"
-        );
-        assert!(
-            !html.contains(">取消跳转</button>"),
-            "offline page must not offer a cancel-redirect action"
-        );
-    }
-
-    /// A backend that reports not-ready (starting / draining) must not render
-    /// a redirect countdown either; the page polls until it turns ready.
-    #[test]
-    fn test_template_renders_starting_without_countdown() {
-        let mut ctx = tera::Context::new();
-        ctx.insert("lang", "zh-Hans");
-        ctx.insert("dir", "ltr");
-        ctx.insert("title", "Malkuth");
-        ctx.insert("heading", "Malkuth");
-        ctx.insert("tagline", "Supervisor");
-        ctx.insert("version_label", "Version");
-        ctx.insert("task_label", "");
-        ctx.insert("retry_before", "");
-        ctx.insert("retry_after", "");
-        ctx.insert("retry_unit", "");
-        ctx.insert("retry_manual", "");
-        ctx.insert("footer", "");
-        ctx.insert("status_text", "服务正在启动中");
-        ctx.insert("ready", &false);
-        ctx.insert("landing", &false);
-        ctx.insert("initial_state", "starting");
-        ctx.insert("task", "Landing");
-        ctx.insert("logo_base64", "dGVzdA==");
-        ctx.insert("malkuth_epoch", "1");
-        ctx.insert("proxy_label", "Proxy");
-        ctx.insert("watch_label", "Watching");
-        ctx.insert("version", "0.2.10");
-        ctx.insert("binaries", &Vec::<serde_json::Value>::new());
-        ctx.insert("binaries_title", "Supervised Binaries");
-        ctx.insert("redirect_before", "将在");
-        ctx.insert("redirect_after", "秒后跳转");
-        ctx.insert("cancel_label", "取消跳转");
-        ctx.insert("refresh_label", "立即刷新");
-        ctx.insert("copy_hint", "Click to copy");
-        ctx.insert("copied_msg", "Copied");
-        ctx.insert("copy_fail_msg", "Copy failed");
-        ctx.insert("footer_prefix", "");
-        ctx.insert("footer_suffix", "");
-
-        let html = tera::Tera::one_off(TEMPLATE, &ctx, false).expect("Template error");
-        assert!(
-            !html.contains("id=\"retryHint\""),
-            "starting page must not render the countdown hint"
-        );
-        assert!(
-            html.contains(">立即刷新</button>"),
-            "starting page must offer the refresh action"
-        );
-        assert!(
-            !html.contains(">取消跳转</button>"),
-            "starting page must not offer a cancel-redirect action"
-        );
     }
 
     /// The malkuth nonce cookie must be appended alongside — never replace —
@@ -3715,5 +3461,396 @@ mod tests {
             !probe_serve(&client, &door_url).await,
             "a --serve-host mismatch must report serve=false"
         );
+    }
+    // ── Prerendered fallback page ────────────────────────────────────────
+
+    /// Build an `InfoState` for the fallback renderer without spawning a door.
+    fn fallback_state(
+        status: InfoStatus,
+        serve_backend: Option<&str>,
+        backend: BackendState,
+    ) -> InfoState {
+        InfoState {
+            version: "0.6.0".to_string(),
+            status,
+            watch_paths: vec!["/srv/celestia/demo/chest".to_string()],
+            proxy_endpoint: Some("0.0.0.0:3097 → 3009-3009".to_string()),
+            binary_programs: Vec::new(),
+            serve_backend: serve_backend.map(str::to_string),
+            serve_hosts: Vec::new(),
+            build_progress: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            build_log: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            runtime_log: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            backend_state: std::sync::Arc::new(tokio::sync::RwLock::new(backend)),
+            epoch: std::sync::Arc::new(tokio::sync::RwLock::new("1".to_string())),
+        }
+    }
+
+    async fn fallback_body(lang: &str, state: &InfoState, allowed: bool) -> String {
+        let response = serve_fallback(lang, state, allowed).await;
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("fallback body");
+        String::from_utf8(bytes.to_vec()).expect("utf-8")
+    }
+
+    /// The fallback renderer, end to end: every placeholder is substituted and
+    /// the state/capability axis drives the badge, the action and the
+    /// self-refresh (the deleted Tera tests used to pin the last two).
+    #[tokio::test]
+    async fn test_fallback_page_renders_states_and_honours_serve_capability() {
+        // offline: error badge, no countdown, no auto-refresh, manual action.
+        let offline = fallback_state(
+            InfoStatus::Ready,
+            Some("http://127.0.0.1:1"),
+            BackendState::Down,
+        );
+        let html = fallback_body("en", &offline, true).await;
+        assert!(
+            !html.contains("{{MALKUTH_"),
+            "no marker may survive the render"
+        );
+        assert!(
+            !html.contains("http-equiv=\"refresh\""),
+            "offline must not self-refresh"
+        );
+        assert!(
+            !html.contains(r#"class="mk-countdown""#),
+            "offline renders no countdown (the stylesheet still names the class)"
+        );
+        assert!(
+            // Prefixed like the mk-countdown guard below: the stylesheet
+            // names both classes, so only the markup form can prove absence.
+            !html.contains(r#"class="mk-retry""#),
+            "offline renders no retry paragraph"
+        );
+        assert!(
+            html.contains(r#"class="hk-badge hk-badge-error""#),
+            "offline badge"
+        );
+        assert!(
+            html.contains("Refresh Now"),
+            "manual action stays available"
+        );
+        assert!(
+            html.contains("/srv/celestia/demo/chest"),
+            "watch paths render"
+        );
+
+        // ready on a supervisor door: success badge, retry copy at 10s with its
+        // unit spliced back in (nothing is being redirected there).
+        let ready = fallback_state(InfoStatus::Ready, None, BackendState::Unknown);
+        let html = fallback_body("en", &ready, true).await;
+        assert!(
+            html.contains(r#"class="hk-badge hk-badge-success""#),
+            "ready badge"
+        );
+        assert!(
+            html.contains("http-equiv=\"refresh\" content=\"10\""),
+            "supervisor ready keeps the 10s retry cadence"
+        );
+        assert!(
+            html.contains("Page will refresh automatically in"),
+            "retry copy, not redirect copy"
+        );
+        assert!(
+            !html.contains("Redirecting in"),
+            "a supervisor door is not redirecting anywhere"
+        );
+        assert!(
+            html.contains("<strong class=\"mk-countdown\">10</strong><span> seconds</span>"),
+            "the retry sentence carries its unit"
+        );
+
+        // landing on a proxy door: redirect copy at the 3s beat.
+        let landing = fallback_state(
+            InfoStatus::Landing,
+            Some("http://127.0.0.1:1"),
+            BackendState::Up,
+        );
+        let html = fallback_body("en", &landing, true).await;
+        assert!(
+            html.contains("http-equiv=\"refresh\" content=\"3\""),
+            "landing keeps the 3s redirect cadence"
+        );
+        assert!(html.contains("Redirecting in"), "redirect copy on landing");
+
+        // a rebuild waits on the slower retry cadence.
+        let building = fallback_state(InfoStatus::Working, None, BackendState::Unknown);
+        let html = fallback_body("en", &building, true).await;
+        assert!(
+            html.contains(r#"class="hk-badge hk-badge-warning""#),
+            "building badge"
+        );
+        assert!(
+            html.contains("http-equiv=\"refresh\" content=\"10\""),
+            "10s retry"
+        );
+
+        // S1-02 lock: a door that may NOT be proxied never self-refreshes,
+        // even while the backend is up — otherwise it reloads forever.
+        let non_proxy = fallback_state(
+            InfoStatus::Ready,
+            Some("http://127.0.0.1:1"),
+            BackendState::Up,
+        );
+        let html = fallback_body("en", &non_proxy, false).await;
+        assert!(
+            !html.contains("http-equiv=\"refresh\""),
+            "a non-proxy door must not self-refresh"
+        );
+        assert!(html.contains("Refresh Now"), "manual action still offered");
+
+        // First paint (backend state still Unknown) still redirects, and a
+        // non-proxy landing door does not — the loop guard's other half.
+        let unknown = fallback_state(
+            InfoStatus::Ready,
+            Some("http://127.0.0.1:1"),
+            BackendState::Unknown,
+        );
+        let html = fallback_body("en", &unknown, true).await;
+        assert!(
+            html.contains("http-equiv=\"refresh\" content=\"3\""),
+            "Unknown first paint redirects at the 3s beat"
+        );
+        let html = fallback_body("en", &landing, false).await;
+        assert!(
+            !html.contains("http-equiv=\"refresh\""),
+            "a non-proxy landing door must not self-refresh either"
+        );
+
+        // The version line is not catalogue text: its two values (the crate
+        // version and the install method) are escaped at their own site, so
+        // the hostile fixture rides along via the state.
+        let mut hostile_state = fallback_state(InfoStatus::Ready, None, BackendState::Unknown);
+        hostile_state.version = "0.6.0<b>".to_string();
+        let html = fallback_body("en", &hostile_state, true).await;
+        assert!(
+            // `(Installed via` etc. is catalogue text the hostile fixture
+            // poisons; only the version segment itself is pinned here.
+            html.contains("v0.6.0&lt;b&gt; ("),
+            "the version must be escaped in the provenance line"
+        );
+        assert!(!html.contains("v0.6.0<b>"), "no raw tag may survive");
+
+        // RTL + localisation flow through the same renderer.
+        let arabic = fallback_body("ar", &ready, true).await;
+        assert!(arabic.contains("lang=\"ar\"") && arabic.contains("dir=\"rtl\""));
+    }
+
+    /// `fill` is the only substitution pass: unknown markers survive (so a
+    /// renamed marker is caught by the assertion below instead of silently
+    /// vanishing) and a value that itself contains a marker is never re-read.
+    #[test]
+    fn test_fallback_fill_is_single_pass_and_escapes_nothing_implicitly() {
+        let template = "<p>{{MALKUTH_A}}</p><p>{{MALKUTH_B}}</p>";
+        let out = fill(
+            template,
+            &[
+                ("{{MALKUTH_A}}", "{{MALKUTH_B}}"),
+                ("{{MALKUTH_B}}", "done"),
+            ],
+        );
+        assert_eq!(out, "<p>{{MALKUTH_B}}</p><p>done</p>");
+        // An unknown marker is preserved verbatim rather than dropped.
+        let out = fill("x{{MALKUTH_NOPE}}y", &[]);
+        assert_eq!(out, "x{{MALKUTH_NOPE}}y");
+    }
+
+    #[test]
+    fn test_html_escape_covers_every_attribute_breaker() {
+        assert_eq!(
+            html_escape(r#"<a href="x">'&'"#),
+            "&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;"
+        );
+    }
+
+    /// The init payload is injected into a `<script>` element. Escaping `<`,
+    /// `>` and `&` keeps any payload (`</script>`, `<!--`, entity tricks) from
+    /// closing the element, while the JSON still round-trips byte-for-byte.
+    #[test]
+    fn test_init_json_script_escapes_markup_and_round_trips() {
+        let payload = serde_json::json!({
+            "path": "</script><script>alert(1)</script>",
+            "watch": "<!-- & \" ' -->",
+            "log": ["</style>"],
+        });
+        let script = init_json_script(&payload);
+        assert!(
+            !script.contains("</script"),
+            "must not close the script element"
+        );
+        assert!(!script.contains('<'), "no raw `<` may survive");
+        assert!(!script.contains('&'), "no raw `&` may survive");
+        assert!(script.contains("\\u003c"), "escaped form used");
+        let parsed: serde_json::Value = serde_json::from_str(&script).expect("valid JSON");
+        assert_eq!(parsed, payload, "escaping must be lossless");
+    }
+
+    /// The embedded fallback page must carry every marker exactly once, and
+    /// filling it with sample values must leave no marker behind. This is the
+    /// Rust half of the contract build.rs enforces at embed time.
+    #[test]
+    fn test_fallback_page_markers_are_complete() {
+        const MARKERS: [&str; 16] = [
+            "{{MALKUTH_LANG}}",
+            "{{MALKUTH_DIR}}",
+            "{{MALKUTH_TITLE}}",
+            "{{MALKUTH_AUTO_REFRESH}}",
+            "{{MALKUTH_LOGO_SRC}}",
+            "{{MALKUTH_HEADING}}",
+            "{{MALKUTH_TAGLINE}}",
+            "{{MALKUTH_STATUS_BADGE}}",
+            "{{MALKUTH_TASK_ROW}}",
+            "{{MALKUTH_PROXY_ROW}}",
+            "{{MALKUTH_WATCH_ROW}}",
+            "{{MALKUTH_BINARIES_BLOCK}}",
+            "{{MALKUTH_RETRY_BLOCK}}",
+            "{{MALKUTH_ACTION_BLOCK}}",
+            "{{MALKUTH_FOOTER}}",
+            "{{MALKUTH_VERSION_LINE}}",
+        ];
+        for marker in MARKERS {
+            assert_eq!(
+                FALLBACK_PAGE_HTML.matches(marker).count(),
+                1,
+                "fallback page must contain {marker} exactly once"
+            );
+        }
+        let slots: Vec<(&str, &str)> = MARKERS.iter().map(|marker| (*marker, "x")).collect();
+        let filled = fill(FALLBACK_PAGE_HTML, &slots);
+        assert!(
+            !filled.contains("{{MALKUTH_"),
+            "no marker may survive substitution"
+        );
+    }
+
+    /// Every catalogue value reaches the page escaped, including the slots
+    /// that are interpolated directly into element text. The hostile value
+    /// exercises `<`, `&`, quotes and the apostrophe, so a slot that forgets
+    /// `text()` fails here instead of shipping malformed markup when a
+    /// translator later writes `&` or a quote.
+    #[tokio::test]
+    async fn test_fallback_page_escapes_hostile_catalogue_values() {
+        let state = fallback_state(InfoStatus::Ready, None, BackendState::Unknown);
+        let mut i18n: HashMap<String, String> = get_i18n("en").clone();
+        let hostile = r#"a&b<c>"d'e<script>alert(1)</script>"#;
+        for key in [
+            "heading",
+            "tagline",
+            "footer",
+            "title",
+            "watch_label",
+            "task",
+            "task_idle",
+            "binaries_title",
+            "refresh_label",
+            "retry",
+            "retry_unit",
+            "redirect_before",
+            "redirect_after",
+            "install_label",
+            "proxy_label",
+        ] {
+            i18n.insert(key.to_string(), hostile.to_string());
+        }
+        let html = render_fallback_page(&i18n, "en", &state, true).await;
+        assert!(
+            html.contains("a&amp;b&lt;c&gt;&quot;d&#39;e"),
+            "hostile catalogue values must be escaped"
+        );
+        assert!(!html.contains("<c>"), "no raw tag may survive");
+        assert!(
+            !html.contains("<script>alert(1)</script>"),
+            "no executable markup may survive"
+        );
+    }
+
+    /// The probe must agree with the documents: on supervisor doors a
+    /// rebuild reports `building` (not `ready` — the SPA would otherwise flip
+    /// the page to the green "all services running" badge mid-rebuild), and
+    /// the message keeps its English fallback when a catalogue key goes
+    /// missing. Serve doors keep the redirect-oriented shape.
+    #[tokio::test]
+    async fn test_probe_state_matches_the_documents() {
+        let probe = |state: InfoState| async move {
+            let response = serve_probe("en", &state, false).await;
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("probe body");
+            let json: serde_json::Value = serde_json::from_slice(&bytes).expect("probe json");
+            json
+        };
+
+        // Supervisor door mid-rebuild: `building`, never `ready`.
+        let json = probe(fallback_state(
+            InfoStatus::Working,
+            None,
+            BackendState::Unknown,
+        ))
+        .await;
+        assert_eq!(json["state"], "building");
+        assert_eq!(json["serve"], false);
+
+        // Supervisor door idle: `ready`, and reloading is pointless without a
+        // backend, which `serve:false` tells the SPA.
+        let json = probe(fallback_state(
+            InfoStatus::Ready,
+            None,
+            BackendState::Unknown,
+        ))
+        .await;
+        assert_eq!(json["state"], "ready");
+        assert_eq!(json["serve"], false);
+
+        // Serve door: backend health drives the state, Up stays `ready`.
+        let json = probe(fallback_state(
+            InfoStatus::Ready,
+            Some("http://127.0.0.1:1"),
+            BackendState::Up,
+        ))
+        .await;
+        assert_eq!(json["state"], "ready");
+    }
+
+    /// The probe message: catalogue value, else the English sentence (never
+    /// empty) — the SPA announces this string through its aria-live region.
+    #[test]
+    fn test_probe_message_falls_back_to_english() {
+        let mut i18n: HashMap<String, String> = get_i18n("en").clone();
+        assert_eq!(
+            probe_message(&i18n, "status_building", ""),
+            "The service is currently being rebuilt. Please wait a moment"
+        );
+        // Renamed key: English sentence, not an empty announcement.
+        i18n.remove("status_building");
+        assert_eq!(probe_message(&i18n, "status_building", ""), "Building...",);
+        // Localized value wins when present.
+        i18n.insert("status_building".to_string(), "重建中".to_string());
+        assert_eq!(probe_message(&i18n, "status_building", ""), "重建中");
+    }
+
+    /// The fallback page's state/badge mapping and the auto-refresh rule.
+    #[test]
+    fn test_fallback_state_mapping_and_auto_refresh() {
+        for (state, key, badge) in [
+            ("ready", "status_ready", "success"),
+            ("landing", "status_landing", "warning"),
+            ("building", "status_building", "warning"),
+            ("starting", "status_starting", "warning"),
+            ("offline", "status_offline", "error"),
+        ] {
+            assert_eq!(badge_variant(state), badge, "{state}");
+            let i18n = get_i18n("en");
+            assert!(
+                i18n.contains_key(key),
+                "state {state} needs catalogue key {key}"
+            );
+        }
+        assert!(!state_wants_refresh("offline"));
+        assert!(!state_wants_refresh("starting"));
+        for state in ["ready", "landing", "building"] {
+            assert!(state_wants_refresh(state), "{state} should self-retry");
+        }
     }
 }
