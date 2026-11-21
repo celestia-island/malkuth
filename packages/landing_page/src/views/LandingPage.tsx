@@ -191,8 +191,6 @@ export default defineComponent({
     const terminalOpen = ref(false)
     const terminalBinary = ref<string>('')
     const terminalLog = ref<string[]>([])
-    const terminalFirstAt = ref(0)
-    const terminalLastAt = ref(0)
     const logCache = new Map<string, string[]>()
     const toast = useToast()
     // One copy path for the whole page: hikari's hook carries the
@@ -358,9 +356,6 @@ export default defineComponent({
           logCache.set(name, lines)
           if (terminalBinary.value !== name) return
           terminalLog.value = lines
-          const now = Date.now()
-          if (lines.length && !terminalFirstAt.value) terminalFirstAt.value = now
-          if (lines.length) terminalLastAt.value = now
         })
         .catch(() => {})
     }
