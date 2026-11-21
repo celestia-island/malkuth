@@ -9,8 +9,7 @@ const root = fileURLToPath(new URL('.', import.meta.url))
 // `import()` it and render the fallback page at build time.
 //
 // `noExternal: true` is required: hikari is distributed as raw .tsx source,
-// which Node cannot import, and @xterm/xterm is CJS whose named exports only
-// resolve once bundled.
+// which Node cannot import.
 export default defineConfig({
   plugins: [vueJsx()],
   ssr: { noExternal: true },
