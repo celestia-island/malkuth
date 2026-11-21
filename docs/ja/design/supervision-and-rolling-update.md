@@ -78,29 +78,13 @@ Kubernetes のものである:
 設計は単一のエレガントなバックボーンに収束する:**どこでもスーパビジョン
 ツリー。唯一の違いは、スーパバイザがピアレプリカなのかリーダ/フォロワなの
 かだけである。**
-```
-                     ┌─────────────────────────────────────────┐
-    共有ベース        │ シグナルセマンティクス · ドレイン         │  ← 三プロジェクトすべて
-    (Layer 1 / 3)    │ /healthz · /readyz (drain ビット付き)    │     完全に同一
-                     │ socket activation + 3 種のデプロイアダプタ │
-                     └─────────────────────────────────────────┘
-                                    │
-           ┌────────────────────────┴────────────────────────┐
-           ▼                                                  ▼
-    ┌────────────────┐                              ┌──────────────────┐
-    │ サブシステム A  │  スーパバイザはピア          │ サブシステム B    │  スーパバイザは
-    │ Replica        │  (active-active)             │ Leader/Follower  │  leader または follower
-    │                │  ← サーバ LB + ローリング更新 │                  │  ← エッジフォールトトレランス
-    └───────┬────────┘                              └─────────┬────────┘
-            │                                                  │
-            └──────────────────┬───────────────────────────────┘
-                               ▼
-                ┌──────────────────────────────┐
-                │ 統一 Worker 抽象             │  ← 三プロジェクトすべての「子プロセスリソース」
-                │ ライフサイクル FSM + 監視下   │     cosmos / pglite-proxy / プロトコル別 worker
-                │ 再起動 (permanent/transient) │
-                │ + スライディングウィンドウ速率制限 │
-                └──────────────────────────────┘
+```mermaid
+flowchart TD
+    BASE["共有ベース (Layer 1 / 3)<br/>シグナルセマンティクス · ドレイン<br/>/healthz · /readyz (drain ビット付き)<br/>socket activation + 3 種のデプロイアダプタ<br/>← 三プロジェクトすべて完全に同一"]
+    BASE --> SUB_A["サブシステム A<br/>Replica<br/>スーパバイザはピア (active-active)<br/>← サーバ LB + ローリング更新"]
+    BASE --> SUB_B["サブシステム B<br/>Leader/Follower<br/>スーパバイザは leader または follower<br/>← エッジフォールトトレランス"]
+    SUB_A --> WORKER["統一 Worker 抽象<br/>ライフサイクル FSM + 監視下再起動 (permanent/transient)<br/>+ スライディングウィンドウ速率制限<br/>← 三プロジェクトすべての「子プロセスリソース」<br/>cosmos / pglite-proxy / プロトコル別 worker"]
+    SUB_B --> WORKER
 ```
 ### 3.1 鍵となる単純化: ローリングアップデートは*第三のシステムではない*
 スーパバイザツリーがバックボーンになれば、ユーザのニーズは三つではなく
@@ -153,16 +137,14 @@ Kubernetes のものである:
 一つのプロセスである。プロセスが**障害分離境界**である: Modbus スタックのバグが
 S7comm worker を汚染することはない。
 ライフサイクル FSM (`evernight/src/model_server.rs:128-139` から流用):
-```
-         start                      health ok
-  Starting ──────► Running ─────────────────► Running
-      │              │  ▲
-      │              │  │ health ok (自己修復)
-      │              ▼  │
-      └──────► Failed ◄┘        クラッシュ / 不健康
-                   │
-                   │ restart policy = permanent
-                   └────────► Starting (速率制限付き)
+```mermaid
+stateDiagram-v2
+    Starting --> Running: start
+    Running --> Running: health ok
+    Running --> Failed: クラッシュ / 不健康
+    Failed --> Running: health ok (自己修復)
+    Starting --> Failed
+    Failed --> Starting: restart policy = permanent (速率制限付き)
 ```
 ### 5.2 `Supervisor` —— worker プールを所有
 - **再起動ポリシー** (OTP の語彙): `permanent` (常に再起動——リソース worker の

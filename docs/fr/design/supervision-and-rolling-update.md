@@ -85,30 +85,13 @@ qui hérite du fd d'écoute → `WINCH` arrête gracieusement les anciens worker
 Le design converge vers une ossature unique et élégante : **un arbre de
 supervision partout ; la seule différence est de savoir si le superviseur est
 un réplica pair ou un leader/follower.**
-```
-                     ┌─────────────────────────────────────────┐
-    Base partagée    │ sémantique des signaux · vidange        │  ← identique pour
-    (Layer 1 / 3)    │ /healthz · /readyz (avec bit drain)     │     les trois projets
-                     │ socket activation + 3 adaptateurs déploiement │
-                     └─────────────────────────────────────────┘
-                                   │
-           ┌───────────────────────┴───────────────────────────┐
-           ▼                                                  ▼
-    ┌────────────────┐                              ┌──────────────────┐
-    │ Sous-système A │  superviseurs en PAIRS       │ Sous-système B   │  superviseur est
-    │ Réplica        │  (actif-actif)               │ Leader/Follower  │  leader ou follower
-    │                │  ← LB serveur + màj progressive │                  │  ← tolérance aux pannes périphérie
-    └───────┬────────┘                              └─────────┬────────┘
-            │                                                  │
-            └──────────────────┬───────────────────────────────┘
-                               ▼
-                ┌──────────────────────────────┐
-                │ Abstraction Worker unifiée   │  ← chaque « ressource-processus-enfant »
-                │ FSM de cycle de vie +        │     pour les trois projets
-                │ redémarrage supervisé        │     cosmos / pglite-proxy / workers par protocole
-                │ (permanent/transient)        │
-                │ + limite de débit fenêtre glissante │
-                └──────────────────────────────┘
+```mermaid
+flowchart TD
+    BASE["Base partagée (Layer 1 / 3)<br/>sémantique des signaux · vidange<br/>/healthz · /readyz (avec bit drain)<br/>socket activation + 3 adaptateurs déploiement<br/>← identique pour les trois projets"]
+    BASE --> SUB_A["Sous-système A<br/>Réplica<br/>superviseurs en PAIRS (actif-actif)<br/>← LB serveur + màj progressive"]
+    BASE --> SUB_B["Sous-système B<br/>Leader/Follower<br/>superviseur est leader ou follower<br/>← tolérance aux pannes périphérie"]
+    SUB_A --> WORKER["Abstraction Worker unifiée<br/>FSM de cycle de vie + redémarrage supervisé (permanent/transient)<br/>+ limite de débit fenêtre glissante<br/>← chaque « ressource-processus-enfant » pour les trois projets<br/>cosmos / pglite-proxy / workers par protocole"]
+    SUB_B --> WORKER
 ```
 ### 3.1 La simplification clé : la mise à jour progressive *n'est pas* un troisième système
 Une fois l'arbre de supervision devenu l'ossature, les besoins de
@@ -170,16 +153,14 @@ sidecar comme cosmos / pglite-proxy). Le processus est la **frontière
 d'isolation des pannes** : un bug dans la pile Modbus ne peut pas corrompre
 le worker S7comm.
 FSM de cycle de vie (tiré de `evernight/src/model_server.rs:128-139`) :
-```
-        démarrage                  santé ok
-  Starting ──────► Running ─────────────────► Running
-      │              │  ▲
-      │              │  │ santé ok (auto-réparation)
-      │              ▼  │
-      └──────► Failed ◄┘        plantage / mauvaise santé
-                   │
-                   │ politique de redémarrage = permanent
-                   └────────► Starting (limité en débit)
+```mermaid
+stateDiagram-v2
+    Starting --> Running: démarrage
+    Running --> Running: santé ok
+    Running --> Failed: plantage / mauvaise santé
+    Failed --> Running: santé ok (auto-réparation)
+    Starting --> Failed
+    Failed --> Starting: politique de redémarrage = permanent (limité en débit)
 ```
 ### 5.2 `Supervisor` — détient le pool de workers
 - **Politique de redémarrage** (vocabulaire OTP) : `permanent` (toujours

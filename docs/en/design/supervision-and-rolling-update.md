@@ -79,29 +79,13 @@ flow in §7 is structurally identical.
 The design converges on a single elegant backbone: **a supervision
 tree everywhere; the only difference is whether the supervisor is a
 peer replica or a leader/follower.**
-```
-                    ┌─────────────────────────────────────────┐
-   Shared base      │ signal semantics · drain               │  ← identical for
-   (Layer 1 / 3)    │ /healthz · /readyz (with drain bit)    │     all three projects
-                    │ socket activation + 3 deploy adapters   │
-                    └─────────────────────────────────────────┘
-                                   │
-          ┌────────────────────────┴────────────────────────┐
-          ▼                                                  ▼
-   ┌────────────────┐                              ┌──────────────────┐
-   │ Subsystem A    │  supervisors are PEERS       │ Subsystem B      │  supervisor is
-   │ Replica        │  (active-active)             │ Leader/Follower  │  leader or follower
-   │                │  ← server LB + rolling update│                  │  ← edge fault tolerance
-   └───────┬────────┘                              └─────────┬────────┘
-           │                                                  │
-           └──────────────────┬───────────────────────────────┘
-                              ▼
-               ┌──────────────────────────────┐
-               │ Unified Worker abstraction   │  ← every "child-process resource"
-               │ lifecycle FSM + supervised   │     across all three projects
-               │ restart (permanent/transient)│     cosmos / pglite-proxy / per-protocol workers
-               │ + sliding-window rate limit  │
-               └──────────────────────────────┘
+```mermaid
+flowchart TD
+    BASE["Shared base (Layer 1 / 3)<br/>signal semantics · drain<br/>/healthz · /readyz (with drain bit)<br/>socket activation + 3 deploy adapters<br/>← identical for all three projects"]
+    BASE --> SUB_A["Subsystem A<br/>Replica<br/>supervisors are PEERS (active-active)<br/>← server LB + rolling update"]
+    BASE --> SUB_B["Subsystem B<br/>Leader/Follower<br/>supervisor is leader or follower<br/>← edge fault tolerance"]
+    SUB_A --> WORKER["Unified Worker abstraction<br/>lifecycle FSM + supervised restart (permanent/transient)<br/>+ sliding-window rate limit<br/>← every #quot;child-process resource#quot; across all three projects<br/>cosmos / pglite-proxy / per-protocol workers"]
+    SUB_B --> WORKER
 ```
 ### 3.1 The key simplification: rolling update is *not* a third system
 Once the supervisor tree is the backbone, the user's needs collapse to
@@ -160,16 +144,14 @@ sidecar like cosmos / pglite-proxy). The process is the **failure
 isolation boundary**: a bug in the Modbus stack cannot poison the
 S7comm worker.
 Lifecycle FSM (lifted from `evernight/src/model_server.rs:128-139`):
-```
-        start                      health ok
- Starting ──────► Running ─────────────────► Running
-     │              │  ▲
-     │              │  │ health ok (self-heal)
-     │              ▼  │
-     └──────► Failed ◄┘        crash / unhealthy
-                  │
-                  │ restart policy = permanent
-                  └────────► Starting (rate-limited)
+```mermaid
+stateDiagram-v2
+    Starting --> Running: start
+    Running --> Running: health ok
+    Running --> Failed: crash / unhealthy
+    Failed --> Running: health ok (self-heal)
+    Starting --> Failed
+    Failed --> Starting: restart policy = permanent (rate-limited)
 ```
 ### 5.2 `Supervisor` — owns the worker pool
 - **Restart policy** (OTP vocabulary): `permanent` (always restart —
