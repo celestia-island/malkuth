@@ -349,6 +349,11 @@ export default defineComponent({
         })
     }
 
+    // chest writes ANSI SGR sequences into its output; the log viewer colors
+    // by level keywords instead, so the escapes would leak as glyph garbage.
+    const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g
+    const stripAnsi = (line: string): string => line.replace(ANSI_RE, '')
+
     function fetchLog(name: string) {
       const cached = logCache.get(name)
       if (cached) terminalLog.value = cached
@@ -357,7 +362,7 @@ export default defineComponent({
         .then((r) => r.json())
         .then((d: ProbeReply) => {
           if (gen !== logGeneration) return
-          const lines = (d.vttys?.[0]?.log ?? []).slice(-100)
+          const lines = (d.vttys?.[0]?.log ?? []).slice(-100).map(stripAnsi)
           logCache.set(name, lines)
           if (terminalBinary.value !== name) return
           terminalLog.value = lines
