@@ -13,7 +13,7 @@
 // Everything visual comes from hikari: the card/button/badge/copy-chip/
 // terminal/popover/toast components plus the CSS custom properties produced
 // by src/theme/malkuth.ts. The hand-written part is page layout only.
-import { computed, defineComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineComponent, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import HkBadge, { type BadgeVariant } from '@celestia-island/hikari/components/HkBadge.tsx'
 import HkButton from '@celestia-island/hikari/components/HkButton.tsx'
@@ -21,13 +21,10 @@ import HkCard from '@celestia-island/hikari/components/HkCard.tsx'
 import HkDivider from '@celestia-island/hikari/components/HkDivider.tsx'
 import HkIconButton from '@celestia-island/hikari/components/HkIconButton.tsx'
 import HkLogo from '@celestia-island/hikari/components/HkLogo.tsx'
-import HkPopover from '@celestia-island/hikari/components/HkPopover.tsx'
 import HkSpinner from '@celestia-island/hikari/components/HkSpinner.tsx'
 import { HkStatusRow } from '@celestia-island/hikari/components/HkStatusRow.tsx'
-import HkTerminal from '@celestia-island/hikari/components/HkTerminal.tsx'
 import HkToast from '@celestia-island/hikari/components/HkToast.tsx'
-import { useClipboardWithToast, useToast } from '@celestia-island/hikari/runtime'
-import { attachOverlayScrollbars, type OverlayScrollbarHandle } from '@celestia-island/hikari/composables/useOverlayScrollbar.ts'
+import { HkLogWindow, useClipboardWithToast, useToast, setLocale, type HLogTab } from '@celestia-island/hikari'
 
 // The payload these types describe is produced by `src/info_page.rs`
 // (`build_spa_init`) — that Rust builder is the single source of truth. This
@@ -199,18 +196,12 @@ export default defineComponent({
 
     // ── Terminal preview ──────────────────────────────────────────────
     const terminalOpen = ref(false)
-    const terminalPinned = ref(false)
     const terminalBinary = ref<string>('')
     const terminalLog = ref<string[]>([])
-    const terminalAnchor = ref<HTMLElement | null>(null)
     const terminalFirstAt = ref(0)
     const terminalLastAt = ref(0)
-    const terminalRef = ref<{ write(d: string | Uint8Array): void; reset(): void; fit(): void } | null>(null)
-
     const logCache = new Map<string, string[]>()
     const toast = useToast()
-    // Overlay scrollbar for the xterm viewport (hikari's thin rail)
-    const overlayHandle = ref<OverlayScrollbarHandle | null>(null)
     // One copy path for the whole page: hikari's hook carries the
     // `<textarea>`+execCommand fallback that non-secure (plain http) doors
     // need, plus both toasts.
@@ -267,7 +258,6 @@ export default defineComponent({
 
     let countdownTimer: ReturnType<typeof setInterval> | null = null
     let pollTimer: ReturnType<typeof setInterval> | null = null
-    let hideTimer: ReturnType<typeof setTimeout> | null = null
 
     function stopTimers() {
       if (countdownTimer) clearInterval(countdownTimer)
@@ -365,39 +355,9 @@ export default defineComponent({
         })
     }
 
-    /** Refit once the popover has settled: the initial fit can run against an
-     *  unsettled container and size the canvas past the frame. */
-    function refitSettled() {
-      nextTick(() => {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => terminalRef.value?.fit())
-        })
-      })
-    }
-
-    // The popover mounts its content lazily and the probe reply can beat that
-    // mount, so feeding the terminal retries briefly instead of dropping the
-    // first batch of lines on the floor.
-    function feedTerminal(attempt = 0) {
-      nextTick(() => {
-        const term = terminalRef.value
-        if (!term) {
-          if (attempt < 12) setTimeout(() => feedTerminal(attempt + 1), 24)
-          return
-        }
-        term.reset()
-        if (terminalLog.value.length) {
-          term.write(terminalLog.value.join('\r\n') + '\r\n')
-        }
-      })
-    }
-
     function fetchLog(name: string) {
       const cached = logCache.get(name)
-      if (cached) {
-        terminalLog.value = cached
-        feedTerminal()
-      }
+      if (cached) terminalLog.value = cached
       fetch('/', { headers: { 'X-Malkuth-Probe': '1' } })
         .then((r) => r.json())
         .then((d: ProbeReply) => {
@@ -408,51 +368,21 @@ export default defineComponent({
           const now = Date.now()
           if (lines.length && !terminalFirstAt.value) terminalFirstAt.value = now
           if (lines.length) terminalLastAt.value = now
-          feedTerminal()
         })
         .catch(() => {})
     }
 
-    function openTerminal(name: string, anchor: HTMLElement | null) {
+    function openTerminal(name: string) {
       terminalBinary.value = name
-      terminalAnchor.value = anchor
       terminalLog.value = logCache.get(name) ?? []
       terminalOpen.value = true
-      feedTerminal()
       fetchLog(name)
     }
 
-    function closeTerminal(force = false) {
-      if (terminalPinned.value && !force) return
+    function closeTerminal() {
       terminalOpen.value = false
-      terminalPinned.value = false
       terminalBinary.value = ''
-      terminalAnchor.value = null
       terminalLog.value = []
-    }
-
-    function togglePin() {
-      if (terminalPinned.value) {
-        terminalPinned.value = false
-        closeTerminal(true)
-        return
-      }
-      terminalPinned.value = true
-      cancelRedirect()
-    }
-
-    function hoverOpen(name: string, ev: MouseEvent) {
-      if (hideTimer) clearTimeout(hideTimer)
-      if (terminalPinned.value) return
-      openTerminal(name, ev.currentTarget as HTMLElement)
-    }
-
-    function hoverLeave() {
-      if (terminalPinned.value) return
-      if (hideTimer) clearTimeout(hideTimer)
-      hideTimer = setTimeout(() => {
-        if (!terminalPinned.value) closeTerminal(true)
-      }, 200)
     }
 
     /**
@@ -478,55 +408,9 @@ export default defineComponent({
 
     const PROXY_ARROW = /\s*(?:→|->)\s*/
 
-    /** Copy the log lines the terminal was fed (HkTerminal exposes no buffer). */
-    function copyLog() {
-      if (!terminalLog.value.length) return
-      void clipboard.copy(terminalLog.value.join('\n'))
-    }
-
-    function formatTime(ts: number): string {
-      return ts ? new Date(ts).toTimeString().slice(0, 8) : '--:--:--'
-    }
-
-    /** Popover visibility is controlled here: closing it (Escape, outside
-     *  pointer, sheet dismiss) must clear the pinned state too. */
-    function onTerminalOpenChange(open: boolean) {
-      if (open) {
-        terminalOpen.value = true
-        return
-      }
-      closeTerminal(true)
-    }
-
-    watch(terminalLog, () => feedTerminal(), { flush: 'post' })
-    watch(terminalOpen, (open) => {
-      if (!open) {
-        // HkPopover destroys the panel on close, so the viewport DOM node the
-        // handle points at is gone — detach and clear so the next open
-        // attaches to the fresh node instead of silently keeping a stale one.
-        overlayHandle.value?.detach()
-        overlayHandle.value = null
-        return
-      }
-      feedTerminal()
-      refitSettled()
-      nextTick(() => {
-        requestAnimationFrame(() => {
-          const vp = document.querySelector('.mk-log .xterm-viewport') as HTMLElement | null
-          if (!vp) return
-          // detach() is idempotent and reference-counts the parent-position
-          // promotion; re-attach unconditionally so the reversal case
-          // (close → reopen inside the popover's ~150 ms leave window, which
-          // reuses the same DOM node) can never stack a second handle on one
-          // viewport.
-          overlayHandle.value?.detach()
-          overlayHandle.value = attachOverlayScrollbars(vp, { axis: 'vertical' })
-        })
-      })
-    })
-
     onMounted(() => {
       if (props.static) return
+      void setLocale(init?.lang ?? 'en')
       document.documentElement.lang = init?.lang ?? 'en'
       document.documentElement.dir = init?.dir ?? 'ltr'
       if (init?.i18n?.title) document.title = init.i18n.title
@@ -534,7 +418,6 @@ export default defineComponent({
     })
 
     onBeforeUnmount(stopTimers)
-    onBeforeUnmount(() => overlayHandle.value?.detach())
 
     // ── Shared pieces ─────────────────────────────────────────────────
     const head = (heading: string, tagline: string, logo: string) => (
@@ -619,90 +502,23 @@ export default defineComponent({
       return segments
     }
 
+    /** hikari's own log viewer (tabs + pause/autoscroll/copy/clear on the
+     *  HScrollContainer overlay rail) — replaces the xterm popover wholesale:
+     *  the landing page is a read-only log viewer, not a terminal emulator. */
+    const logTabs = computed<HLogTab[]>(() => [
+      { key: terminalBinary.value || 'log', title: terminalBinary.value || 'log', lines: terminalLog.value },
+    ])
+
     const terminalPopup = () => (
-      <HkPopover
-        {...{
-          modelValue: terminalOpen.value,
-          'onUpdate:modelValue': onTerminalOpenChange,
+      <HkLogWindow
+        modelValue={terminalOpen.value}
+        onUpdate:modelValue={(v: boolean) => {
+          if (!v) closeTerminal()
         }}
-        anchorRef={terminalAnchor.value}
-        placement="top"
-        padding="sm"
-        title={terminalBinary.value}
-        backdrop={false}
-        closeOnBackdrop={false}
-        sheetOnMobile
-      >
-        <div class="mk-log" onMouseenter={() => hideTimer && clearTimeout(hideTimer)} onMouseleave={hoverLeave}>
-          <div class="mk-term">
-            <HkTerminal
-              ref={terminalRef}
-              rows={16}
-              autoFit
-              enableImages={false}
-              cursorBlink={false}
-              scrollback={10000}
-            />
-            {terminalLog.value.length === 0 ? (
-              <div class="mk-term-empty">
-                <HkSpinner size="sm" />
-                <span>{t('vtty_waiting')}</span>
-              </div>
-            ) : null}
-          </div>
-          <div class="mk-logbar">
-            <button type="button" class="mk-log-pin" onClick={togglePin}>
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="12"
-                height="12"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <line x1="12" y1="17" x2="12" y2="22" />
-                <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.7V5h1a2 2 0 0 0 2-2H6a2 2 0 0 0 2 2h1v5.7a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17z" />
-              </svg>
-              <span>
-                {terminalPinned.value ? t('vtty_pinned') : t('vtty_click_to_pin')}
-              </span>
-            </button>
-            <span class="mk-log-meta">
-              {terminalLog.value.length} {t('vtty_lines')} · {t('vtty_first_output')}{' '}
-              {formatTime(terminalFirstAt.value)} · {t('vtty_last_output')}{' '}
-              {formatTime(terminalLastAt.value)}
-            </span>
-            <HkIconButton
-              size={24}
-              aria-label={t('vtty_copy')}
-              onClick={(ev: MouseEvent) => {
-                ev.stopPropagation()
-                copyLog()
-              }}
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="12"
-                height="12"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-              </svg>
-            </HkIconButton>
-          </div>
-        </div>
-      </HkPopover>
+        tabs={logTabs.value}
+        title={terminalBinary.value || undefined}
+        height="55vh"
+      />
     )
 
     const liveTree = () => (
@@ -747,21 +563,13 @@ export default defineComponent({
                             splitLast(binary.hash_short, ':'),
                             binary.hash,
                           )}
-                          <span
-                            class="mk-term-trigger"
-                            onMouseenter={(ev: MouseEvent) => hoverOpen(binary.name, ev)}
-                            onMouseleave={hoverLeave}
+                          <HkIconButton
+                            size={24}
+                            aria-label={t('vtty_open')}
+                            onClick={() => openTerminal(binary.name)}
                           >
-                            <HkIconButton
-                              size={24}
-                              aria-label={t('vtty_open')}
-                              onClick={(ev: MouseEvent) =>
-                                openTerminal(binary.name, ev.currentTarget as HTMLElement)
-                              }
-                            >
-                              {TERMINAL_ICON()}
-                            </HkIconButton>
-                          </span>
+                            {TERMINAL_ICON()}
+                          </HkIconButton>
                         </div>
                       ),
                     }}
