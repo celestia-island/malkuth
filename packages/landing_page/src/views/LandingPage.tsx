@@ -192,6 +192,9 @@ export default defineComponent({
     const terminalBinary = ref<string>('')
     const terminalLog = ref<string[]>([])
     const logCache = new Map<string, string[]>()
+    // Bumped by Clear: a fetchLog response that resolves after a clear is
+    // stale and must not repopulate the view or the cache.
+    let logGeneration = 0
     const toast = useToast()
     // One copy path for the whole page: hikari's hook carries the
     // `<textarea>`+execCommand fallback that non-secure (plain http) doors
@@ -349,9 +352,11 @@ export default defineComponent({
     function fetchLog(name: string) {
       const cached = logCache.get(name)
       if (cached) terminalLog.value = cached
+      const gen = logGeneration
       fetch('/', { headers: { 'X-Malkuth-Probe': '1' } })
         .then((r) => r.json())
         .then((d: ProbeReply) => {
+          if (gen !== logGeneration) return
           const lines = (d.vttys?.[0]?.log ?? []).slice(-100)
           logCache.set(name, lines)
           if (terminalBinary.value !== name) return
@@ -506,7 +511,9 @@ export default defineComponent({
         tabs={logTabs.value}
         onClearTab={(key: string) => {
           // HkLogWindow only emits; the buffer owner clears. Cache included,
-          // or the next open would resurrect the cleared lines.
+          // or the next open would resurrect the cleared lines. The bump also
+          // invalidates any fetchLog response already in flight.
+          logGeneration += 1
           logCache.delete(key)
           terminalLog.value = []
         }}
