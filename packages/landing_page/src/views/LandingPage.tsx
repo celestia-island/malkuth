@@ -89,13 +89,6 @@ const FALLBACK: Record<string, string> = {
   cancel_label: 'Cancel',
   refresh_label: 'Refresh Now',
   copied_msg: 'Copied to clipboard',
-
-  vtty_lines: 'lines',
-  vtty_first_output: 'First:',
-  vtty_last_output: 'Last:',
-  vtty_click_to_pin: 'Click to pin',
-  vtty_pinned: 'Pinned',
-  vtty_waiting: 'Connected, waiting for output',
   footer: 'Powered by Malkuth — a composable service-supervision toolkit for Rust',
 }
 
