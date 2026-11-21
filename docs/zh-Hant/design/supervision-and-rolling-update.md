@@ -60,28 +60,13 @@ master 繼承 listen fd → `WINCH` 優雅停舊 worker → `QUIT` 退役舊 mas
 ## 3. 總體架構
 設計收斂到一個優雅的統一骨架:**到處都是監督樹;唯一的區別是 supervisor
 究竟是對等副本,還是主/備。**
-```
-                    ┌─────────────────────────────────────────┐
-   共享基座          │ 訊號語義 · 排空(drain)                  │  ← 三個專案
-   (Layer 1 / 3)    │ /healthz · /readyz(含 drain 位)        │     完全共用
-                    │ socket activation + 3 種部署適配         │
-                    └─────────────────────────────────────────┘
-                                   │
-          ┌────────────────────────┴────────────────────────┐
-          ▼                                                  ▼
-   ┌────────────────┐                              ┌──────────────────┐
-   │ 子系統 A       │  supervisor 對等             │ 子系統 B         │  supervisor 是
-   │ 副本(Replica) │  (active-active)             │ 主備             │  leader 或 follower
-   │                │  ← 服務端負載平衡 + 滾動更新 │ (Leader/Follower)│  ← 邊緣容錯
-   └───────┬────────┘                              └─────────┬────────┘
-           │                                                  │
-           └──────────────────┬───────────────────────────────┘
-                              ▼
-               ┌──────────────────────────────┐
-               │ 統一 Worker 抽象             │  ← 三個專案所有"子程序資源"
-               │ 生命週期狀態機 + 監督重啟    │     cosmos / pglite-proxy / 各協議 worker
-               │ (permanent/transient)+ 限頻  │
-               └──────────────────────────────┘
+```mermaid
+flowchart TD
+    BASE["共享基座 (Layer 1 / 3)<br/>訊號語義 · 排空(drain)<br/>/healthz · /readyz(含 drain 位)<br/>socket activation + 3 種部署適配<br/>← 三個專案完全共用"]
+    BASE --> SUB_A["子系統 A<br/>副本(Replica)<br/>supervisor 對等 (active-active)<br/>← 服務端負載平衡 + 滾動更新"]
+    BASE --> SUB_B["子系統 B<br/>主備(Leader/Follower)<br/>supervisor 是 leader 或 follower<br/>← 邊緣容錯"]
+    SUB_A --> WORKER["統一 Worker 抽象<br/>生命週期狀態機 + 監督重啟 (permanent/transient) + 限頻<br/>← 三個專案所有#quot;子程序資源#quot;<br/>cosmos / pglite-proxy / 各協議 worker"]
+    SUB_B --> WORKER
 ```
 ### 3.1 關鍵簡化:滾動更新*不是*第三套系統
 一旦監督樹成為骨架,使用者的需求就坍縮為**兩**個子系統,而非三套:
@@ -128,16 +113,14 @@ plana 會迫使它變成"協議 + 可選執行時",毀掉其純淨性——不�
 一個串列埠、一個本地監聽埠、一個如 cosmos / pglite-proxy 的 sidecar)。程序
 即**故障隔離邊界**:Modbus 棧的 bug 不會汙染 S7comm worker。
 生命週期狀態機(取自 `evernight/src/model_server.rs:128-139`):
-```
-        啟動                       健康檢查透過
- Starting ──────► Running ─────────────────► Running
-     │              │  ▲
-     │              │  │ 健康檢查透過(自愈)
-     │              ▼  │
-     └──────► Failed ◄┘        崩潰 / 不健康
-                  │
-                  │ 重啟策略 = permanent
-                  └────────► Starting(受限頻控制)
+```mermaid
+stateDiagram-v2
+    Starting --> Running: 啟動
+    Running --> Running: 健康檢查透過
+    Running --> Failed: 崩潰 / 不健康
+    Failed --> Running: 健康檢查透過(自愈)
+    Starting --> Failed
+    Failed --> Starting: 重啟策略 = permanent(受限頻控制)
 ```
 ### 5.2 `Supervisor` —— 持有 worker 池
 - **重啟策略**(OTP 詞彙):`permanent`(總重啟——資源 worker 預設)、

@@ -88,30 +88,13 @@ idéntico.
 El diseño converge en una única columna vertebral elegante: **un árbol
 de supervisión en todas partes; la única diferencia es si el supervisor
 es una réplica par o un leader/follower.**
-```
-                    ┌─────────────────────────────────────────┐
-   Base compartida  │ semántica de señales · drain             │  ← idéntico para
-   (Layer 1 / 3)    │ /healthz · /readyz (con bit de drain)    │     los tres proyectos
-                    │ socket activation + 3 adaptadores deploy │
-                    └─────────────────────────────────────────┘
-                                   │
-        ┌──────────────────────────┴──────────────────────────┐
-        ▼                                                        ▼
- ┌────────────────┐                              ┌──────────────────┐
- │ Subsistema A   │  supervisores son PARES      │ Subsistema B     │  supervisor es
- │ Réplica        │  (active-active)             │ Leader/Follower  │  leader o follower
- │                │  ← LB servidor + rolling upd.│                  │  ← tolerancia a fallos de edge
- └───────┬────────┘                              └─────────┬────────┘
-         │                                                  │
-         └──────────────────┬───────────────────────────────┘
-                            ▼
-             ┌──────────────────────────────┐
-             │ Abstracción unificada Worker │  ← todos los "recursos de subproceso"
-             │ FSM de ciclo de vida +       │     de los tres proyectos
-             │ reinicio supervisado         │     cosmos / pglite-proxy / workers por protocolo
-             │ (permanent/transient)        │
-             │ + rate limit ventana desliz. │
-             └──────────────────────────────┘
+```mermaid
+flowchart TD
+    BASE["Base compartida (Layer 1 / 3)<br/>semántica de señales · drain<br/>/healthz · /readyz (con bit de drain)<br/>socket activation + 3 adaptadores deploy<br/>← idéntico para los tres proyectos"]
+    BASE --> SUB_A["Subsistema A<br/>Réplica<br/>supervisores son PARES (active-active)<br/>← LB servidor + rolling upd."]
+    BASE --> SUB_B["Subsistema B<br/>Leader/Follower<br/>supervisor es leader o follower<br/>← tolerancia a fallos de edge"]
+    SUB_A --> WORKER["Abstracción unificada Worker<br/>FSM de ciclo de vida + reinicio supervisado (permanent/transient)<br/>+ rate limit ventana desliz.<br/>← todos los #quot;recursos de subproceso#quot; de los tres proyectos<br/>cosmos / pglite-proxy / workers por protocolo"]
+    SUB_B --> WORKER
 ```
 ### 3.1 La simplificación clave: rolling update *no* es un tercer sistema
 Una vez que el árbol de supervisión es la columna vertebral, las
@@ -174,16 +157,14 @@ el **límite de aislamiento de fallos**: un bug en el stack Modbus no
 puede envenenar al worker S7comm.
 Máquina de estados del ciclo de vida (tomada de
 `evernight/src/model_server.rs:128-139`):
-```
-        inicio                     salud ok
- Starting ──────► Running ─────────────────► Running
-     │              │  ▲
-     │              │  │ salud ok (self-heal)
-     │              ▼  │
-     └──────► Failed ◄┘        fallo / no saludable
-                  │
-                  │ política de reinicio = permanent
-                  └────────► Starting (rate-limitado)
+```mermaid
+stateDiagram-v2
+    Starting --> Running: inicio
+    Running --> Running: salud ok
+    Running --> Failed: fallo / no saludable
+    Failed --> Running: salud ok (self-heal)
+    Starting --> Failed
+    Failed --> Starting: política de reinicio = permanent (rate-limitado)
 ```
 ### 5.2 `Supervisor` — posee el pool de workers
 - **Política de reinicio** (vocabulario OTP): `permanent` (reiniciar

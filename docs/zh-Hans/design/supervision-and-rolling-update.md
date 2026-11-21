@@ -60,28 +60,13 @@ master 继承 listen fd → `WINCH` 优雅停旧 worker → `QUIT` 退役旧 mas
 ## 3. 总体架构
 设计收敛到一个优雅的统一骨架:**到处都是监督树;唯一的区别是 supervisor
 究竟是对等副本,还是主/备。**
-```
-                    ┌─────────────────────────────────────────┐
-   共享基座          │ 信号语义 · 排空(drain)                  │  ← 三个项目
-   (Layer 1 / 3)    │ /healthz · /readyz(含 drain 位)        │     完全共用
-                    │ socket activation + 3 种部署适配         │
-                    └─────────────────────────────────────────┘
-                                   │
-          ┌────────────────────────┴────────────────────────┐
-          ▼                                                  ▼
-   ┌────────────────┐                              ┌──────────────────┐
-   │ 子系统 A       │  supervisor 对等             │ 子系统 B         │  supervisor 是
-   │ 副本(Replica) │  (active-active)             │ 主备             │  leader 或 follower
-   │                │  ← 服务端负载均衡 + 滚动更新 │ (Leader/Follower)│  ← 边缘容错
-   └───────┬────────┘                              └─────────┬────────┘
-           │                                                  │
-           └──────────────────┬───────────────────────────────┘
-                              ▼
-               ┌──────────────────────────────┐
-               │ 统一 Worker 抽象             │  ← 三个项目所有"子进程资源"
-               │ 生命周期状态机 + 监督重启    │     cosmos / pglite-proxy / 各协议 worker
-               │ (permanent/transient)+ 限频  │
-               └──────────────────────────────┘
+```mermaid
+flowchart TD
+    BASE["共享基座 (Layer 1 / 3)<br/>信号语义 · 排空(drain)<br/>/healthz · /readyz(含 drain 位)<br/>socket activation + 3 种部署适配<br/>← 三个项目完全共用"]
+    BASE --> SUB_A["子系统 A<br/>副本(Replica)<br/>supervisor 对等 (active-active)<br/>← 服务端负载均衡 + 滚动更新"]
+    BASE --> SUB_B["子系统 B<br/>主备(Leader/Follower)<br/>supervisor 是 leader 或 follower<br/>← 边缘容错"]
+    SUB_A --> WORKER["统一 Worker 抽象<br/>生命周期状态机 + 监督重启 (permanent/transient) + 限频<br/>← 三个项目所有#quot;子进程资源#quot;<br/>cosmos / pglite-proxy / 各协议 worker"]
+    SUB_B --> WORKER
 ```
 ### 3.1 关键简化:滚动更新*不是*第三套系统
 一旦监督树成为骨架,用户的需求就坍缩为**两**个子系统,而非三套:
@@ -128,16 +113,14 @@ plana 会迫使它变成"协议 + 可选运行时",毁掉其纯净性——不�
 一个串口、一个本地监听端口、一个如 cosmos / pglite-proxy 的 sidecar)。进程
 即**故障隔离边界**:Modbus 栈的 bug 不会污染 S7comm worker。
 生命周期状态机(取自 `evernight/src/model_server.rs:128-139`):
-```
-        启动                       健康检查通过
- Starting ──────► Running ─────────────────► Running
-     │              │  ▲
-     │              │  │ 健康检查通过(自愈)
-     │              ▼  │
-     └──────► Failed ◄┘        崩溃 / 不健康
-                  │
-                  │ 重启策略 = permanent
-                  └────────► Starting(受限频控制)
+```mermaid
+stateDiagram-v2
+    Starting --> Running: 启动
+    Running --> Running: 健康检查通过
+    Running --> Failed: 崩溃 / 不健康
+    Failed --> Running: 健康检查通过(自愈)
+    Starting --> Failed
+    Failed --> Starting: 重启策略 = permanent(受限频控制)
 ```
 ### 5.2 `Supervisor` —— 持有 worker 池
 - **重启策略**(OTP 词汇):`permanent`(总重启——资源 worker 默认)、

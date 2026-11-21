@@ -73,29 +73,13 @@ Kubernetes의 것입니다:
 ## 3. 전체 아키텍처
 설계는 하나의 우아한 골격으로 수렴합니다: **어디서나 감독 트리; 유일한 차이는
 감독자가 대등 복제본인지 leader/follower인지입니다.**
-```
-                    ┌─────────────────────────────────────────┐
-   공통 베이스       │ 시그널 시맨틱 · 드레인(drain)            │  ← 세 프로젝트
-   (Layer 1 / 3)    │ /healthz · /readyz(drain 비트 포함)     │     모두 동일
-                    │ socket activation + 3가지 배포 어댑터    │
-                    └─────────────────────────────────────────┘
-                                   │
-          ┌────────────────────────┴────────────────────────┐
-          ▼                                                  ▼
-   ┌────────────────┐                              ┌──────────────────┐
-   │ 서브시스템 A   │  supervisor는 PEER            │ 서브시스템 B     │  supervisor는
-   │ Replica        │  (active-active)              │ Leader/Follower  │  leader 또는 follower
-   │                │  ← 서버 LB + 롤링 업데이트    │                  │  ← 엣지 내결함성
-   └───────┬────────┘                              └─────────┬────────┘
-           │                                                  │
-           └──────────────────┬───────────────────────────────┘
-                              ▼
-               ┌──────────────────────────────┐
-               │ 통일된 Worker 추상화         │  ← 세 프로젝트의 모든
-               │ 라이프사이클 FSM + 감독 재시작│     "자식 프로세스 자원"
-               │ (permanent/transient)        │     cosmos / pglite-proxy / 프로토콜별 worker
-               │ + 슬라이딩 윈도우 속도 제한   │
-               └──────────────────────────────┘
+```mermaid
+flowchart TD
+    BASE["공통 베이스 (Layer 1 / 3)<br/>시그널 시맨틱 · 드레인(drain)<br/>/healthz · /readyz(drain 비트 포함)<br/>socket activation + 3가지 배포 어댑터<br/>← 세 프로젝트 모두 동일"]
+    BASE --> SUB_A["서브시스템 A<br/>Replica<br/>supervisor는 PEER (active-active)<br/>← 서버 LB + 롤링 업데이트"]
+    BASE --> SUB_B["서브시스템 B<br/>Leader/Follower<br/>supervisor는 leader 또는 follower<br/>← 엣지 내결함성"]
+    SUB_A --> WORKER["통일된 Worker 추상화<br/>라이프사이클 FSM + 감독 재시작 (permanent/transient)<br/>+ 슬라이딩 윈도우 속도 제한<br/>← 세 프로젝트의 모든 #quot;자식 프로세스 자원#quot;<br/>cosmos / pglite-proxy / 프로토콜별 worker"]
+    SUB_B --> WORKER
 ```
 ### 3.1 핵심 단순화: 롤링 업데이트는 *세 번째* 시스템이 *아니다*
 감독자 트리가 골격이 되면, 사용자의 요구는 세 개가 아닌 **두** 개의
@@ -149,16 +133,14 @@ shittim-chest에서 소비된다"고 규정하며, crates.io 게시를 위해 �
 보유합니다. 프로세스가 **장애 격리 경계**입니다: Modbus 스택의 버그가
 S7comm worker를 오염시키지 않습니다.
 라이프사이클 FSM(`evernight/src/model_server.rs:128-139`에서 발췌):
-```
-        시작                       health ok(정상)
- Starting ──────► Running ─────────────────► Running
-     │              │  ▲
-     │              │  │ health ok(자가 치유)
-     │              ▼  │
-     └──────► Failed ◄┘        크래시 / 비정상
-                  │
-                  │ 재시작 정책 = permanent
-                  └────────► Starting(속도 제한)
+```mermaid
+stateDiagram-v2
+    Starting --> Running: 시작
+    Running --> Running: health ok(정상)
+    Running --> Failed: 크래시 / 비정상
+    Failed --> Running: health ok(자가 치유)
+    Starting --> Failed
+    Failed --> Starting: 재시작 정책 = permanent(속도 제한)
 ```
 ### 5.2 `Supervisor` — worker 풀 보유
 - **재시작 정책**(OTP 어휘): `permanent`(항상 재시작 — 자원 worker의
