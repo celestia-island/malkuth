@@ -204,10 +204,6 @@ button.mk-pair__value:focus-visible {
   gap: var(--space-6);
 }
 
-.mk-term-trigger {
-  display: inline-flex;
-}
-
 .mk-binary-actions {
   display: flex;
   align-items: center;
@@ -254,92 +250,6 @@ button.mk-pair__value:focus-visible {
   color: rgb(var(--color-text-tertiary));
 }
 
-/* Terminal preview: the hikari terminal owns its own frame, so the popup
-   body is a plain column (header/footer supplied by us, canvas by HkTerminal). */
-.mk-log {
-  display: grid;
-  gap: var(--space-6);
-  width: min(36rem, calc(100vw - 2rem));
-}
-
-.mk-term {
-  position: relative;
-  /* Grid items default to min-width:auto: the terminal's intrinsic width
-     would otherwise widen the popover past its container. */
-  min-width: 0;
-  width: 100%;
-}
-
-.mk-term-empty {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-8);
-  color: rgb(var(--color-terminal-fg, 214 221 230) / 70%);
-  font-size: var(--text-xs);
-  pointer-events: none;
-}
-
-.mk-log .hk-terminal {
-  height: 18rem;
-  width: 100%;
-}
-
-/* The fit pass can size the canvas a row or two past the styled frame (it
-   runs before the popover settles), which pushed the viewport scrollbar off
-   the right edge and below the bottom. Clip the canvas to the frame so the
-   visible area and the scrollbar agree. */
-.mk-log .xterm {
-  overflow: hidden;
-}
-
-/* The xterm viewport's native scrollbar is unreliable inside a popover:
-   the scroll area sizing doesn't update when the container mounts
-   dynamically, producing a misplaced bar with unstable height. Hide it and
-   let users scroll with the wheel / touchpad (xterm handles scrolling
-   internally, independent of viewport CSS). A custom thin rail can be
-   added later via hikari's `attachOverlayScrollbars` once `composables/*`
-   is exported from the npm package. */
-.mk-log .xterm-viewport {
-  scrollbar-width: none;
-  &::-webkit-scrollbar {
-    display: none;
-  }
-}
-
-.mk-logbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-8);
-  font-size: var(--text-2xs);
-  color: rgb(var(--color-text-tertiary));
-}
-
-.mk-log-pin {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-4);
-  border: 0;
-  background: none;
-  color: rgb(var(--color-text-secondary));
-  font: inherit;
-  cursor: pointer;
-  padding: var(--space-2) var(--space-4);
-  border-radius: var(--radius-sm);
-}
-
-.mk-log-pin:hover {
-  background: rgb(var(--color-text) / 8%);
-}
-
-.mk-log-meta {
-  font-variant-numeric: tabular-nums;
-  text-align: end;
-}
-
 .mk-visually-hidden {
   position: absolute;
   width: 1px;
@@ -384,9 +294,5 @@ button.mk-pair__value:focus-visible {
   .mk-binary-list .hk-status-row__action {
     flex: 1 1 100%;
     justify-content: flex-end;
-  }
-
-  .mk-log {
-    width: min(100vw - 1.5rem, 100%);
   }
 }
