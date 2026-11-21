@@ -516,6 +516,12 @@ export default defineComponent({
           if (!v) closeTerminal()
         }}
         tabs={logTabs.value}
+        onClearTab={(key: string) => {
+          // HkLogWindow only emits; the buffer owner clears. Cache included,
+          // or the next open would resurrect the cleared lines.
+          logCache.delete(key)
+          terminalLog.value = []
+        }}
         title={terminalBinary.value || undefined}
         height="55vh"
       />
