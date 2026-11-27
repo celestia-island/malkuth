@@ -45,7 +45,7 @@ leader-follower = ["lease"]
 schema = ["dep:schemars"]
 
 # ── CLI binary ─────────────────────────────────────────────────
-cli = ["dep:clap", "dep:notify", "dep:tracing-subscriber", "dep:jiff", "dep:toml", "dep:axum", "dep:reqwest", "dep:rustls", "dep:hyper", "dep:hyper-util"]
+cli = ["dep:clap", "dep:notify", "dep:tracing-subscriber", "dep:jiff", "dep:toml", "dep:axum", "dep:reqwest", "dep:rustls", "dep:hyper", "dep:hyper-util", "dep:plana-error-landing"]
 
 # ── MCP server ─────────────────────────────────────────────────
 # Standalone MCP (Model Context Protocol) server exposing supervision + probe
@@ -69,6 +69,11 @@ tokio = { version = "^1", features = ["rt", "rt-multi-thread", "macros", "net", 
 tokio-tungstenite = { version = "^0.29", optional = true }
 interprocess = { version = "^2", optional = true, features = ["tokio"] }
 axum = { version = "^0.8", optional = true }
+# The info door's error landing: a failed browser navigation to one of
+# malkuth's OWN errors (the /api/* gateway 502, a refused upgrade) is answered
+# with the landing document in which hikari's `createErrorReporting` reads the
+# island. The layer is only used when `cli` (the binary) is built.
+plana-error-landing = { git = "https://github.com/celestia-island/plana", branch = "master", version = "^0.8", optional = true }
 # Raw HTTP/1.1 upgrade support for the `--serve` proxy tunnel (the `OnUpgrade`
 # extension type plus the upgraded stream bridge). axum 0.8 no longer
 # re-exports `axum::hyper`, so hyper is a direct dependency; only the
