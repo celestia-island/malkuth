@@ -23,7 +23,17 @@ const SPA_SENTINEL: &str = "<html><body><h1>Malkuth</h1>";
 
 /// Is a real SPA bundle embedded (vs. the build.rs sentinel page)?
 fn spa_available() -> bool {
-    !LANDING_PAGE_HTML.starts_with(SPA_SENTINEL)
+    spa_available_for(LANDING_PAGE_HTML)
+}
+
+/// The predicate itself, on any HTML: the sentinel's exact prefix means "the
+/// SPA was never built on this host".
+///
+/// Split out of [`spa_available`] so the prefix contract is pinned by a unit
+/// test that needs no build gymnastics — `build.rs` decides which of the two
+/// strings is embedded, and both branches have to stay recognisable.
+fn spa_available_for(html: &str) -> bool {
+    !html.starts_with(SPA_SENTINEL)
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -3039,6 +3049,32 @@ mod tests {
     #[track_caller]
     fn require_spa_shell() {
         assert!(spa_available(), "{}", sentinel_shell_guard());
+    }
+
+    /// `spa_available_for` is the contract every shell test leans on: the
+    /// sentinel's prefix means "not built", anything else means "real SPA".
+    /// Pinned directly so a reworded sentinel in `build.rs` (which would make
+    /// every shell test silently assume a real shell) fails here first.
+    #[test]
+    fn test_spa_available_for_recognises_the_sentinel_prefix() {
+        assert!(
+            !spa_available_for("<html><body><h1>Malkuth</h1></body></html>"),
+            "the build.rs sentinel must read as \"no SPA\""
+        );
+        assert!(
+            !spa_available_for(SPA_SENTINEL),
+            "the bare sentinel prefix alone is enough to mean \"no SPA\""
+        );
+        assert!(
+            spa_available_for("<!DOCTYPE html><html><head></head><body></body></html>"),
+            "a real document is not the sentinel"
+        );
+        // The sentinel is a PREFIX test: an SPA whose shell merely mentions it
+        // later is still a real shell.
+        assert!(
+            spa_available_for("<!DOCTYPE html><html><body><h1>Malkuth</h1></body></html>"),
+            "only the leading prefix marks the sentinel"
+        );
     }
 
     /// The landing document is the SPA shell itself — the SAME bytes `/`
