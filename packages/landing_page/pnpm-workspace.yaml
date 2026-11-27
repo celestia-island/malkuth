@@ -3,6 +3,10 @@ allowBuilds:
   esbuild: false
 minimumReleaseAge: 1440
 minimumReleaseAgeExclude:
-  - '@celestia-island/hikari@0.55.449'
+  # Bare family name: the ledgers' release-age rule (toolchain-pnpm) — a naked
+  # entry is the form that works at resolution time, the exact pin below is
+  # the same-day double lock and expires with the version.
+  - '@celestia-island/hikari'
+  - '@celestia-island/hikari@0.55.498'
 overrides:
   typescript: ~6.0

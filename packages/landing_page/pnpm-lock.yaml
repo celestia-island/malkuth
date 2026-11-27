@@ -13,7 +13,7 @@ importers:
     dependencies:
       '@celestia-island/hikari':
         specifier: ^0.55
-        version: 0.55.449(@types/three@0.185.4)(three@0.185.1)(vue@3.5.40(typescript@6.0.3))
+        version: 0.55.498(@types/three@0.185.4)(three@0.185.1)(vue@3.5.40(typescript@6.0.3))
       vue:
         specifier: ^3
         version: 3.5.40(typescript@6.0.3)
@@ -218,8 +218,8 @@ packages:
   '@bytecodealliance/preview2-shim@0.31.1':
     resolution: {integrity: sha512-uDVB/IhExDW70TquqVx2l2Q5uwwpH7r5M2ltYccux+0YxXBm4TvqyNHTyYxcoLBsoAar28o7uZSj7GOKVx9uvA==}
 
-  '@celestia-island/hikari@0.55.449':
-    resolution: {integrity: sha512-moqyLIMbpA8Pi6UwHLNddZtWf/uIG9iNSbP9UiqhcldncjlbWm/1xPpWpMi1OUSTLhYfAGVgXsI1od1wHSPscg==}
+  '@celestia-island/hikari@0.55.498':
+    resolution: {integrity: sha512-pEQHvuB6Ctwt7Ui7331BqEyniTy47tUuXK3lcGPAdMvrFnprDWqlk48mwt6ENGvF7XWoFvisyyVtQUoW58V74A==}
     peerDependencies:
       '@types/three': ^0.185
       pinia: ^3
@@ -228,6 +228,9 @@ packages:
     peerDependenciesMeta:
       pinia:
         optional: true
+
+  '@celestia-island/tairitsu-host-client@0.1.0':
+    resolution: {integrity: sha512-Ge8jNk5B8n1vfHyJBrhrAUKgaFIhWDvh40JrN/awgvJ0iXPO1BABCnj02bsjT+FYLg8QRCBt6jeTJXrI51OOtw==}
 
   '@celestia-island/tairitsu-transport@0.2.0':
     resolution: {integrity: sha512-4pdlaTuVN4J7RnZHQ7LsXFQb9ZXcY5yCPQ2u24TCq2ax1PNB3fX/a4lZycKBb4fPYjX4qWuzvFSkmWyn72tIFA==}
@@ -1114,9 +1117,10 @@ snapshots:
     dependencies:
       '@bytecodealliance/jco-node-fs': 0.3.2
 
-  '@celestia-island/hikari@0.55.449(@types/three@0.185.4)(three@0.185.1)(vue@3.5.40(typescript@6.0.3))':
+  '@celestia-island/hikari@0.55.498(@types/three@0.185.4)(three@0.185.1)(vue@3.5.40(typescript@6.0.3))':
     dependencies:
       '@bytecodealliance/preview2-shim': 0.31.1
+      '@celestia-island/tairitsu-host-client': 0.1.0
       '@celestia-island/tairitsu-transport': 0.2.0
       '@types/three': 0.185.4
       '@xterm/addon-fit': 0.11.0
@@ -1127,6 +1131,8 @@ snapshots:
       marked: 18.2.1
       three: 0.185.1
       vue: 3.5.40(typescript@6.0.3)
+
+  '@celestia-island/tairitsu-host-client@0.1.0': {}
 
   '@celestia-island/tairitsu-transport@0.2.0': {}
 

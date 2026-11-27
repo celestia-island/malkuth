@@ -7,11 +7,14 @@
 //   3. the malkuth theme vars (dark/light) — hikari components read colours
 //      from CSS custom properties, so this is the whole theme bridge.
 //   4. hikari's own component strings follow the page locale.
+//   5. the app is built before its error-reporting hook is installed, so
+//      the hook reads the server's error island and paints the family
+//      landing for a navigation that was answered with a failure.
 import '@celestia-island/hikari/styles'
 import './styles/main.scss'
 
 import { createApp } from 'vue'
-import { applyViewportPolicy, setLocale } from '@celestia-island/hikari'
+import { applyViewportPolicy, createErrorReporting, setLocale } from '@celestia-island/hikari'
 
 import { followSystemTheme } from './theme/malkuth'
 import LandingPage, { type MalkuthInit } from './views/LandingPage'
@@ -25,4 +28,9 @@ if (init?.lang) {
   void setLocale(init.lang)
 }
 
-createApp(LandingPage).mount('#app')
+const app = createApp(LandingPage)
+// Installed BEFORE mount: the plugin settles the server's verdict on this
+// document (the `hk-server-error` island the info door writes into a refused
+// navigation) and covers everything the page itself fails to catch.
+app.use(createErrorReporting())
+app.mount('#app')

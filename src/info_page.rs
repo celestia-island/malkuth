@@ -771,6 +771,44 @@ fn api_gateway_error() -> Response {
     resp
 }
 
+/// The landing document a refused navigation is answered with: the same
+/// bytes [`serve_document`] hands a browser on `/`, carrying the island
+/// hikari's `createErrorReporting` reads on install.
+///
+/// The island's description is the sentence the caller passes and the answer
+/// is uncacheable; the wire code stays empty so the card falls back to
+/// `http_<status>`. Without a real SPA (the hand-written sentinel `build.rs`
+/// emits when pnpm is absent) there is no `</head>` to seat the island in, so
+/// that build keeps the plain-text refusal instead of serving half a page.
+///
+/// Machine callers are kept out by [`refusal_document`], and a refused
+/// upgrade keeps the plain 502 that a WebSocket client reads as a failed
+/// connection.
+fn landing_response(status: StatusCode, message: String) -> Response {
+    let shell = LANDING_PAGE_HTML;
+    if !spa_available() || !shell.contains("</head>") {
+        return api_gateway_error();
+    }
+    // Empty code: the card falls back to `http_<status>`. The island goes in
+    // verbatim, with no second escape pass: hikari reads the block with
+    // `JSON.parse` and plana has already escaped the characters that could
+    // close it, so escaping again would put a visible `\u003c` into the
+    // card's description.
+    let landing = plana_error_landing::ServerErrorLanding::new(status, "", message);
+    let document = plana_error_landing::inject_island(shell, &landing.island());
+    let mut resp = Response::new(axum::body::Body::from(document));
+    *resp.status_mut() = status;
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    resp.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
+    resp
+}
+
 /// Whether the request asks for an HTTP/1.1 protocol upgrade. Both a
 /// `Connection` header containing the `upgrade` token (token-list match,
 /// case-insensitive) and an `Upgrade` header must be present. The `Upgrade`
@@ -945,7 +983,7 @@ fn nonce_cookie(epoch: &str) -> header::HeaderValue {
 /// (e.g. 404/426) pass through with their full body, with the same
 /// semantics as [`proxy_to_backend`]: only transport failures and
 /// 502/503/504 fall back to the landing page.
-async fn proxy_upgrade(req: Request, backend: &str, epoch: &str) -> Result<Response, ()> {
+async fn proxy_upgrade(req: Request, backend: &str, epoch: &str) -> Result<Response, ProxyRefusal> {
     let (mut parts, body) = req.into_parts();
 
     // hyper stores the pending upgrade in the request extensions. Every
@@ -957,7 +995,7 @@ async fn proxy_upgrade(req: Request, backend: &str, epoch: &str) -> Result<Respo
     };
 
     let Some(host_port) = backend_host_port(backend) else {
-        return Err(());
+        return Err(ProxyRefusal::Unavailable);
     };
     let path_and_query = parts.uri.path_and_query().map_or("/", |pq| pq.as_str());
     // The PUBLIC origin context, captured before the header loop drops the
@@ -975,15 +1013,17 @@ async fn proxy_upgrade(req: Request, backend: &str, epoch: &str) -> Result<Respo
 
     // WS requests normally carry no body; if one does, read it fully so the
     // forwarded request is complete before the upgrade exchange starts.
-    let body_bytes = read_proxied_body(body).await?;
+    let body_bytes = read_proxied_body(body)
+        .await
+        .map_err(|_| ProxyRefusal::Unavailable)?;
 
     // Dial the backend (plain HTTP only, like the readiness probe). Any
     // connect failure is a transport error → landing page.
     let mut stream =
         tokio::time::timeout(Duration::from_millis(2000), TcpStream::connect(host_port))
             .await
-            .map_err(|_| ())?
-            .map_err(|_| ())?;
+            .map_err(|_| ProxyRefusal::Unavailable)?
+            .map_err(|_| ProxyRefusal::Unavailable)?;
 
     // Forward the request verbatim over raw HTTP/1.1: hop-by-hop headers
     // (Host/Connection/Transfer-Encoding) are dropped, Host is reset to the
@@ -1082,8 +1122,8 @@ async fn proxy_upgrade(req: Request, backend: &str, epoch: &str) -> Result<Respo
     };
     tokio::time::timeout(Duration::from_secs(5), wire_flush)
         .await
-        .map_err(|_| ())?
-        .map_err(|_| ())?;
+        .map_err(|_| ProxyRefusal::Unavailable)?
+        .map_err(|_| ProxyRefusal::Unavailable)?;
 
     // Read the response head (status line + headers, byte-capped so a
     // hostile backend cannot buffer without bound) and any bytes the
@@ -1092,9 +1132,12 @@ async fn proxy_upgrade(req: Request, backend: &str, epoch: &str) -> Result<Respo
     let (head, leftover) =
         tokio::time::timeout(Duration::from_secs(10), read_response_head(&mut stream))
             .await
-            .map_err(|_| ())?
-            .map_err(|_| ())?;
-    let (status, resp_headers) = parse_response_head(&head).ok_or(())?;
+            .map_err(|_| ProxyRefusal::Unavailable)?
+            .map_err(|_| ProxyRefusal::Unavailable)?;
+    // A backend that answers with something that is not HTTP at all has no
+    // handshake to judge: the conversation ends here, so a client waiting for
+    // an upgrade reads the door's own 502 instead of an empty one.
+    let (status, resp_headers) = parse_response_head(&head).ok_or(ProxyRefusal::UpgradeRefused)?;
 
     if status == 101 {
         // Build the 101 for the browser with the backend's headers verbatim
@@ -1145,16 +1188,20 @@ async fn proxy_upgrade(req: Request, backend: &str, epoch: &str) -> Result<Respo
     // fall back to the landing page — and, as there, API paths keep their
     // status (an upgrade-bearing /api/* request is still a machine caller;
     // masking it would repeat the 200-HTML defect this branch's sibling
-    // fixed, R2 catch on this PR).
+    // fixed, R2 catch on this PR). The body is read below exactly as framed,
+    // so the API-path case has everything it needs to answer verbatim.
     if should_fall_back(status) && !is_api_path(parts.uri.path()) {
-        return Err(());
+        return Err(ProxyRefusal::UpgradeRefused);
     }
 
     // Read the full body: framed exactly via Content-Length / chunked
-    // transfer, otherwise read until EOF (a backend that neither frames nor
-    // closes within the budget is a transport failure).
+    // transfer, otherwise read until EOF. A backend that stalls past the
+    // budget leaves no response to pass through either way, so the door
+    // refuses.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    let resp_body = read_response_body(&mut stream, &resp_headers, leftover, deadline).await?;
+    let resp_body = read_response_body(&mut stream, &resp_headers, leftover, deadline)
+        .await
+        .map_err(|_| ProxyRefusal::UpgradeRefused)?;
 
     // Mirror `proxy_to_backend`'s response assembly: nonce cookie appended
     // alongside (never replacing) backend Set-Cookie headers; hop-by-hop
@@ -1365,7 +1412,11 @@ async fn read_some(
     Ok(n)
 }
 
-async fn proxy_to_backend(req: Request, backend: &str, epoch: &str) -> Result<Response, ()> {
+async fn proxy_to_backend(
+    req: Request,
+    backend: &str,
+    epoch: &str,
+) -> Result<Response, ProxyRefusal> {
     let (parts, body) = req.into_parts();
     proxy_to_backend_parts(parts, body, backend, epoch).await
 }
@@ -1378,7 +1429,7 @@ async fn proxy_to_backend_parts(
     body: axum::body::Body,
     backend: &str,
     epoch: &str,
-) -> Result<Response, ()> {
+) -> Result<Response, ProxyRefusal> {
     let path = parts.uri.path_and_query().map_or("/", |pq| pq.as_str());
     let url = format!("{}{}", backend.trim_end_matches('/'), path);
 
@@ -1391,12 +1442,14 @@ async fn proxy_to_backend_parts(
         .connect_timeout(std::time::Duration::from_millis(500))
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .map_err(|_| ())?;
+        .map_err(|_| ProxyRefusal::Unavailable)?;
 
     let method = parts.method;
     let headers = parts.headers;
 
-    let body_bytes = read_proxied_body(body).await?;
+    let body_bytes = read_proxied_body(body)
+        .await
+        .map_err(|_| ProxyRefusal::Unavailable)?;
 
     let mut backend_req = match method.as_str() {
         "GET" => client.get(&url),
@@ -1429,7 +1482,10 @@ async fn proxy_to_backend_parts(
         backend_req = backend_req.body(body_bytes.to_vec());
     }
 
-    let resp = backend_req.send().await.map_err(|_| ())?;
+    let resp = backend_req
+        .send()
+        .await
+        .map_err(|_| ProxyRefusal::Unavailable)?;
     let status_code = resp.status().as_u16();
 
     // Fall back to the landing page only on transport failure (above) or
@@ -1442,7 +1498,7 @@ async fn proxy_to_backend_parts(
     // client verbatim (see `is_api_path` — the 200-HTML mask is what made
     // `EventSource` abort on MIME instead of seeing chest's honest 503).
     if should_fall_back(status_code) && !is_api_path(path) {
-        return Err(());
+        return Err(ProxyRefusal::Unavailable);
     }
 
     let status = StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK);
@@ -1467,14 +1523,17 @@ async fn proxy_to_backend_parts(
     // supervisor (the request side was capped in #153; this closes
     // the response side).
     const MAX_PROXY_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
+    // Past the cap there is no body to hand on. The browser already got a
+    // 101 from the backend would be the only alternative; a refusal answer
+    // is what the door hands every streaming caller.
     if let Some(len) = resp.content_length() {
         if len > MAX_PROXY_RESPONSE_BYTES {
-            return Err(());
+            return Err(ProxyRefusal::Unavailable);
         }
     }
-    let resp_body = resp.bytes().await.map_err(|_| ())?;
+    let resp_body = resp.bytes().await.map_err(|_| ProxyRefusal::Unavailable)?;
     if resp_body.len() as u64 > MAX_PROXY_RESPONSE_BYTES {
-        return Err(());
+        return Err(ProxyRefusal::Unavailable);
     }
 
     let mut response = Response::new(axum::body::Body::from(resp_body));
@@ -1546,6 +1605,82 @@ fn request_interceptable(req: &Request) -> bool {
         .and_then(|v| v.to_str().ok())
         .is_some_and(|a| a.to_ascii_lowercase().contains("text/html"))
 }
+
+/// What a refused proxy attempt is answered with: `Some(message)` when the
+/// visitor is a browser that NAVIGATED here (`message` names what failed and
+/// where it was going), `None` to keep the bare status.
+///
+/// The two conditions each separate a reader of documents from a machine
+/// that reads statuses and bodies:
+/// - the request is a navigation ([`request_interceptable`]): a resource
+///   load, a WebSocket upgrade and a non-`GET` call all keep their status,
+///   and an XHR asking for `text/html` is not one;
+/// - the client renders documents ([`browser_navigation`]): a scripted
+///   probe or a text browser has no SPA to run and keeps the plain copy.
+///
+/// The API surface needs no separate test: `is_api_path` deliberately keeps
+/// the backend's own status for machine callers, while a browser OPENED on an
+/// `/api/…` URL reaches the door with no backend and has nothing that could
+/// read plain text back — that is exactly the visitor this document is for.
+///
+/// A refused upgrade is answered before this check — no document answers a
+/// handshake, so the client keeps the plain 502 it reads as a failed
+/// connection.
+fn refusal_document(req: &Request) -> Option<String> {
+    if !browser_navigation(req) {
+        return None;
+    }
+    Some(format!(
+        "malkuth gateway: the --serve backend could not be reached{}",
+        fragment_suffix(req)
+    ))
+}
+
+/// The browser-ENGINE test the error landing adds to
+/// [`request_interceptable`]: the landing is a SPA document, so only a client
+/// that runs the SPA's script can use it.
+///
+/// Every browser names both an engine token and itself in `User-Agent`;
+/// every non-browser (Python `urllib`, Go, curl, a health checker) names
+/// neither. A text browser keeps the plain-text refusal it can read, and a
+/// scripted navigation through a browser-automation driver is still a browser
+/// (it carries the engine token).
+fn browser_navigation(req: &Request) -> bool {
+    // An upgrade handshake opens a stream; no document can answer it, and
+    // plana's own navigation test refuses it for the same reason.
+    if is_upgrade_request(req.headers()) {
+        return false;
+    }
+    request_interceptable(req)
+        && req
+            .headers()
+            .get(header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|ua| {
+                ua.split(|c: char| !c.is_ascii_alphanumeric()).any(|token| {
+                    BROWSER_ENGINE_TOKENS
+                        .iter()
+                        .any(|known| known.eq_ignore_ascii_case(token))
+                })
+            })
+}
+
+/// The engine tokens browsers put in `User-Agent`. Matched as whole
+/// alphanumeric tokens, case-insensitively, so a product name that merely
+/// CONTAINS one (`ChromeSpeedTester`) fails the token test.
+const BROWSER_ENGINE_TOKENS: &[&str] = &[
+    "AppleWebKit",
+    "Gecko",
+    "Presto",
+    "Trident",
+    "Chrome",
+    "Chromium",
+    "CriOS",
+    "Edg",
+    "OPR",
+    "SamsungBrowser",
+    "HeadlessChrome",
+];
 
 /// JSON probe endpoint for polling landing page.
 /// The probe's `message`: the localized status sentence, falling back to the
@@ -2070,6 +2205,9 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
                 && !is_upgrade_request(req.headers())
                 && request_interceptable(&req);
             if !intercept {
+                // What a REFUSED proxy attempt is answered with, decided
+                // from the request BEFORE the proxy consumes it.
+                let refusal_document = refusal_document(&req);
                 // Upgrade handshakes (WebSocket etc.) cannot go through the
                 // reqwest forwarder — detect them from the headers before
                 // consuming the request and tunnel them instead.
@@ -2078,11 +2216,30 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
                 } else {
                     proxy_to_backend(req, backend, &epoch).await
                 };
-                if let Ok(resp) = proxy_result {
-                    return resp;
-                }
-                if api_request {
-                    return api_gateway_error();
+                match proxy_result {
+                    Ok(resp) => {
+                        // The backend answered (or the tunnel is up) —
+                        // every byte of it belongs to the backend.
+                        return resp;
+                    }
+                    Err(ProxyRefusal::Unavailable) => {
+                        // A proxy door refusal is an error this door
+                        // produced — but it stays a bare status for every
+                        // machine caller (XHR, EventSource, JSON-RPC). Only
+                        // a browser navigation gets the document.
+                        match refusal_document {
+                            Some(message) => {
+                                return landing_response(StatusCode::BAD_GATEWAY, message);
+                            }
+                            None => return api_gateway_error(),
+                        }
+                    }
+                    Err(ProxyRefusal::UpgradeRefused) => {
+                        // A refused upgrade: the client was trying to open a
+                        // stream, not to read a document, so the answer stays
+                        // the plain 502.
+                        return api_gateway_error();
+                    }
                 }
             }
             return serve_document(&lang, &state, allowed).await;
@@ -2090,6 +2247,35 @@ async fn info_page(state: axum::extract::State<InfoState>, req: Request) -> Resp
     }
 
     serve_document(&lang, &state, serve_allowed).await
+}
+
+/// What a refused proxy attempt means for the answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProxyRefusal {
+    /// The backend could not be reached at all (transport failure), or
+    /// answered a gateway-style 502/503/504 on a document path malkuth
+    /// masks with its landing page.
+    Unavailable,
+    /// An upgrade-bearing request whose handshake the backend answered with
+    /// a non-101 status. There is no streaming response to pass through, so
+    /// the door answers 502 itself.
+    UpgradeRefused,
+}
+
+/// The query string of the refused target, with its `?`, or nothing.
+///
+/// A refused navigation is answered by the door, so the copy the landing shows
+/// can name where the visitor was going: a refused RPC POST put its arguments
+/// in the BODY, which is not part of the copy, but a stray `GET /api/…?x=1` (a
+/// bookmarked word processor document, say) carries them in the URI and they
+/// are what tells anyone what broke.
+fn fragment_suffix(req: &Request) -> String {
+    let mut out = String::new();
+    if let Some(query) = req.uri().query() {
+        out.push('?');
+        out.push_str(query);
+    }
+    out
 }
 
 /// The document a browser gets: the embedded SPA when one was built, the
@@ -2826,6 +3012,427 @@ mod tests {
         );
     }
 
+    /// The landing document is the SPA shell itself — the SAME bytes `/`
+    /// hands a browser — with the island seated before `</head>`. Serving a
+    /// different document (a standalone page, the prerendered no-JS
+    /// fallback) would land the visitor on something that is not malkuth.
+    #[tokio::test]
+    async fn test_landing_document_raises_the_served_spa_shell() {
+        let resp = landing_response(
+            StatusCode::BAD_GATEWAY,
+            "malkuth gateway: backend unavailable".to_string(),
+        );
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        if !spa_available() {
+            // A pnpm-less build has no document to seat the island in; the
+            // posture is the plain refusal. Said out loud, because the
+            // byte-identity claim below is exactly what such a build cannot
+            // judge — a silent return would read as green.
+            eprintln!(
+                "SKIPPED: this build embeds the sentinel, not the landing page — \
+                 the shell identity claim needs `node packages/landing_page/scripts/build.mjs` first"
+            );
+            assert_eq!(
+                resp.headers().get(header::CONTENT_TYPE).unwrap(),
+                "text/plain; charset=utf-8"
+            );
+            return;
+        }
+        // The site sizes the real document (702531 B at hikari 0.55.498); a
+        // floor well under it rejects a stub shell while leaving the exact
+        // size free to move with the bundle.
+        assert!(
+            LANDING_PAGE_HTML.len() > 512 * 1024,
+            "the embedded shell is {} B — that is not the real landing document",
+            LANDING_PAGE_HTML.len()
+        );
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(
+            resp.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store",
+            "a failure document must not be cached"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(bytes.to_vec()).expect("the SPA shell is UTF-8");
+
+        // The island is an ELEMENT; the SPA script names the id in a
+        // string, so the element open tag is what to look for.
+        let opening = "<script type=\"application/json\" id=\"hk-server-error\">";
+        let island_at = text.find(opening).expect("the landing carries the island");
+        assert_eq!(
+            text.matches(opening).count(),
+            1,
+            "exactly one island element"
+        );
+        // Byte identity: dropping the island element gives back exactly the
+        // document `/` serves on this build.
+        let head_close = text.find("</head>").expect("the shell has a head");
+        assert!(
+            island_at < head_close,
+            "the island is seated inside the head: {island_at} < {head_close}"
+        );
+        let island_start = island_at + opening.len();
+        let island_end = island_start + text[island_start..].find("</script>").unwrap();
+        let island = &text[island_start..island_end];
+        assert!(
+            island.contains("\"status\":502"),
+            "the island states the status: {island}"
+        );
+        assert!(
+            island.contains("malkuth gateway: backend unavailable"),
+            "the island states the refusal: {island}"
+        );
+        assert!(
+            island.contains("\"code\":\"\""),
+            "an empty code lets hikari fall back to `http_502`: {island}"
+        );
+        // The document is the shell with exactly one insert: removing the
+        // island element gives the bytes `/` serves back, in full, so
+        // nothing of the shell was reordered or dropped.
+        let island_element = &text[island_at..island_end + "</script>".len()];
+        let mut restored = String::from(&text[..island_at]);
+        restored.push_str(&text[island_at + island_element.len()..]);
+        assert_eq!(
+            restored, LANDING_PAGE_HTML,
+            "the landing is the served shell with the island inserted"
+        );
+    }
+
+    /// A backend's own 502 on an `/api/*` path is a LIVE answer, not a door
+    /// refusal: `is_api_path` keeps its status, headers and body for every
+    /// caller, a browser navigation included. This is the one place the
+    /// landing gives way, so it is pinned on the response BODY — both the
+    /// backend's bytes arriving AND the shell staying out of them, so a
+    /// page-painting regression on the relay path shows up here too.
+    #[tokio::test]
+    async fn test_api_navigation_keeps_relayed_backend_bytes() {
+        for (status, body) in [
+            (
+                StatusCode::BAD_GATEWAY,
+                "{\"error\":\"identity provider unreachable\"}",
+            ),
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "{\"error\":\"upstream timed out\"}",
+            ),
+        ] {
+            let head = format!(
+                "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\n\r\n{body}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("Error"),
+                body.len()
+            );
+            let backend = spawn_custom_backend(move |mut stream| {
+                use std::io::Write;
+                let _ = stream.write_all(head.as_bytes());
+            });
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let state = test_state(&format!("http://{backend}"), "epoch-1");
+            let req = Request::builder()
+                .uri("/api/rpc")
+                .header("accept", "application/json")
+                // A browser NAVIGATION, the one request class the landing
+                // exists for.
+                .header("sec-fetch-dest", "document")
+                .header(
+                    "user-agent",
+                    "Mozilla/5.0 (X11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+                )
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let resp = info_page(axum::extract::State(state), req).await;
+            assert_eq!(
+                resp.status(),
+                status,
+                "the backend's own status reaches the navigation: {status}"
+            );
+            assert_eq!(
+                resp.headers()
+                    .get(header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok()),
+                Some("application/json"),
+                "the backend's own type reaches the navigation: {status}"
+            );
+            let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+            assert_eq!(
+                &bytes[..],
+                body.as_bytes(),
+                "the backend's own bytes reach the navigation: {status}"
+            );
+            let text = String::from_utf8_lossy(&bytes);
+            assert!(
+                !text.contains("hk-server-error"),
+                "the landing shell has no part in a relayed backend answer: {status}"
+            );
+        }
+    }
+
+    /// A browser that NAVIGATED to one of malkuth's own failures gets the
+    /// landing; every other kind of caller keeps the bare 502 it can act on.
+    ///
+    /// The landing document needs the SPA built into the binary; a pnpm-less
+    /// build embeds a sentinel instead and keeps the plain refusal, which is
+    /// what the claim below asserts in that posture.
+    #[tokio::test]
+    async fn test_info_page_transport_failure_lands_only_a_browser_navigation() {
+        const CHROME: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
+            (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+        // (destination, user agent, path, expected: true = landing)
+        let cases: &[(&'static str, &'static str, &'static str, bool)] = &[
+            // A browser navigation onto an API URL: nothing there can read
+            // plain text back, so it lands.
+            ("document", CHROME, "/api/rpc/events?session=probe", true),
+            // A browser navigation to a door path outside the API surface is
+            // intercepted by the build interstitial first (a document visit
+            // is what steers a stale build through `/`), so no case here
+            // reaches the refusal path — pinned by the `intercept` tests.
+            // XHR / fetch from a browser: keeps status and body.
+            ("empty", CHROME, "/api/rpc/events?session=probe", false),
+            // A resource load for a page that is already up.
+            ("script", CHROME, "/api/runtime.js", false),
+            // A scripted probe that asks for HTML: real Chrome, but it
+            // navigated nothing — the tell is the User-Agent.
+            ("document", "python-urllib3/2.5", "/api/rpc/events", false),
+            ("document", "curl/8.5.0", "/api/rpc/events", false),
+            ("document", "Go-http-client/2.0", "/api/rpc/events", false),
+            // A text browser has no SPA to run; it can read plain text.
+            (
+                "document",
+                "Lynx/2.8.9rel.1 libwww-FM/2.14",
+                "/api/rpc/events",
+                false,
+            ),
+        ];
+        for (dest, ua, path, lands) in cases {
+            let state = test_state("http://127.0.0.1:1", "");
+            let req = Request::builder()
+                .uri(*path)
+                .header("accept", "text/html,application/xhtml+xml")
+                .header("sec-fetch-dest", *dest)
+                .header("user-agent", *ua)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let resp = info_page(axum::extract::State(state), req).await;
+            assert_eq!(resp.status(), StatusCode::BAD_GATEWAY, "{path} / {ua}");
+            let content_type = resp
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            if *lands {
+                if !spa_available() {
+                    assert_eq!(
+                        content_type, "text/plain; charset=utf-8",
+                        "without an embedded SPA the refusal stays plain text: {path} / {ua}"
+                    );
+                    continue;
+                }
+                assert_eq!(
+                    content_type, "text/html; charset=utf-8",
+                    "a browser navigation must land: {path} / {ua}"
+                );
+                let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                let text = String::from_utf8_lossy(&bytes);
+                assert!(
+                    text.contains("<script type=\"application/json\" id=\"hk-server-error\">"),
+                    "the landing carries the island: {path} / {ua}"
+                );
+            } else {
+                assert_eq!(
+                    content_type, "text/plain; charset=utf-8",
+                    "a machine caller must keep the plain status: {path} / {ua}"
+                );
+            }
+        }
+    }
+
+    /// The refusal copy says where the visitor was going — query included,
+    /// so a refused `GET /api/…?doc=…` is diagnosable from the card.
+    #[tokio::test]
+    async fn test_landing_copy_carries_the_query_of_the_refused_target() {
+        // The copy is a property of the document; a pnpm-less build keeps
+        // the plain refusal (pinned by the posture tests above).
+        if !spa_available() {
+            return;
+        }
+        let state = test_state("http://127.0.0.1:1", "");
+        let req = Request::builder()
+            .uri("/api/office?doc=report.docx")
+            .header("accept", "text/html")
+            .header("sec-fetch-dest", "document")
+            .header(
+                "user-agent",
+                "Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+            )
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = info_page(axum::extract::State(state), req).await;
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        // Read the island back and decode it: the card's copy is JSON text.
+        let opening = "<script type=\"application/json\" id=\"hk-server-error\">";
+        assert!(text.contains(opening), "the landing carries the island");
+        let start = text.find(opening).expect("the landing carries the island") + opening.len();
+        let end = start + text[start..].find("</script>").unwrap();
+        let island: serde_json::Value =
+            serde_json::from_str(&text[start..end]).expect("the island is JSON");
+        let message = island["message"].as_str().unwrap_or_default();
+        assert!(
+            message.ends_with("could not be reached?doc=report.docx"),
+            "the refusal names the target: {message}"
+        );
+        assert_eq!(island["status"], 502, "{island}");
+    }
+
+    /// A WebSocket client whose handshake the backend refuses is told the
+    /// refusal as a refusal: it waits for an upgrade, so the door answers its
+    /// own 502 and the client reads a failed connection rather than a page.
+    #[tokio::test]
+    async fn test_refused_upgrade_keeps_the_bare_502() {
+        let backend = spawn_stub_backend("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut req = Request::builder()
+            .uri("/socket")
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-fetch-dest", "websocket")
+            .header(
+                "user-agent",
+                "Mozilla/5.0 (X11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+            )
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let on_upgrade = hyper::upgrade::on(&mut req);
+        req.extensions_mut().insert(on_upgrade);
+        assert!(
+            matches!(
+                proxy_upgrade(req, &format!("http://{backend}"), "1").await,
+                Err(ProxyRefusal::UpgradeRefused)
+            ),
+            "a refused upgrade is a refusal, not a transport failure"
+        );
+    }
+
+    /// The classification the error landing adds on top of
+    /// [`request_interceptable`].
+    #[test]
+    fn test_browser_navigation_requires_a_browser_engine() {
+        fn build(ua: Option<&str>) -> Request {
+            let mut builder = Request::builder()
+                .uri("/")
+                .header("sec-fetch-dest", "document");
+            if let Some(ua) = ua {
+                builder = builder.header("user-agent", ua);
+            }
+            builder.body(axum::body::Body::empty()).unwrap()
+        }
+        // No User-Agent at all: a text client, not a browser.
+        assert!(!browser_navigation(&build(None)));
+        for engine in [
+            "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0) Gecko/20100101 Firefox/141.0",
+            "Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+            "Mozilla/5.0 (iPhone) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/28.0 Chrome/141.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (X11; Linux) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/141.0 Safari/537.36",
+            // Case is not a signal.
+            "mozilla/5.0 (x11) applewebkit/537.36 (khtml, like gecko) chrome/141.0 safari/537.36",
+        ] {
+            assert!(browser_navigation(&build(Some(engine))), "{engine}");
+        }
+        for other in [
+            "python-requests/2.32.3",
+            "curl/8.5.0",
+            "Go-http-client/2.0",
+            "okhttp/4.12.0",
+            "Lynx/2.8.9rel.1 libwww-FM/2.14",
+            // A product name that merely CONTAINS an engine token.
+            "ChromeSpeedTester/1.0",
+        ] {
+            assert!(!browser_navigation(&build(Some(other))), "{other}");
+        }
+        // A browser UA on a NON-navigation keeps the status: the engine test
+        // is added to the navigation test, not put in place of it.
+        let fetch = Request::builder()
+            .uri("/api/x")
+            .header("sec-fetch-dest", "empty")
+            .header(
+                "user-agent",
+                "Mozilla/5.0 (X11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+            )
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert!(!browser_navigation(&fetch));
+
+        // An upgrade request is not a navigation, whatever the engine
+        // (`request_interceptable` reads the Upgrade header, and the engine
+        // test sits on top of it rather than beside it).
+        let upgrade = Request::builder()
+            .uri("/api/ws")
+            .header("connection", "Upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-fetch-dest", "document")
+            .header(
+                "user-agent",
+                "Mozilla/5.0 (X11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+            )
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert!(!browser_navigation(&upgrade));
+    }
+
+    /// The `--serve` API surface keeps the backend's status and body for a
+    /// FETCH caller — the layer this door now answers with a document must
+    /// not reach it.
+    #[tokio::test]
+    async fn test_api_fetch_keeps_backend_bytes_on_backend_down() {
+        let backend = spawn_custom_backend(|mut stream| {
+            use std::io::Write;
+            let _ = stream.write_all(
+                b"HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\n\
+                  Content-Length: 2\r\n\r\n{}",
+            );
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let state = test_state(&format!("http://{backend}"), "epoch-1");
+        let req = Request::builder()
+            .uri("/api/rpc")
+            .method("POST")
+            .header("accept", "application/json")
+            .header("sec-fetch-dest", "empty")
+            .header("authorization", "Bearer forwarded")
+            .header("content-type", "application/json")
+            .header(
+                "user-agent",
+                "Mozilla/5.0 (X11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+            )
+            .body(axum::body::Body::from("{}"))
+            .unwrap();
+        let resp = info_page(axum::extract::State(state), req).await;
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            resp.headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("application/json"),
+            "a fetch caller keeps the backend's own bytes"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        assert_eq!(&bytes[..], b"{}");
+    }
+
     /// An API path is never intercepted by the build interstitial, even
     /// when it asks for HTML: XHR callers get statuses, not pages. Without
     /// `!api_request` in `intercept` this request is answered `200
@@ -2849,6 +3456,9 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     }
 
+    /// An API-path 503 on an upgrade-bearing request is RELAYED: the backend's
+    /// status reaches the machine caller verbatim instead of being masked
+    /// with the landing page (`is_api_path` in the fallback test).
     #[tokio::test]
     async fn test_proxy_upgrade_api_path_503_does_not_fall_back() {
         let backend =
@@ -2887,8 +3497,8 @@ mod tests {
 
         let result = proxy_upgrade(req, &format!("http://{backend}"), "1").await;
         assert!(
-            result.is_err(),
-            "a document upgrade 503 must still fall back"
+            matches!(result, Err(ProxyRefusal::UpgradeRefused)),
+            "a document upgrade 503 is a refusal — the door answers 502, not the masked page"
         );
     }
 
