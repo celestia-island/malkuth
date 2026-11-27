@@ -23,7 +23,17 @@ const SPA_SENTINEL: &str = "<html><body><h1>Malkuth</h1>";
 
 /// Is a real SPA bundle embedded (vs. the build.rs sentinel page)?
 fn spa_available() -> bool {
-    !LANDING_PAGE_HTML.starts_with(SPA_SENTINEL)
+    spa_available_for(LANDING_PAGE_HTML)
+}
+
+/// The predicate itself, on any HTML: the sentinel's exact prefix means "the
+/// SPA was never built on this host".
+///
+/// Split out of [`spa_available`] so the prefix contract is pinned by a unit
+/// test that needs no build gymnastics — `build.rs` decides which of the two
+/// strings is embedded, and both branches have to stay recognisable.
+fn spa_available_for(html: &str) -> bool {
+    !html.starts_with(SPA_SENTINEL)
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -3012,6 +3022,61 @@ mod tests {
         );
     }
 
+    /// The failure text the shell-dependent tests report when this build embeds
+    /// the sentinel page instead of the SPA.
+    ///
+    /// `build.rs` swaps in that sentinel whenever it could not run
+    /// `packages/landing_page`'s build (no pnpm on the host), and the
+    /// production paths then correctly answer with the prerendered fallback.
+    /// A test that *asserts about the shell* on such a build is vacuous, not
+    /// green: the contract it pins (the landing IS the served shell) is never
+    /// exercised. So the shell-dependent tests fail with this message instead
+    /// of returning early — a reused or stale `--reuse-target` lane reports a
+    /// full green run for a binary that cannot reach the code under test at
+    /// all.
+    fn sentinel_shell_guard() -> String {
+        format!(
+            "sentinel landing page: pnpm was unavailable at build time, so build.rs embedded the \
+             sentinel ({b}B) instead of the SPA shell — the shell assertions below would be vacuous. \
+             Build the page first (`cd packages/landing_page && pnpm install --frozen-lockfile && \
+             node scripts/build.mjs`), then rebuild this target dir; a lane that legitimately runs \
+             without pnpm must use a target dir built WITH it.",
+            b = LANDING_PAGE_HTML.len()
+        )
+    }
+
+    /// Fail the calling test when this build embeds the sentinel page.
+    #[track_caller]
+    fn require_spa_shell() {
+        assert!(spa_available(), "{}", sentinel_shell_guard());
+    }
+
+    /// `spa_available_for` is the contract every shell test leans on: the
+    /// sentinel's prefix means "not built", anything else means "real SPA".
+    /// Pinned directly so a reworded sentinel in `build.rs` (which would make
+    /// every shell test silently assume a real shell) fails here first.
+    #[test]
+    fn test_spa_available_for_recognises_the_sentinel_prefix() {
+        assert!(
+            !spa_available_for("<html><body><h1>Malkuth</h1></body></html>"),
+            "the build.rs sentinel must read as \"no SPA\""
+        );
+        assert!(
+            !spa_available_for(SPA_SENTINEL),
+            "the bare sentinel prefix alone is enough to mean \"no SPA\""
+        );
+        assert!(
+            spa_available_for("<!DOCTYPE html><html><head></head><body></body></html>"),
+            "a real document is not the sentinel"
+        );
+        // The sentinel is a PREFIX test: an SPA whose shell merely mentions it
+        // later is still a real shell.
+        assert!(
+            spa_available_for("<!DOCTYPE html><html><body><h1>Malkuth</h1></body></html>"),
+            "only the leading prefix marks the sentinel"
+        );
+    }
+
     /// The landing document is the SPA shell itself — the SAME bytes `/`
     /// hands a browser — with the island seated before `</head>`. Serving a
     /// different document (a standalone page, the prerendered no-JS
@@ -3023,21 +3088,9 @@ mod tests {
             "malkuth gateway: backend unavailable".to_string(),
         );
         assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
-        if !spa_available() {
-            // A pnpm-less build has no document to seat the island in; the
-            // posture is the plain refusal. Said out loud, because the
-            // byte-identity claim below is exactly what such a build cannot
-            // judge — a silent return would read as green.
-            eprintln!(
-                "SKIPPED: this build embeds the sentinel, not the landing page — \
-                 the shell identity claim needs `node packages/landing_page/scripts/build.mjs` first"
-            );
-            assert_eq!(
-                resp.headers().get(header::CONTENT_TYPE).unwrap(),
-                "text/plain; charset=utf-8"
-            );
-            return;
-        }
+        // The byte-identity claim below is exactly what a sentinel build cannot
+        // judge; say so as a failure rather than as a skip.
+        require_spa_shell();
         // The site sizes the real document (702531 B at hikari 0.55.498); a
         // floor well under it rejects a stub shell while leaving the exact
         // size free to move with the bundle.
@@ -3177,8 +3230,8 @@ mod tests {
     /// landing; every other kind of caller keeps the bare 502 it can act on.
     ///
     /// The landing document needs the SPA built into the binary; a pnpm-less
-    /// build embeds a sentinel instead and keeps the plain refusal, which is
-    /// what the claim below asserts in that posture.
+    /// build embeds a sentinel instead, so the case that must land fails with
+    /// the sentinel guard rather than passing on a vacuous assertion.
     #[tokio::test]
     async fn test_info_page_transport_failure_lands_only_a_browser_navigation() {
         const CHROME: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
@@ -3227,13 +3280,11 @@ mod tests {
                 .unwrap_or_default()
                 .to_string();
             if *lands {
-                if !spa_available() {
-                    assert_eq!(
-                        content_type, "text/plain; charset=utf-8",
-                        "without an embedded SPA the refusal stays plain text: {path} / {ua}"
-                    );
-                    continue;
-                }
+                assert!(
+                    spa_available(),
+                    "{} (target: {path} / {ua})",
+                    sentinel_shell_guard()
+                );
                 assert_eq!(
                     content_type, "text/html; charset=utf-8",
                     "a browser navigation must land: {path} / {ua}"
@@ -3259,11 +3310,10 @@ mod tests {
     /// so a refused `GET /api/…?doc=…` is diagnosable from the card.
     #[tokio::test]
     async fn test_landing_copy_carries_the_query_of_the_refused_target() {
-        // The copy is a property of the document; a pnpm-less build keeps
-        // the plain refusal (pinned by the posture tests above).
-        if !spa_available() {
-            return;
-        }
+        // The copy is a property of the document; a sentinel build has no
+        // document, so this test has nothing to judge — fail instead of
+        // passing on an assertion that never runs.
+        require_spa_shell();
         let state = test_state("http://127.0.0.1:1", "");
         let req = Request::builder()
             .uri("/api/office?doc=report.docx")
