@@ -3106,7 +3106,9 @@ mod tests {
     /// A backend's own 502 on an `/api/*` path is a LIVE answer, not a door
     /// refusal: `is_api_path` keeps its status, headers and body for every
     /// caller, a browser navigation included. This is the one place the
-    /// landing gives way, so it is pinned on the response BODY.
+    /// landing gives way, so it is pinned on the response BODY — both the
+    /// backend's bytes arriving AND the shell staying out of them, so a
+    /// page-painting regression on the relay path shows up here too.
     #[tokio::test]
     async fn test_api_navigation_keeps_relayed_backend_bytes() {
         for (status, body) in [
@@ -3162,6 +3164,11 @@ mod tests {
                 &bytes[..],
                 body.as_bytes(),
                 "the backend's own bytes reach the navigation: {status}"
+            );
+            let text = String::from_utf8_lossy(&bytes);
+            assert!(
+                !text.contains("hk-server-error"),
+                "the landing shell has no part in a relayed backend answer: {status}"
             );
         }
     }
