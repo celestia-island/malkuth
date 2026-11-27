@@ -3027,13 +3027,27 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
         if !spa_available() {
             // A pnpm-less build has no document to seat the island in; the
-            // posture is the plain refusal.
+            // posture is the plain refusal. Said out loud, because the
+            // byte-identity claim below is exactly what such a build cannot
+            // judge — a silent return would read as green.
+            eprintln!(
+                "SKIPPED: this build embeds the sentinel, not the landing page — \
+                 the shell identity claim needs `node packages/landing_page/scripts/build.mjs` first"
+            );
             assert_eq!(
                 resp.headers().get(header::CONTENT_TYPE).unwrap(),
                 "text/plain; charset=utf-8"
             );
             return;
         }
+        // The site sizes the real document (702531 B at hikari 0.55.498); a
+        // floor well under it rejects a stub shell while leaving the exact
+        // size free to move with the bundle.
+        assert!(
+            LANDING_PAGE_HTML.len() > 512 * 1024,
+            "the embedded shell is {} B — that is not the real landing document",
+            LANDING_PAGE_HTML.len()
+        );
         assert_eq!(
             resp.headers().get(header::CONTENT_TYPE).unwrap(),
             "text/html; charset=utf-8"
@@ -3089,6 +3103,69 @@ mod tests {
             restored, LANDING_PAGE_HTML,
             "the landing is the served shell with the island inserted"
         );
+    }
+
+    /// A backend's own 502 on an `/api/*` path is a LIVE answer, not a door
+    /// refusal: `is_api_path` keeps its status, headers and body for every
+    /// caller, a browser navigation included. This is the one place the
+    /// landing gives way, so it is pinned on the response BODY.
+    #[tokio::test]
+    async fn test_api_navigation_keeps_relayed_backend_bytes() {
+        for (status, body) in [
+            (
+                StatusCode::BAD_GATEWAY,
+                "{\"error\":\"identity provider unreachable\"}",
+            ),
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "{\"error\":\"upstream timed out\"}",
+            ),
+        ] {
+            let head = format!(
+                "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\n\r\n{body}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("Error"),
+                body.len()
+            );
+            let backend = spawn_custom_backend(move |mut stream| {
+                use std::io::Write;
+                let _ = stream.write_all(head.as_bytes());
+            });
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let state = test_state(&format!("http://{backend}"), "epoch-1");
+            let req = Request::builder()
+                .uri("/api/rpc")
+                .header("accept", "application/json")
+                // A browser NAVIGATION, the one request class the landing
+                // exists for.
+                .header("sec-fetch-dest", "document")
+                .header(
+                    "user-agent",
+                    "Mozilla/5.0 (X11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+                )
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let resp = info_page(axum::extract::State(state), req).await;
+            assert_eq!(
+                resp.status(),
+                status,
+                "the backend's own status reaches the navigation: {status}"
+            );
+            assert_eq!(
+                resp.headers()
+                    .get(header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok()),
+                Some("application/json"),
+                "the backend's own type reaches the navigation: {status}"
+            );
+            let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+            assert_eq!(
+                &bytes[..],
+                body.as_bytes(),
+                "the backend's own bytes reach the navigation: {status}"
+            );
+        }
     }
 
     /// A browser that NAVIGATED to one of malkuth's own failures gets the
