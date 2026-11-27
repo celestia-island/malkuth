@@ -1188,11 +1188,9 @@ async fn proxy_upgrade(req: Request, backend: &str, epoch: &str) -> Result<Respo
     // fall back to the landing page — and, as there, API paths keep their
     // status (an upgrade-bearing /api/* request is still a machine caller;
     // masking it would repeat the 200-HTML defect this branch's sibling
-    // fixed, R2 catch on this PR). Retaining the backend's status here
-    // needs a streaming body with a precise length, and an upgrade
-    // refusal has no such body — the door answers 502 itself (a refusal, the
-    // same verdict the 502 mask carries on a document path).
-    if should_fall_back(status) {
+    // fixed, R2 catch on this PR). The body is read below exactly as framed,
+    // so the API-path case has everything it needs to answer verbatim.
+    if should_fall_back(status) && !is_api_path(parts.uri.path()) {
         return Err(ProxyRefusal::UpgradeRefused);
     }
 
@@ -3291,9 +3289,9 @@ mod tests {
         assert_eq!(island["status"], 502, "{island}");
     }
 
-    /// A WebSocket client whose handshake the backend refuses keeps the bare
-    /// 502: it waits for an upgrade, and a document would read as a failed
-    /// connection either way — but a document costs the tunnel path work.
+    /// A WebSocket client whose handshake the backend refuses is told the
+    /// refusal as a refusal: it waits for an upgrade, so the door answers its
+    /// own 502 and the client reads a failed connection rather than a page.
     #[tokio::test]
     async fn test_refused_upgrade_keeps_the_bare_502() {
         let backend = spawn_stub_backend("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
@@ -3451,14 +3449,11 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     }
 
-    /// An API-path 503 on an upgrade-bearing request keeps the backend's own
-    /// status instead of the gateway mask. The refusal is typed:
-    /// a document path reports [`ProxyRefusal::Unavailable`] (masked),
-    /// an API path reports [`ProxyRefusal::UpgradeRefused`] (the door's own
-    /// 502 — the backend's 503 itself is not relayed, because there is no
-    /// stream to relay it in).
+    /// An API-path 503 on an upgrade-bearing request is RELAYED: the backend's
+    /// status reaches the machine caller verbatim instead of being masked
+    /// with the landing page (`is_api_path` in the fallback test).
     #[tokio::test]
-    async fn test_proxy_upgrade_api_path_503_keeps_its_status() {
+    async fn test_proxy_upgrade_api_path_503_does_not_fall_back() {
         let backend =
             spawn_stub_backend("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -3472,13 +3467,10 @@ mod tests {
         let on_upgrade = hyper::upgrade::on(&mut req);
         req.extensions_mut().insert(on_upgrade);
 
-        assert!(
-            matches!(
-                proxy_upgrade(req, &format!("http://{backend}"), "1").await,
-                Err(ProxyRefusal::UpgradeRefused)
-            ),
-            "an API-path 503 is not masked with the page"
-        );
+        let resp = proxy_upgrade(req, &format!("http://{backend}"), "1")
+            .await
+            .expect("an API-path 503 must not be masked with the page");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
@@ -3498,8 +3490,8 @@ mod tests {
 
         let result = proxy_upgrade(req, &format!("http://{backend}"), "1").await;
         assert!(
-            result.is_err(),
-            "a document upgrade 503 must still fall back"
+            matches!(result, Err(ProxyRefusal::UpgradeRefused)),
+            "a document upgrade 503 is a refusal — the door answers 502, not the masked page"
         );
     }
 
